@@ -183,6 +183,10 @@ pub const KEYWORDS: &[(&str, SyntaxKind)] = &[
 ];
 
 impl SyntaxKind {
+    pub fn is_keyword(self) -> bool {
+        (InicioKw as u8..=GravarNlEolKw as u8).contains(&(self as u8))
+    }
+
     /// Devolve o tipo da palavra reservada, sem diferenciar maiúsculas, ou `None` se o nome não for
     /// reservado. Recebe o identificador inteiro, então `E075PRO` não casa com `E`.
     pub fn keyword(ident: &str) -> Option<SyntaxKind> {
@@ -227,6 +231,13 @@ mod tests {
         assert_eq!(SyntaxKind::keyword("Senao"), Some(SenaoKw));
         assert_eq!(SyntaxKind::keyword("e"), Some(EKw));
         assert_eq!(SyntaxKind::keyword("GravarNlEol"), Some(GravarNlEolKw));
+    }
+
+    #[test]
+    fn is_keyword_cobre_a_tabela_inteira() {
+        assert!(KEYWORDS.iter().all(|(_, kind)| kind.is_keyword()));
+        assert!(!Ident.is_keyword());
+        assert!(!LParen.is_keyword());
     }
 
     #[test]

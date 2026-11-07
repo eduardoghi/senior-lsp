@@ -10,7 +10,11 @@
 
 use text_size::{TextRange, TextSize};
 
-use crate::SyntaxKind::{self, ErrorToken, Ident, Newline, Number, Whitespace};
+use crate::SyntaxKind::{
+    self, Colon, Comma, Dot, Eq, ErrorToken, Gt, GtEq, Ident, LBrace, LBracket, LParen, Lt, LtEq,
+    Minus, MinusMinus, Neq, Newline, Number, Plus, PlusPlus, RBrace, RBracket, RParen, RelRun,
+    Semicolon, Slash, Star, Whitespace,
+};
 use crate::delphi_float;
 
 /// Tamanho máximo de um identificador no compilador (`identificador muito extenso`).
@@ -138,6 +142,21 @@ impl Lexer<'_> {
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.ident(start),
             b'0'..=b'9' => self.number(start),
+            b'(' => self.single(LParen),
+            b')' => self.single(RParen),
+            b'[' => self.single(LBracket),
+            b']' => self.single(RBracket),
+            b',' => self.single(Comma),
+            b';' => self.single(Semicolon),
+            b':' => self.single(Colon),
+            b'.' => self.single(Dot),
+            b'*' => self.single(Star),
+            b'/' => self.single(Slash),
+            b'+' => self.doubled(b'+', Plus, PlusPlus),
+            b'-' => self.doubled(b'-', Minus, MinusMinus),
+            b'<' | b'>' | b'=' => self.relational(),
+            b'{' => self.brace(start, LBrace),
+            b'}' => self.brace(start, RBrace),
             _ => {
                 let ch = self.char_at(start);
                 if ch.is_alphabetic() {
@@ -233,6 +252,62 @@ impl Lexer<'_> {
         Number
     }
 
+    fn single(&mut self, kind: SyntaxKind) -> SyntaxKind {
+        self.pos += 1;
+        kind
+    }
+
+    /// `+` e `-` formam `++` e `--` só com o mesmo caractere logo depois.
+    fn doubled(&mut self, ch: u8, one: SyntaxKind, two: SyntaxKind) -> SyntaxKind {
+        self.pos += 1;
+        if self.bytes.get(self.pos) == Some(&ch) {
+            self.pos += 1;
+            return two;
+        }
+        one
+    }
+
+    /// O compilador junta `<`, `>` ou `=` com mais um desses e para, então `<<=` vira `<<` e `=`.
+    /// Só `<=`, `>=` e `<>` são operadores válidos. As outras duplas o parser recusa.
+    fn relational(&mut self) -> SyntaxKind {
+        let first = self.bytes[self.pos];
+        self.pos += 1;
+        let Some(&second) = self
+            .bytes
+            .get(self.pos)
+            .filter(|b| matches!(b, b'<' | b'>' | b'='))
+        else {
+            return match first {
+                b'<' => Lt,
+                b'>' => Gt,
+                _ => Eq,
+            };
+        };
+        self.pos += 1;
+        match (first, second) {
+            (b'<', b'=') => LtEq,
+            (b'>', b'=') => GtEq,
+            (b'<', b'>') => Neq,
+            _ => RelRun,
+        }
+    }
+
+    /// O compilador só reconhece `{` e `}` no começo de um token. Colados no fim de um nome ou
+    /// número, eles dão "O Caractere "{" é inválido". O token continua sendo chave para o parser
+    /// não perder o bloco.
+    fn brace(&mut self, start: usize, kind: SyntaxKind) -> SyntaxKind {
+        self.pos += 1;
+        let glued = self
+            .tokens
+            .kinds
+            .last()
+            .is_some_and(|&k| k == Ident || k == Number || k.is_keyword());
+        if glued {
+            self.error(LexErrorKind::InvalidChar, start);
+        }
+        kind
+    }
+
     /// Caractere que começa em `pos`, que tem que ser uma fronteira de caractere.
     fn char_at(&self, pos: usize) -> char {
         self.text[pos..].chars().next().unwrap_or('\0')
@@ -259,7 +334,7 @@ fn offset(pos: usize) -> TextSize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SyntaxKind::{EKw, GravarNlEolKw, SeKw};
+    use crate::SyntaxKind::{EKw, GravarNlEolKw, SeKw, SenaoKw};
     use LexErrorKind::{InvalidChar, MalformedNumber};
 
     /// Confere as invariantes que valem para qualquer entrada e devolve os tokens.
@@ -444,10 +519,9 @@ mod tests {
 
     #[test]
     fn ponto_so_entra_no_numero_se_vier_digito_depois() {
-        // Até o passo dos operadores, o ponto e o sinal saem como ErrorToken.
-        assert_eq!(kinds("2."), [Number, ErrorToken]);
-        assert_eq!(kinds("1.5.3"), [Number, ErrorToken, Number]);
-        assert_eq!(kinds("1E-3"), [Number, ErrorToken, Number]);
+        assert_eq!(kinds("2."), [Number, Dot]);
+        assert_eq!(kinds("1.5.3"), [Number, Dot, Number]);
+        assert_eq!(kinds("1E-3"), [Number, Minus, Number]);
         assert_eq!(lex_ok("1.5.3").range(0), TextRange::new(0.into(), 3.into()));
     }
 
@@ -473,10 +547,61 @@ mod tests {
     }
 
     #[test]
+    fn simbolos_de_um_caractere() {
+        assert_eq!(
+            kinds("()[],;:.*/"),
+            [
+                LParen, RParen, LBracket, RBracket, Comma, Semicolon, Colon, Dot, Star, Slash
+            ]
+        );
+        assert!(lex_ok("()[],;:.*/").errors().is_empty());
+    }
+
+    #[test]
+    fn mais_e_menos_dobrados() {
+        assert_eq!(kinds("++"), [PlusPlus]);
+        assert_eq!(kinds("--"), [MinusMinus]);
+        assert_eq!(kinds("+++"), [PlusPlus, Plus]);
+        assert_eq!(kinds("+-"), [Plus, Minus]);
+        assert_eq!(kinds("+ +"), [Plus, Whitespace, Plus]);
+    }
+
+    #[test]
+    fn relacionais_juntam_no_maximo_dois() {
+        assert_eq!(kinds("<"), [Lt]);
+        assert_eq!(kinds(">"), [Gt]);
+        assert_eq!(kinds("="), [Eq]);
+        assert_eq!(kinds("<="), [LtEq]);
+        assert_eq!(kinds(">="), [GtEq]);
+        assert_eq!(kinds("<>"), [Neq]);
+        for dupla in ["==", "=<", "=>", "><", "<<", ">>"] {
+            assert_eq!(kinds(dupla), [RelRun], "{dupla}");
+        }
+        assert_eq!(kinds("<<="), [RelRun, Eq]);
+        assert_eq!(kinds("a<b"), [Ident, Lt, Ident]);
+    }
+
+    #[test]
+    fn chave_colada_no_fim_de_nome_ou_numero_tem_erro() {
+        assert_eq!(kinds("senao{"), [SenaoKw, LBrace]);
+        assert_eq!(erros("senao{"), [(InvalidChar, 5, 6)]);
+        assert_eq!(kinds("2}"), [Number, RBrace]);
+        assert_eq!(erros("2}"), [(InvalidChar, 1, 2)]);
+        assert_eq!(erros("a{"), [(InvalidChar, 1, 2)]);
+    }
+
+    #[test]
+    fn chave_depois_de_espaco_ou_simbolo_nao_tem_erro() {
+        for texto in ["senao {", "){", "}{", ";}", "{", "x = 1; }"] {
+            assert!(lex_ok(texto).errors().is_empty(), "{texto}");
+        }
+    }
+
+    #[test]
     fn combinacoes_de_caracteres_mantem_as_invariantes() {
         let alfabeto = [
             "", " ", "\t", "\r", "\n", "\r\n", "a", "1", "\"", "'", "@", "/", "*", "\\", "é", "😀",
-            "\0", "E", "_", "x'y",
+            "\0", "E", "_", "x'y", "{", "}", "<", "=", "+", ".",
         ];
         for a in alfabeto {
             for b in alfabeto {
