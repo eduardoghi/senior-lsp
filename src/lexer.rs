@@ -11,9 +11,9 @@
 use text_size::{TextRange, TextSize};
 
 use crate::SyntaxKind::{
-    self, Colon, Comma, Dot, Eq, ErrorToken, Gt, GtEq, Ident, LBrace, LBracket, LParen, Lt, LtEq,
-    Minus, MinusMinus, Neq, Newline, Number, Plus, PlusPlus, RBrace, RBracket, RParen, RelRun,
-    Semicolon, Slash, Star, Whitespace,
+    self, AtComment, BlockComment, Colon, Comma, Dot, Eq, ErrorToken, Gt, GtEq, Ident, LBrace,
+    LBracket, LParen, Lt, LtEq, Minus, MinusMinus, Neq, Newline, Number, Plus, PlusPlus, RBrace,
+    RBracket, RParen, RelRun, Semicolon, Slash, Star, Whitespace,
 };
 use crate::delphi_float;
 
@@ -99,6 +99,7 @@ pub fn lex(text: &str) -> Result<Tokens, TextTooLarge> {
         text,
         bytes: text.as_bytes(),
         pos: 0,
+        no_trailing_space: false,
         tokens: Tokens {
             kinds: Vec::new(),
             starts: Vec::new(),
@@ -117,6 +118,10 @@ struct Lexer<'a> {
     bytes: &'a [u8],
     pos: usize,
     tokens: Tokens,
+    /// A linha atual terminou um `/* */` que veio de linhas anteriores. O compilador acrescenta
+    /// um espaço no fim de cada linha que carrega, menos nas que carrega dentro do comentário, e
+    /// sem esse espaço um operador no fim da linha pode se juntar com a linha seguinte.
+    no_trailing_space: bool,
 }
 
 impl Lexer<'_> {
@@ -130,6 +135,7 @@ impl Lexer<'_> {
             }
             b'\n' => {
                 self.pos += 1;
+                self.no_trailing_space = false;
                 Newline
             }
             // O compilador também quebra a linha em CR sozinho.
@@ -138,6 +144,7 @@ impl Lexer<'_> {
                 if self.bytes.get(self.pos) == Some(&b'\n') {
                     self.pos += 1;
                 }
+                self.no_trailing_space = false;
                 Newline
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.ident(start),
@@ -151,7 +158,9 @@ impl Lexer<'_> {
             b':' => self.single(Colon),
             b'.' => self.single(Dot),
             b'*' => self.single(Star),
+            b'/' if self.bytes.get(start + 1) == Some(&b'*') => self.block_comment(start),
             b'/' => self.single(Slash),
+            b'@' => self.at_comment(start),
             b'+' => self.doubled(b'+', Plus, PlusPlus),
             b'-' => self.doubled(b'-', Minus, MinusMinus),
             b'<' | b'>' | b'=' => self.relational(),
@@ -260,11 +269,40 @@ impl Lexer<'_> {
     /// `+` e `-` formam `++` e `--` só com o mesmo caractere logo depois.
     fn doubled(&mut self, ch: u8, one: SyntaxKind, two: SyntaxKind) -> SyntaxKind {
         self.pos += 1;
-        if self.bytes.get(self.pos) == Some(&ch) {
-            self.pos += 1;
-            return two;
+        match self.next_operator_char() {
+            Some((b, after)) if b == ch => {
+                self.take_operator_char(after);
+                two
+            }
+            _ => one,
         }
-        one
+    }
+
+    /// Caractere que o compilador vê logo depois do operador, e a posição depois dele. É o
+    /// próximo da linha, ou o primeiro da linha seguinte quando a linha atual não tem o espaço
+    /// do fim (veja `no_trailing_space`).
+    fn next_operator_char(&self) -> Option<(u8, usize)> {
+        let b = *self.bytes.get(self.pos)?;
+        if !self.no_trailing_space || !matches!(b, b'\n' | b'\r') {
+            return Some((b, self.pos + 1));
+        }
+        let mut next = self.pos + 1;
+        if b == b'\r' && self.bytes.get(next) == Some(&b'\n') {
+            next += 1;
+        }
+        let b = *self.bytes.get(next)?;
+        Some((b, next + 1))
+    }
+
+    fn take_operator_char(&mut self, after: usize) {
+        // Se o operador atravessou a quebra, a linha nova veio com o espaço do fim.
+        if self.bytes[self.pos..after]
+            .iter()
+            .any(|&b| matches!(b, b'\n' | b'\r'))
+        {
+            self.no_trailing_space = false;
+        }
+        self.pos = after;
     }
 
     /// O compilador junta `<`, `>` ou `=` com mais um desses e para, então `<<=` vira `<<` e `=`.
@@ -272,10 +310,9 @@ impl Lexer<'_> {
     fn relational(&mut self) -> SyntaxKind {
         let first = self.bytes[self.pos];
         self.pos += 1;
-        let Some(&second) = self
-            .bytes
-            .get(self.pos)
-            .filter(|b| matches!(b, b'<' | b'>' | b'='))
+        let Some((second, after)) = self
+            .next_operator_char()
+            .filter(|(b, _)| matches!(b, b'<' | b'>' | b'='))
         else {
             return match first {
                 b'<' => Lt,
@@ -283,7 +320,7 @@ impl Lexer<'_> {
                 _ => Eq,
             };
         };
-        self.pos += 1;
+        self.take_operator_char(after);
         match (first, second) {
             (b'<', b'=') => LtEq,
             (b'>', b'=') => GtEq,
@@ -297,15 +334,66 @@ impl Lexer<'_> {
     /// não perder o bloco.
     fn brace(&mut self, start: usize, kind: SyntaxKind) -> SyntaxKind {
         self.pos += 1;
+        self.reject_if_glued(start);
+        kind
+    }
+
+    /// Registra `InvalidChar` no caractere em `start` se ele vem colado num nome ou número. Vale
+    /// para os que o compilador só reconhece no começo de um token, `{`, `}` e `@`.
+    fn reject_if_glued(&mut self, start: usize) {
         let glued = self
             .tokens
             .kinds
             .last()
             .is_some_and(|&k| k == Ident || k == Number || k.is_keyword());
         if glued {
-            self.error(LexErrorKind::InvalidChar, start);
+            let range = TextRange::new(offset(start), offset(start + 1));
+            self.tokens.errors.push(LexError {
+                kind: LexErrorKind::InvalidChar,
+                range,
+            });
         }
-        kind
+    }
+
+    /// `@ ... @` só numa linha. Sem o par, o compilador dá `comentário inválido` no fim da linha.
+    fn at_comment(&mut self, start: usize) -> SyntaxKind {
+        self.reject_if_glued(start);
+        let rest = &self.bytes[start + 1..];
+        let end = rest
+            .iter()
+            .position(|&b| matches!(b, b'@' | b'\n' | b'\r'))
+            .map_or(self.bytes.len(), |i| start + 1 + i);
+        if self.bytes.get(end) == Some(&b'@') {
+            self.pos = end + 1;
+        } else {
+            self.pos = end;
+            self.error_at(LexErrorKind::UnterminatedAtComment, start, start + 1);
+        }
+        AtComment
+    }
+
+    /// `/* ... */`, atravessando linhas. A busca pelo `*/` começa no `*` de abertura, então `/*/`
+    /// já fecha, como no compilador.
+    fn block_comment(&mut self, start: usize) -> SyntaxKind {
+        let from = start + 1;
+        let end = self.bytes[from..]
+            .windows(2)
+            .position(|w| w == b"*/")
+            .map(|i| from + i + 2);
+        match end {
+            Some(end) => self.pos = end,
+            None => {
+                self.pos = self.bytes.len();
+                self.error_at(LexErrorKind::UnterminatedBlockComment, start, start + 2);
+            }
+        }
+        if self.bytes[start..self.pos]
+            .iter()
+            .any(|&b| matches!(b, b'\n' | b'\r'))
+        {
+            self.no_trailing_space = true;
+        }
+        BlockComment
     }
 
     /// Caractere que começa em `pos`, que tem que ser uma fronteira de caractere.
@@ -321,7 +409,11 @@ impl Lexer<'_> {
 
     /// Registra um erro de `start` até a posição atual.
     fn error(&mut self, kind: LexErrorKind, start: usize) {
-        let range = TextRange::new(offset(start), offset(self.pos));
+        self.error_at(kind, start, self.pos);
+    }
+
+    fn error_at(&mut self, kind: LexErrorKind, start: usize, end: usize) {
+        let range = TextRange::new(offset(start), offset(end));
         self.tokens.errors.push(LexError { kind, range });
     }
 }
@@ -335,7 +427,9 @@ fn offset(pos: usize) -> TextSize {
 mod tests {
     use super::*;
     use crate::SyntaxKind::{EKw, GravarNlEolKw, SeKw, SenaoKw};
-    use LexErrorKind::{InvalidChar, MalformedNumber};
+    use LexErrorKind::{
+        InvalidChar, MalformedNumber, UnterminatedAtComment, UnterminatedBlockComment,
+    };
 
     /// Confere as invariantes que valem para qualquer entrada e devolve os tokens.
     fn lex_ok(text: &str) -> Tokens {
@@ -598,10 +692,111 @@ mod tests {
     }
 
     #[test]
+    fn comentario_com_arroba() {
+        assert_eq!(kinds("@ x @"), [AtComment]);
+        assert_eq!(kinds("@@"), [AtComment]);
+        assert_eq!(kinds("@ x @ y"), [AtComment, Whitespace, Ident]);
+        assert_eq!(kinds("@ /* @ x"), [AtComment, Whitespace, Ident]);
+        assert!(lex_ok("a @ c @").errors().is_empty());
+    }
+
+    #[test]
+    fn arroba_sem_par_vai_ate_o_fim_da_linha() {
+        assert_eq!(kinds("@ sem par\nx"), [AtComment, Newline, Ident]);
+        assert_eq!(kinds("@ sem par\r\nx"), [AtComment, Newline, Ident]);
+        assert_eq!(erros("@ sem par\nx"), [(UnterminatedAtComment, 0, 1)]);
+        assert_eq!(erros("@ no fim"), [(UnterminatedAtComment, 0, 1)]);
+    }
+
+    #[test]
+    fn arroba_colado_em_nome_ou_numero_tem_erro() {
+        assert_eq!(kinds("1@ c @"), [Number, AtComment]);
+        assert_eq!(erros("1@ c @"), [(InvalidChar, 1, 2)]);
+        assert_eq!(
+            erros("a@ c"),
+            [(InvalidChar, 1, 2), (UnterminatedAtComment, 1, 2)]
+        );
+    }
+
+    #[test]
+    fn comentario_de_bloco() {
+        assert_eq!(kinds("/* x */"), [BlockComment]);
+        assert_eq!(kinds("/* @ */"), [BlockComment]);
+        assert_eq!(kinds("/* a\nb */c"), [BlockComment, Ident]);
+        assert_eq!(kinds("/ *"), [Slash, Whitespace, Star]);
+        assert_eq!(kinds("a/* c */b"), [Ident, BlockComment, Ident]);
+    }
+
+    #[test]
+    fn barra_asterisco_barra_ja_fecha() {
+        assert_eq!(kinds("/*/"), [BlockComment]);
+        assert_eq!(kinds("/*/ a"), [BlockComment, Whitespace, Ident]);
+    }
+
+    #[test]
+    fn comentario_de_bloco_sem_fim() {
+        assert_eq!(kinds("/* aberto\nx"), [BlockComment]);
+        assert_eq!(erros("/* aberto\nx"), [(UnterminatedBlockComment, 0, 2)]);
+    }
+
+    #[test]
+    fn operador_junta_com_a_linha_seguinte_depois_de_comentario_de_varias_linhas() {
+        let texto = "/* a\n*/ a +\n+;";
+        let tokens = lex_ok(texto);
+        assert_eq!(
+            tokens.kinds(),
+            [
+                BlockComment,
+                Whitespace,
+                Ident,
+                Whitespace,
+                PlusPlus,
+                Semicolon
+            ]
+        );
+        assert_eq!(tokens.text(4, texto), "+\n+");
+
+        assert_eq!(kinds("/*\r\n*/<\r\n="), [BlockComment, LtEq]);
+        assert_eq!(kinds("/*\n*/ <\n<"), [BlockComment, Whitespace, RelRun]);
+    }
+
+    #[test]
+    fn operador_nao_junta_nos_outros_casos() {
+        // Comentário de uma linha só não tira o espaço do fim.
+        assert_eq!(
+            kinds("/* a */ +\n+"),
+            [BlockComment, Whitespace, Plus, Newline, Plus]
+        );
+        // A quebra seguinte já carrega a linha com o espaço.
+        assert_eq!(
+            kinds("/*\n*/\n+\n+"),
+            [BlockComment, Newline, Plus, Newline, Plus]
+        );
+        // Espaço no começo da linha de baixo.
+        assert_eq!(
+            kinds("/*\n*/ +\n +"),
+            [BlockComment, Whitespace, Plus, Newline, Whitespace, Plus]
+        );
+        // Só junta uma vez, a linha de baixo já tem o espaço.
+        assert_eq!(
+            kinds("/*\n*/ +\n+ +\n+"),
+            [
+                BlockComment,
+                Whitespace,
+                PlusPlus,
+                Whitespace,
+                Plus,
+                Newline,
+                Plus
+            ]
+        );
+    }
+
+    #[test]
     fn combinacoes_de_caracteres_mantem_as_invariantes() {
         let alfabeto = [
             "", " ", "\t", "\r", "\n", "\r\n", "a", "1", "\"", "'", "@", "/", "*", "\\", "é", "😀",
-            "\0", "E", "_", "x'y", "{", "}", "<", "=", "+", ".",
+            "\0", "E", "_", "x'y", "{", "}", "<", "=", "+", ".", "/*", "*/",
         ];
         for a in alfabeto {
             for b in alfabeto {
