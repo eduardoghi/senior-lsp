@@ -231,7 +231,9 @@ mod tests {
 
     #[test]
     fn nomes_que_nao_sao_reservados() {
-        for nome in ["E075PRO", "Endereco", "Achou", "Retorna", "NomeTela", "Inserir_", ""] {
+        for nome in [
+            "E075PRO", "Endereco", "Achou", "Retorna", "NomeTela", "Inserir_", "",
+        ] {
             assert_eq!(SyntaxKind::keyword(nome), None, "{nome}");
         }
     }
