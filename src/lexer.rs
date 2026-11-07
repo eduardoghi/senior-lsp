@@ -13,7 +13,9 @@ use text_size::{TextRange, TextSize};
 use crate::SyntaxKind::{self, ErrorToken, Ident, Newline, Whitespace};
 
 /// Tamanho máximo de um identificador no compilador (`identificador muito extenso`).
-const MAX_IDENT_CHARS: usize = 101;
+///
+/// O compilador aceita 100 caracteres e dá o erro a partir de 101.
+const MAX_IDENT_CHARS: usize = 100;
 
 /// O texto passa de `u32::MAX` bytes, o limite das posições.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +28,7 @@ pub enum LexErrorKind {
     UnterminatedString,
     UnterminatedAtComment,
     UnterminatedBlockComment,
-    /// Identificador com mais de 101 caracteres.
+    /// Identificador com mais de 100 caracteres.
     IdentTooLong,
     /// Literal de caractere vazio ou com mais de um caractere, como `''` ou `'ab'`.
     MalformedChar,
@@ -353,22 +355,22 @@ mod tests {
     }
 
     #[test]
-    fn limite_de_101_caracteres() {
-        assert!(erros(&"a".repeat(101)).is_empty());
+    fn limite_de_100_caracteres() {
+        assert!(erros(&"a".repeat(100)).is_empty());
         assert_eq!(
-            erros(&"a".repeat(102)),
-            [(LexErrorKind::IdentTooLong, 0, 102)]
+            erros(&"a".repeat(101)),
+            [(LexErrorKind::IdentTooLong, 0, 101)]
         );
 
         // O acento conta como um caractere, não como os dois bytes do UTF-8.
-        let com_acento = format!("{}é", "a".repeat(100));
-        assert_eq!(erros(&com_acento), [(LexErrorKind::InvalidChar, 100, 102)]);
+        let com_acento = format!("{}é", "a".repeat(99));
+        assert_eq!(erros(&com_acento), [(LexErrorKind::InvalidChar, 99, 101)]);
 
-        let longo_com_acento = format!("é{}", "a".repeat(101));
+        let longo_com_acento = format!("é{}", "a".repeat(100));
         assert_eq!(
             erros(&longo_com_acento),
             [
-                (LexErrorKind::IdentTooLong, 0, 103),
+                (LexErrorKind::IdentTooLong, 0, 102),
                 (LexErrorKind::InvalidChar, 0, 2)
             ]
         );
