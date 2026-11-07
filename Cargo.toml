@@ -1,0 +1,11 @@
+[package]
+name = "senior-lsp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[dependencies]
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
