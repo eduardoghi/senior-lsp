@@ -1,5 +1,6 @@
 //! Language server para a linguagem de regras (LSP) do ERP Senior.
 
+mod delphi_float;
 mod lexer;
 mod syntax_kind;
 

@@ -10,12 +10,16 @@
 
 use text_size::{TextRange, TextSize};
 
-use crate::SyntaxKind::{self, ErrorToken, Ident, Newline, Whitespace};
+use crate::SyntaxKind::{self, ErrorToken, Ident, Newline, Number, Whitespace};
+use crate::delphi_float;
 
 /// Tamanho máximo de um identificador no compilador (`identificador muito extenso`).
 ///
 /// O compilador aceita 100 caracteres e dá o erro a partir de 101.
 const MAX_IDENT_CHARS: usize = 100;
+
+/// O compilador corta o número em 101 caracteres, contando o ponto, e o resto começa outro token.
+const MAX_NUMBER_CHARS: usize = 101;
 
 /// O texto passa de `u32::MAX` bytes, o limite das posições.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +36,8 @@ pub enum LexErrorKind {
     IdentTooLong,
     /// Literal de caractere vazio ou com mais de um caractere, como `''` ou `'ab'`.
     MalformedChar,
+    /// Número que o compilador recusa (`identificador mal-formado`), como `12abc` ou `1E4933`.
+    MalformedNumber,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +137,7 @@ impl Lexer<'_> {
                 Newline
             }
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.ident(start),
+            b'0'..=b'9' => self.number(start),
             _ => {
                 let ch = self.char_at(start);
                 if ch.is_alphabetic() {
@@ -185,6 +192,47 @@ impl Lexer<'_> {
         SyntaxKind::keyword(&self.text[start..self.pos]).unwrap_or(Ident)
     }
 
+    /// Lê um número. Ele continua com os mesmos caracteres de um identificador, então `12abc` é um
+    /// token só, e o primeiro `.` seguido de dígito vira a parte decimal.
+    fn number(&mut self, start: usize) -> SyntaxKind {
+        let first_error = self.tokens.errors.len();
+        let mut chars = 0;
+        let mut decimal = false;
+        while chars < MAX_NUMBER_CHARS {
+            let Some(&b) = self.bytes.get(self.pos) else {
+                break;
+            };
+            if b == b'.' {
+                let next_is_digit = self.bytes.get(self.pos + 1).is_some_and(u8::is_ascii_digit);
+                if decimal || !next_is_digit {
+                    break;
+                }
+                decimal = true;
+                self.pos += 1;
+            } else if b.is_ascii_alphanumeric() || b == b'_' || b == b'\'' {
+                self.pos += 1;
+            } else if b.is_ascii() {
+                break;
+            } else {
+                let ch = self.char_at(self.pos);
+                if !ch.is_alphabetic() {
+                    break;
+                }
+                let ch_start = self.pos;
+                self.pos += ch.len_utf8();
+                self.error(LexErrorKind::InvalidChar, ch_start);
+            }
+            chars += 1;
+        }
+
+        // Com letra acentuada o compilador já parou no InvalidChar, então não acumula outro erro.
+        let has_accent = self.tokens.errors.len() > first_error;
+        if !has_accent && !delphi_float::accepts(&self.text[start..self.pos]) {
+            self.error(LexErrorKind::MalformedNumber, start);
+        }
+        Number
+    }
+
     /// Caractere que começa em `pos`, que tem que ser uma fronteira de caractere.
     fn char_at(&self, pos: usize) -> char {
         self.text[pos..].chars().next().unwrap_or('\0')
@@ -212,6 +260,7 @@ fn offset(pos: usize) -> TextSize {
 mod tests {
     use super::*;
     use crate::SyntaxKind::{EKw, GravarNlEolKw, SeKw};
+    use LexErrorKind::{InvalidChar, MalformedNumber};
 
     /// Confere as invariantes que valem para qualquer entrada e devolve os tokens.
     fn lex_ok(text: &str) -> Tokens {
@@ -342,7 +391,6 @@ mod tests {
     #[test]
     fn nome_acentuado_vira_um_token_com_erro_em_cada_acento() {
         assert_eq!(kinds("ação"), [Ident]);
-        use LexErrorKind::InvalidChar;
         assert_eq!(erros("ação"), [(InvalidChar, 1, 3), (InvalidChar, 3, 5)]);
         assert_eq!(erros("ção"), [(InvalidChar, 0, 2), (InvalidChar, 2, 4)]);
         assert_eq!(erros("José"), [(InvalidChar, 3, 5)]);
@@ -374,6 +422,54 @@ mod tests {
                 (LexErrorKind::InvalidChar, 0, 2)
             ]
         );
+    }
+
+    #[test]
+    fn numeros_validos() {
+        for n in ["0", "10", "007", "3.14", "1E5", "1.5e3", "1E"] {
+            let tokens = lex_ok(n);
+            assert_eq!(tokens.kinds(), [Number], "{n}");
+            assert!(tokens.errors().is_empty(), "{n}");
+        }
+    }
+
+    #[test]
+    fn numero_continua_com_letras_e_vira_um_token_so() {
+        assert_eq!(kinds("12abc"), [Number]);
+        assert_eq!(erros("12abc"), [(MalformedNumber, 0, 5)]);
+        assert_eq!(erros("1_5"), [(MalformedNumber, 0, 3)]);
+        assert_eq!(erros("12'3"), [(MalformedNumber, 0, 4)]);
+        assert_eq!(erros("1E4933"), [(MalformedNumber, 0, 6)]);
+    }
+
+    #[test]
+    fn ponto_so_entra_no_numero_se_vier_digito_depois() {
+        // Até o passo dos operadores, o ponto e o sinal saem como ErrorToken.
+        assert_eq!(kinds("2."), [Number, ErrorToken]);
+        assert_eq!(kinds("1.5.3"), [Number, ErrorToken, Number]);
+        assert_eq!(kinds("1E-3"), [Number, ErrorToken, Number]);
+        assert_eq!(lex_ok("1.5.3").range(0), TextRange::new(0.into(), 3.into()));
+    }
+
+    #[test]
+    fn numero_cortado_em_101_caracteres() {
+        let inteiro = format!("1{}", "0".repeat(101));
+        let tokens = lex_ok(&inteiro);
+        assert_eq!(tokens.kinds(), [Number, Number]);
+        assert_eq!(tokens.range(0), TextRange::new(0.into(), 101.into()));
+        assert!(tokens.errors().is_empty());
+
+        let decimal = format!("1.{}", "0".repeat(100));
+        assert_eq!(
+            lex_ok(&decimal).range(0),
+            TextRange::new(0.into(), 101.into())
+        );
+    }
+
+    #[test]
+    fn numero_com_acento_so_leva_o_erro_do_acento() {
+        assert_eq!(kinds("1é"), [Number]);
+        assert_eq!(erros("1é"), [(InvalidChar, 1, 3)]);
     }
 
     #[test]
