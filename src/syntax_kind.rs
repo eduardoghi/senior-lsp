@@ -120,6 +120,13 @@ pub enum SyntaxKind {
     BinaryExpr,
     ParenExpr,
     NameRef,
+    PrefixExpr,
+    /// Número, string ou literal de caractere. O token diz qual.
+    Literal,
+    CallExpr,
+    IndexExpr,
+    FieldExpr,
+    ArgList,
 }
 
 use SyntaxKind::*;

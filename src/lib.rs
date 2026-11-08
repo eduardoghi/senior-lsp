@@ -3,6 +3,7 @@
 pub mod cp1252;
 mod delphi_float;
 mod lexer;
+mod parser;
 mod scan;
 mod syntax_kind;
 mod tree;
