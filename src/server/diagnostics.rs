@@ -33,7 +33,7 @@ pub(crate) fn diagnostics(
     let errors = lex
         .chain(parse)
         .map(|(range, described)| (range, described, DiagnosticSeverity::ERROR));
-    let checks = validate(tree, symbols).into_iter().map(|c| {
+    let checks = validate(tree, symbols, text).into_iter().map(|c| {
         let severity = if c.kind.is_error() {
             DiagnosticSeverity::ERROR
         } else {
@@ -137,9 +137,7 @@ fn describe_parse(kind: ParseErrorKind) -> Option<(&'static str, String)> {
 }
 
 fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, String) {
-    let function = check
-        .function
-        .map_or("", |name| &text[tree.text_range(name)]);
+    let name = check.name.map_or("", |name| &text[tree.text_range(name)]);
     match check.kind {
         CheckKind::MinusTakesOneToken => (
             "SEN040",
@@ -159,7 +157,7 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
         CheckKind::CodeAfterFunctionBlock => (
             "SEN061",
             format!(
-                "Este comando faz parte da função {function}. O corpo de uma função vai até a \
+                "Este comando faz parte da função {name}. O corpo de uma função vai até a \
                  próxima funcao ou o fim do arquivo, não só até o fim do bloco."
             ),
         ),
@@ -169,10 +167,67 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
              da função dele, e aqui o valor lido é lixo."
                 .to_owned(),
         ),
+        CheckKind::NonAlfaMessageText => (
+            "SEN042",
+            "O texto do Mensagem tem que ser alfa, e esta variável não é \
+             (Cláusula \"Mensagem\", falta \"mensagem\")."
+                .to_owned(),
+        ),
+        CheckKind::AlfaAndNumber => (
+            "SEN043",
+            "Atribuição alfa só aceita string, apóstrofo ou variável alfa ligados por +, sem \
+             parênteses (tipos incompatíveis: ALFA e NUMERO)."
+                .to_owned(),
+        ),
+        CheckKind::AlfaOperator => (
+            "SEN044",
+            "Atribuição alfa só aceita + entre os valores (falta \";\").".to_owned(),
+        ),
+        CheckKind::NumberAndAlfa => (
+            "SEN045",
+            "Valor alfa onde se espera número (tipos incompatíveis: NUMERO e ALFA).".to_owned(),
+        ),
+        CheckKind::TwoStringLiterals => (
+            "SEN046",
+            "Não dá para comparar duas strings entre si (não podem ser 2 constantes literais)."
+                .to_owned(),
+        ),
+        CheckKind::AlfaArgument => (
+            "SEN047",
+            format!("Valor alfa para o parâmetro {name}, que é numérico (são incompatíveis)."),
+        ),
+        CheckKind::NumberArgument => (
+            "SEN050",
+            format!("Valor numérico para o parâmetro {name}, que é alfa (são incompatíveis)."),
+        ),
+        CheckKind::AlfaOperatorInComparison => (
+            "SEN051",
+            "Numa comparação, alfa não aceita + nem outro operador (Variáveis alfanuméricas ou \
+             operadores não compatíveis)."
+                .to_owned(),
+        ),
+        CheckKind::LowercaseChar => (
+            "SEN064",
+            "O compilador lê o apóstrofo em maiúscula, então esta letra vale como maiúscula, \
+             na comparação e na concatenação."
+                .to_owned(),
+        ),
+        CheckKind::TooManyArguments => (
+            "SEN048",
+            "Mais valores do que parâmetros na chamada (Muitos parâmetros na chamada da \
+             função)."
+                .to_owned(),
+        ),
+        CheckKind::TooFewArguments => (
+            "SEN049",
+            "Menos valores do que parâmetros na chamada (Faltam parâmetros na chamada da \
+             função)."
+                .to_owned(),
+        ),
         CheckKind::FunctionInsideBlock => (
             "SEN062",
             format!(
-                "A função {function} começa com um bloco de antes dela ainda aberto. O compilador \
+                "A função {name} começa com um bloco de antes dela ainda aberto. O compilador \
                  conta os blocos no arquivo todo, e o próximo fim de bloco fecha aquele."
             ),
         ),

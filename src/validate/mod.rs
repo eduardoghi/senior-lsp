@@ -7,7 +7,9 @@
 use text_size::TextRange;
 
 use crate::SyntaxKind::{self, *};
-use crate::symbols::Symbols;
+use crate::symbols::{DefKind, Symbols, VarType};
+
+mod types;
 use crate::{Element, NodeId, Tree};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +26,26 @@ pub enum CheckKind {
     FunctionInsideBlock,
     /// Parâmetro usado fora da sua função. Compila, mas na execução o valor é lixo.
     ForeignParameter,
+    /// Variável numérica ou data no texto do `Mensagem`, que só aceita alfa.
+    NonAlfaMessageText,
+    /// Número, parênteses ou variável numérica no lado direito de atribuição alfa.
+    AlfaAndNumber,
+    /// Operador que não é `+` no lado direito de atribuição alfa.
+    AlfaOperator,
+    /// Alfa numa conta numérica ou comparado com número.
+    NumberAndAlfa,
+    /// Duas strings comparadas entre si.
+    TwoStringLiterals,
+    /// Alfa num parâmetro numérico.
+    AlfaArgument,
+    /// Número num parâmetro alfa.
+    NumberArgument,
+    /// `+` entre alfas dentro de uma comparação.
+    AlfaOperatorInComparison,
+    /// `'a'` com letra minúscula, que o compilador lê em maiúscula.
+    LowercaseChar,
+    TooManyArguments,
+    TooFewArguments,
 }
 
 impl CheckKind {
@@ -31,7 +53,18 @@ impl CheckKind {
     pub fn is_error(self) -> bool {
         matches!(
             self,
-            CheckKind::MinusTakesOneToken | CheckKind::ComparisonInAssignment
+            CheckKind::MinusTakesOneToken
+                | CheckKind::ComparisonInAssignment
+                | CheckKind::NonAlfaMessageText
+                | CheckKind::AlfaAndNumber
+                | CheckKind::AlfaOperator
+                | CheckKind::NumberAndAlfa
+                | CheckKind::TwoStringLiterals
+                | CheckKind::AlfaArgument
+                | CheckKind::NumberArgument
+                | CheckKind::AlfaOperatorInComparison
+                | CheckKind::TooManyArguments
+                | CheckKind::TooFewArguments
         )
     }
 }
@@ -40,17 +73,20 @@ impl CheckKind {
 pub struct Check {
     pub kind: CheckKind,
     pub range: TextRange,
-    /// Nome da função, nas verificações de função.
-    pub function: Option<NodeId>,
+    /// Nome citado na mensagem, como a função ou o parâmetro.
+    pub name: Option<NodeId>,
 }
 
-pub fn validate(tree: &Tree, symbols: &Symbols) -> Vec<Check> {
+pub fn validate(tree: &Tree, symbols: &Symbols, text: &str) -> Vec<Check> {
     let mut checks = Vec::new();
     let mut stack = vec![tree.root()];
     while let Some(node) = stack.pop() {
+        types::check(tree, symbols, node, &mut checks);
         match tree.kind(node) {
             BinaryExpr => binary(tree, node, &mut checks),
             Assign => assignment(tree, node, &mut checks),
+            CallExpr => message_text(tree, symbols, node, &mut checks),
+            Literal => lowercase_char(tree, text, node, &mut checks),
             FuncImpl => function(tree, node, &mut checks),
             _ => {}
         }
@@ -67,7 +103,7 @@ pub fn validate(tree: &Tree, symbols: &Symbols) -> Vec<Check> {
             .map(|r| Check {
                 kind: CheckKind::ForeignParameter,
                 range: r.range,
-                function: None,
+                name: None,
             }),
     );
     checks.sort_by_key(|c| c.range.start());
@@ -88,14 +124,14 @@ fn binary(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
             checks.push(Check {
                 kind: CheckKind::MinusTakesOneToken,
                 range: tree.text_range(operand),
-                function: None,
+                name: None,
             });
         }
     } else if matches!(op, EKw | OuKw) {
         checks.push(Check {
             kind: CheckKind::LogicalMinus,
             range: tree.text_range(rhs),
-            function: None,
+            name: None,
         });
     }
 }
@@ -118,7 +154,60 @@ fn assignment(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
         checks.push(Check {
             kind: CheckKind::ComparisonInAssignment,
             range: tree.tokens().range(op),
-            function: None,
+            name: None,
+        });
+    }
+}
+
+/// O compilador põe o texto dos tokens em maiúsculas, inclusive o do apóstrofo, então `'a'` vale
+/// 65, o código do `A`. Só letras sem acento mudam.
+fn lowercase_char(tree: &Tree, text: &str, node: NodeId, checks: &mut Vec<Check>) {
+    let range = tree.text_range(node);
+    let token = tree.token_range(node).start;
+    if tree.tokens().kind(token) == Char && text[range].bytes().any(|b| b.is_ascii_lowercase()) {
+        checks.push(Check {
+            kind: CheckKind::LowercaseChar,
+            range,
+            name: None,
+        });
+    }
+}
+
+fn message_text(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check>) {
+    let mut children = tree.children(node);
+    let (Some(callee), Some(args)) = (children.next(), children.next()) else {
+        return;
+    };
+    if tree.tokens().kind(tree.token_range(callee).start) != MensagemKw {
+        return;
+    }
+    let Some(text) = tree
+        .children(args)
+        .nth(1)
+        .filter(|&t| tree.kind(t) == NameRef)
+    else {
+        return;
+    };
+    let range = tree.text_range(text);
+    let Some(reference) = symbols.reference_at(range) else {
+        return;
+    };
+    let numeric = |kind| {
+        matches!(
+            kind,
+            DefKind::Variable(Some(VarType::Numero | VarType::Data))
+                | DefKind::Parameter(Some(VarType::Numero | VarType::Data))
+        )
+    };
+    if reference
+        .targets
+        .iter()
+        .all(|&t| numeric(symbols.definitions[t].kind))
+    {
+        checks.push(Check {
+            kind: CheckKind::NonAlfaMessageText,
+            range,
+            name: None,
         });
     }
 }
@@ -134,7 +223,7 @@ fn function(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
             checks.push(Check {
                 kind: CheckKind::FunctionInsideBlock,
                 range: tree.text_range(name),
-                function: Some(name),
+                name: Some(name),
             });
             break;
         }
@@ -158,13 +247,13 @@ fn function(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
         checks.push(Check {
             kind: CheckKind::CodeAfterFunctionBlock,
             range: tree.text_range(after),
-            function: Some(name),
+            name: Some(name),
         });
     }
 }
 
 /// Primeiro token entre os filhos que não é trivia, que numa expressão é o operador.
-fn operator_token(tree: &Tree, node: NodeId) -> Option<usize> {
+pub(super) fn operator_token(tree: &Tree, node: NodeId) -> Option<usize> {
     tree.elements(node).find_map(|e| match e {
         Element::Token(t) if !tree.tokens().kind(t).is_trivia() => Some(t),
         _ => None,
@@ -180,10 +269,10 @@ mod tests {
     use super::*;
     use CheckKind::*;
 
-    fn checks(text: &str) -> Vec<(CheckKind, &str)> {
+    pub(super) fn checks(text: &str) -> Vec<(CheckKind, &str)> {
         let tree = crate::parse(text).unwrap();
         assert!(tree.errors().is_empty(), "{text}");
-        validate(&tree, &Symbols::build(&tree, text))
+        validate(&tree, &Symbols::build(&tree, text), text)
             .into_iter()
             .map(|c| (c.kind, &text[c.range]))
             .collect()
@@ -234,6 +323,32 @@ mod tests {
         let text = "definir funcao a(); definir funcao b();\n\
                     funcao a(); { x = 1;\nfuncao b(); { y = 2; }\n}";
         assert_eq!(checks(text), [(FunctionInsideBlock, "b")]);
+    }
+
+    #[test]
+    fn variavel_numerica_ou_data_no_mensagem() {
+        let text = "definir data d; definir alfa a;\n\
+                    Mensagem(Retorna, d); Mensagem(Retorna, a);";
+        assert_eq!(checks(text), [(NonAlfaMessageText, "d")]);
+        let text = "definir numero n; definir alfa a;\n\
+                    Mensagem(Retorna, n); Mensagem(Retorna, a); x = Mensagem(Erro, n);";
+        assert_eq!(
+            checks(text),
+            [(NonAlfaMessageText, "n"), (NonAlfaMessageText, "n")]
+        );
+        // Parâmetro numérico também, e nome sem definir fica sem aviso.
+        let text = "definir funcao f(numero p);\nfuncao f(numero p); { Mensagem(Erro, p); }";
+        assert_eq!(checks(text), [(NonAlfaMessageText, "p")]);
+        assert!(checks("Mensagem(Erro, aSemDefinir);").is_empty());
+    }
+
+    #[test]
+    fn apostrofo_minusculo() {
+        assert_eq!(
+            checks("se (aTxt = 'a') { aTxt = \"x\" + 'c'; }"),
+            [(LowercaseChar, "'a'"), (LowercaseChar, "'c'")]
+        );
+        assert!(checks("x = 'A'; x = '1'; x = 'é'; x = ''';").is_empty());
     }
 
     #[test]

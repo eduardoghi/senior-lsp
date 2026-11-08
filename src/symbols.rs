@@ -232,6 +232,14 @@ impl Symbols {
             .map(|i| i as u32)
     }
 
+    /// Referência que cobre exatamente `range`. As referências estão em ordem de texto.
+    pub fn reference_at(&self, range: TextRange) -> Option<&Reference> {
+        let i = self
+            .references
+            .partition_point(|r| r.range.start() < range.start());
+        self.references.get(i).filter(|r| r.range == range)
+    }
+
     /// Definição cujo nome contém `offset`, ou referência que contém `offset`, com as definições
     /// que ela alcança. Uma definição alcança a si mesma.
     pub fn at(&self, offset: TextSize) -> Option<Vec<usize>> {

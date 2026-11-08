@@ -1,0 +1,360 @@
+//! Erros de tipo entre alfa e número, pela tabela de símbolos.
+//!
+//! O tipo de um nome sai do `definir` dele. Nome sem `definir`, como as funções e variáveis do
+//! ERP, tem tipo desconhecido e nunca gera erro. Data conta como número. Dentro da função, um
+//! parâmetro alfa, com ou sem `end`, também se comporta como número, e só na chamada ele é alfa.
+//! O apóstrofo (`'c'`) vale como alfa na atribuição alfa e é o código do caractere numa conta,
+//! então fica de fora.
+//!
+//! Só entram os casos conferidos no compilador. Na atribuição alfa o lado direito é uma lista de
+//! operandos alfa ligados por `+`, e número, parênteses ou outro operador dão erro. Na atribuição
+//! numérica, string ou variável alfa numa conta com `+ - * / e ou` dão erro, mas entre parênteses
+//! ou depois de um `-` compilam (e valem 0). Comparação de alfa com número, `+` de alfa numa
+//! comparação, duas strings comparadas e chamada de função com parâmetro de tipo ou número errado
+//! também dão erro.
+
+use crate::SyntaxKind::*;
+use crate::symbols::{DefKind, Symbols, VarType};
+use crate::{NodeId, Tree};
+
+use super::{Check, CheckKind, operator_token};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ty {
+    Alfa,
+    Num,
+    Unknown,
+}
+
+pub(super) fn check(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check>) {
+    match tree.kind(node) {
+        Assign => {
+            let mut children = tree.children(node);
+            let (Some(lhs), Some(rhs)) = (children.next(), children.next()) else {
+                return;
+            };
+            if tree.kind(lhs) != NameRef {
+                return;
+            }
+            match name_type(tree, symbols, lhs) {
+                Ty::Alfa => alfa_rhs(tree, symbols, rhs, checks),
+                Ty::Num => numeric_rhs(tree, symbols, rhs, checks),
+                Ty::Unknown => false,
+            };
+        }
+        BinaryExpr if is_relational(tree, node) => {
+            let mut children = tree.children(node);
+            let (Some(l), Some(r)) = (children.next(), children.next()) else {
+                return;
+            };
+            let types = (leaf_type(tree, symbols, l), leaf_type(tree, symbols, r));
+            if is_string(tree, l) && is_string(tree, r) {
+                push(tree, checks, CheckKind::TwoStringLiterals, r, None);
+            } else if matches!(types, (Ty::Alfa, Ty::Num) | (Ty::Num, Ty::Alfa)) {
+                push(tree, checks, CheckKind::NumberAndAlfa, r, None);
+            } else if let Some(op) =
+                concatenation(tree, symbols, l).or_else(|| concatenation(tree, symbols, r))
+            {
+                checks.push(Check {
+                    kind: CheckKind::AlfaOperatorInComparison,
+                    range: tree.tokens().range(op),
+                    name: None,
+                });
+            }
+        }
+        CallExpr => call(tree, symbols, node, checks),
+        _ => {}
+    }
+}
+
+/// Lado direito de atribuição alfa. Para no primeiro erro, como o compilador.
+fn alfa_rhs(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check>) -> bool {
+    let mut push = |kind, range| {
+        checks.push(Check {
+            kind,
+            range,
+            name: None,
+        });
+        true
+    };
+    match tree.kind(node) {
+        BinaryExpr => {
+            let mut children = tree.children(node);
+            let (Some(l), Some(r)) = (children.next(), children.next()) else {
+                return false;
+            };
+            if alfa_rhs(tree, symbols, l, checks) {
+                return true;
+            }
+            let Some(op) = operator_token(tree, node) else {
+                return false;
+            };
+            if tree.tokens().kind(op) == Plus {
+                return alfa_rhs(tree, symbols, r, checks);
+            }
+            checks.push(Check {
+                kind: CheckKind::AlfaOperator,
+                range: tree.tokens().range(op),
+                name: None,
+            });
+            true
+        }
+        ParenExpr => {
+            let first = tree.token_range(node).start;
+            push(CheckKind::AlfaAndNumber, tree.tokens().range(first))
+        }
+        Literal | NameRef if leaf_type(tree, symbols, node) == Ty::Num => {
+            push(CheckKind::AlfaAndNumber, tree.text_range(node))
+        }
+        _ => false,
+    }
+}
+
+/// Lado direito de atribuição numérica, descendo só pelas contas com `+ - * /`.
+fn numeric_rhs(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check>) -> bool {
+    match tree.kind(node) {
+        BinaryExpr => {
+            let arithmetic = operator_token(tree, node).is_some_and(|op| {
+                matches!(
+                    tree.tokens().kind(op),
+                    Plus | Minus | Star | Slash | EKw | OuKw
+                )
+            });
+            arithmetic
+                && tree
+                    .children(node)
+                    .any(|c| numeric_rhs(tree, symbols, c, checks))
+        }
+        Literal | NameRef if leaf_type(tree, symbols, node) == Ty::Alfa => {
+            push(tree, checks, CheckKind::NumberAndAlfa, node, None);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Chamada de função do arquivo, contra os parâmetros do `definir funcao`, ou da `funcao` se
+/// não houver `definir funcao`.
+fn call(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check>) {
+    let mut children = tree.children(node);
+    let (Some(callee), Some(args)) = (children.next(), children.next()) else {
+        return;
+    };
+    if tree.kind(callee) != NameRef {
+        return;
+    }
+    let Some(reference) = symbols.reference_at(tree.text_range(callee)) else {
+        return;
+    };
+    let defs = || reference.targets.iter().map(|&t| &symbols.definitions[t]);
+    if !defs().all(|d| d.kind == DefKind::Function) {
+        return;
+    }
+    let def = defs()
+        .find(|d| tree.kind(d.node) == FuncDecl)
+        .or_else(|| defs().next());
+    let Some(list) = def.and_then(|d| tree.children(d.node).find(|&c| tree.kind(c) == ParamList))
+    else {
+        return;
+    };
+    let params: Vec<NodeId> = tree.children(list).collect();
+    let args: Vec<NodeId> = tree.children(args).collect();
+    if args.len() > params.len() {
+        push(tree, checks, CheckKind::TooManyArguments, callee, None);
+        return;
+    }
+    if args.len() < params.len() {
+        push(tree, checks, CheckKind::TooFewArguments, callee, None);
+        return;
+    }
+    for (&arg, &param) in args.iter().zip(&params) {
+        let expected = symbols.definitions.iter().find_map(|d| match d.kind {
+            DefKind::Parameter(Some(t)) if d.node == param => Some(t),
+            _ => None,
+        });
+        let kind = match (expected, leaf_type(tree, symbols, arg)) {
+            (Some(VarType::Numero | VarType::Data), Ty::Alfa) => CheckKind::AlfaArgument,
+            (Some(VarType::Alfa), Ty::Num) => CheckKind::NumberArgument,
+            _ => continue,
+        };
+        let name = tree.children(param).find(|&c| tree.kind(c) == Name);
+        push(tree, checks, kind, arg, name);
+        return;
+    }
+}
+
+/// `+` entre dois operandos alfa, que não vale dentro de comparação.
+fn concatenation(tree: &Tree, symbols: &Symbols, node: NodeId) -> Option<usize> {
+    if tree.kind(node) != BinaryExpr {
+        return None;
+    }
+    let op = operator_token(tree, node).filter(|&op| tree.tokens().kind(op) == Plus)?;
+    tree.children(node)
+        .all(|c| leaf_type(tree, symbols, c) == Ty::Alfa)
+        .then_some(op)
+}
+
+fn push(tree: &Tree, checks: &mut Vec<Check>, kind: CheckKind, node: NodeId, name: Option<NodeId>) {
+    checks.push(Check {
+        kind,
+        range: tree.text_range(node),
+        name,
+    });
+}
+
+/// Tipo de uma string, número ou nome, sem olhar expressões.
+fn leaf_type(tree: &Tree, symbols: &Symbols, node: NodeId) -> Ty {
+    match tree.kind(node) {
+        Literal => match tree.tokens().kind(tree.token_range(node).start) {
+            String => Ty::Alfa,
+            Number => Ty::Num,
+            _ => Ty::Unknown,
+        },
+        NameRef => name_type(tree, symbols, node),
+        _ => Ty::Unknown,
+    }
+}
+
+/// Tipo de um nome, quando todas as definições que ele alcança concordam.
+fn name_type(tree: &Tree, symbols: &Symbols, node: NodeId) -> Ty {
+    let Some(reference) = symbols.reference_at(tree.text_range(node)) else {
+        return Ty::Unknown;
+    };
+    let mut ty = Ty::Unknown;
+    for &t in &reference.targets {
+        let this = match symbols.definitions[t].kind {
+            DefKind::Variable(Some(VarType::Alfa)) => Ty::Alfa,
+            DefKind::Variable(Some(_)) | DefKind::Parameter(Some(_)) => Ty::Num,
+            _ => return Ty::Unknown,
+        };
+        if ty != Ty::Unknown && ty != this {
+            return Ty::Unknown;
+        }
+        ty = this;
+    }
+    ty
+}
+
+fn is_string(tree: &Tree, node: NodeId) -> bool {
+    tree.kind(node) == Literal && tree.tokens().kind(tree.token_range(node).start) == String
+}
+
+fn is_relational(tree: &Tree, node: NodeId) -> bool {
+    operator_token(tree, node).is_some_and(|op| {
+        matches!(
+            tree.tokens().kind(op),
+            Eq | Lt | Gt | LtEq | GtEq | Neq | RelRun
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::validate::CheckKind::{self, *};
+
+    fn checks(text: &str) -> Vec<(CheckKind, &str)> {
+        super::super::tests::checks(text)
+    }
+
+    const DEFS: &str = "definir alfa aTxt; definir alfa aB; definir numero n; definir data d;\n";
+
+    fn com_defs(text: &str) -> std::string::String {
+        format!("{DEFS}{text}")
+    }
+
+    #[test]
+    fn atribuicao_alfa() {
+        let ok = com_defs("aTxt = \"x\" + aB + 'C'; aTxt = aB; aTxt = aSemDefinir + \"x\";");
+        assert!(checks(&ok).is_empty());
+        let casos = [
+            ("aTxt = \"x\" + n;", AlfaAndNumber, "n"),
+            ("aTxt = n;", AlfaAndNumber, "n"),
+            ("aTxt = 5;", AlfaAndNumber, "5"),
+            ("aTxt = d;", AlfaAndNumber, "d"),
+            ("aTxt = (\"a\" + aB);", AlfaAndNumber, "("),
+            ("aTxt = aB - \"x\";", AlfaOperator, "-"),
+        ];
+        for (text, kind, onde) in casos {
+            let text = com_defs(text);
+            assert_eq!(checks(&text), [(kind, onde)], "{text}");
+        }
+    }
+
+    #[test]
+    fn atribuicao_numerica() {
+        assert!(
+            checks(&com_defs(
+                "n = d; n = 1 + n * 2; n = (aTxt = aB); n = (aTxt); n = -aTxt;"
+            ))
+            .is_empty()
+        );
+        let casos = [
+            ("n = aTxt;", "aTxt"),
+            ("n = 1 + aTxt;", "aTxt"),
+            ("n = \"5\";", "\"5\""),
+            ("n = 1 e aTxt;", "aTxt"),
+            ("n = 1 ou aTxt;", "aTxt"),
+        ];
+        for (text, onde) in casos {
+            let text = com_defs(text);
+            assert_eq!(checks(&text), [(NumberAndAlfa, onde)], "{text}");
+        }
+    }
+
+    #[test]
+    fn comparacoes() {
+        assert!(checks(&com_defs("se (aTxt = aB) { n = 1; }")).is_empty());
+        let casos = [
+            ("se (aTxt = 1) { n = 1; }", "1"),
+            ("se (1 = aTxt) { n = 1; }", "aTxt"),
+            ("se (n = aTxt) { n = 1; }", "aTxt"),
+            ("se (aTxt = d) { n = 1; }", "d"),
+        ];
+        for (text, onde) in casos {
+            let text = com_defs(text);
+            assert_eq!(checks(&text), [(NumberAndAlfa, onde)], "{text}");
+        }
+        assert!(
+            checks(&com_defs(
+                "se (\"a\" = aTxt) { n = 1; } se (aTxt = 'A') { n = 1; }"
+            ))
+            .is_empty()
+        );
+        assert_eq!(
+            checks(&com_defs("se (aTxt + \"x\" = aB) { n = 1; }")),
+            [(AlfaOperatorInComparison, "+")]
+        );
+        assert_eq!(
+            checks(&com_defs("se (\"a\" = \"b\") { n = 1; }")),
+            [(TwoStringLiterals, "\"b\"")]
+        );
+    }
+
+    #[test]
+    fn chamada_de_funcao() {
+        let base = "definir alfa aTxt; definir funcao f(numero p);\n";
+        let tail = "\nfuncao f(numero p); { }";
+        let caso = |chamada: &str| format!("{base}{chamada}{tail}");
+        assert!(checks(&caso("f(1); f(aSemDefinir);")).is_empty());
+        assert_eq!(checks(&caso("f(\"a\");")), [(AlfaArgument, "\"a\"")]);
+        assert_eq!(checks(&caso("f(aTxt);")), [(AlfaArgument, "aTxt")]);
+        assert_eq!(checks(&caso("f(1, 2);")), [(TooManyArguments, "f")]);
+        assert_eq!(checks(&caso("f();")), [(TooFewArguments, "f")]);
+    }
+
+    #[test]
+    fn parametro_alfa() {
+        let text = "definir alfa aB; definir numero n; definir funcao g(alfa end pa);\n\
+                    g(5); g(n); g(aB);\n\
+                    funcao g(alfa end pa); { aB = pa; se (pa = \"a\") { n = 1; } n = pa; }";
+        assert_eq!(
+            checks(text),
+            [
+                (NumberArgument, "5"),
+                (NumberArgument, "n"),
+                (AlfaAndNumber, "pa"),
+                (NumberAndAlfa, "\"a\""),
+            ]
+        );
+    }
+}
