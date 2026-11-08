@@ -17,6 +17,7 @@ O servidor oferece:
 - a lista de variáveis e funções do arquivo
 - completar nomes num editor, com as variáveis e funções do arquivo, as do ERP e as palavras da
   linguagem
+- renomear num editor, trocando só o símbolo certo, nos outros arquivos do formulário SGI inclusive
 
 A exportação guarda o código de cada regra num arquivo `Rule.txt` ou `rule.txt`, e o servidor
 analisa só esses arquivos. A pasta diz onde a regra roda, e isso muda as funções do ERP que ela pode

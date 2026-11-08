@@ -16,8 +16,8 @@ use lsp_types::notification::{
     Notification as LspNotification, PublishDiagnostics,
 };
 use lsp_types::request::{
-    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, References,
-    Request as LspRequest,
+    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, PrepareRenameRequest,
+    References, Rename, Request as LspRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -49,6 +49,10 @@ pub fn run(connection: Connection) -> Result<()> {
             hover_provider: Some(HoverProviderCapability::Simple(true)),
             document_symbol_provider: Some(OneOf::Left(true)),
             completion_provider: Some(lsp_types::CompletionOptions::default()),
+            rename_provider: Some(OneOf::Right(lsp_types::RenameOptions {
+                prepare_provider: Some(true),
+                work_done_progress_options: Default::default(),
+            })),
             ..ServerCapabilities::default()
         },
         server_info: Some(ServerInfo {
@@ -132,6 +136,35 @@ impl Server<'_> {
                         c.completion(at.position),
                     ))
                 })
+            }
+            PrepareRenameRequest::METHOD => {
+                let params: lsp_types::TextDocumentPositionParams =
+                    serde_json::from_value(request.params)?;
+                self.with(&params.text_document.uri, |c| {
+                    let range = c.prepare_rename(params.position);
+                    serde_json::to_value(range.map(lsp_types::PrepareRenameResponse::Range))
+                })
+            }
+            Rename::METHOD => {
+                let params: lsp_types::RenameParams = serde_json::from_value(request.params)?;
+                let at = params.text_document_position;
+                let mut failure = None;
+                let result = self.with(&at.text_document.uri, |c| {
+                    match c.rename(at.position, &params.new_name) {
+                        Ok(edit) => serde_json::to_value(edit),
+                        Err(message) => {
+                            failure = Some(message);
+                            Ok(serde_json::Value::Null)
+                        }
+                    }
+                });
+                if let Some(message) = failure {
+                    let code = ErrorCode::InvalidParams as i32;
+                    let response = Response::new_err(id, code, message);
+                    self.connection.sender.send(response.into())?;
+                    return Ok(());
+                }
+                result
             }
             DocumentSymbolRequest::METHOD => {
                 let params: DocumentSymbolParams = serde_json::from_value(request.params)?;

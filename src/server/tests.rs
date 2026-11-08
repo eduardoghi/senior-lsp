@@ -10,7 +10,7 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest, Initialize,
-    References, Request as _, Shutdown,
+    PrepareRenameRequest, References, Rename, Request as _, Shutdown,
 };
 use lsp_types::{
     ClientCapabilities, GeneralClientCapabilities, InitializeResult, PositionEncodingKind,
@@ -416,6 +416,17 @@ fn variavel_e_referencias_entre_regras_do_formulario_sgi() {
         .collect();
     assert_eq!(files, ["F1", "F1", "A1", "A2"]);
 
+    // Renomear a partir da ação troca na raiz e nas duas ações.
+    let params = json!({ "textDocument": { "uri": a1_uri },
+                         "position": { "line": 0, "character": 2 }, "newName": "aCliente" });
+    let r = editor.request(Rename::METHOD, params);
+    let changes = r.response_result.unwrap()["changes"]
+        .as_object()
+        .unwrap()
+        .clone();
+    assert_eq!(changes.len(), 3);
+    assert_eq!(changes[root_uri.as_str()].as_array().unwrap().len(), 2);
+
     // Da raiz vêm os usos nela e nas duas ações.
     editor.open(&root_uri, 1, "definir alfa aNome;\naNome = \"x\";");
     editor.diagnostics();
@@ -463,5 +474,57 @@ fn completar_nomes() {
     // Nada dentro de comentário nem depois de ponto.
     assert!(complete(6, 4).is_empty());
     assert!(complete(7, 6).is_empty());
+    editor.stop();
+}
+
+#[test]
+fn renomear() {
+    let text = "definir numero x;\n\
+                definir funcao f(numero x);\n\
+                X = 1; Mensagem(Erro, \"x\"); @ x @\n\
+                IntParaAlfa(x, a);\n\
+                funcao f(numero x); { x = 2; }";
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let rename = |editor: &mut Editor, line: u32, character: u32, name: &str| {
+        let params = json!({ "textDocument": { "uri": RULE },
+                             "position": { "line": line, "character": character },
+                             "newName": name });
+        editor.request(Rename::METHOD, params)
+    };
+    // A global `x` muda na definição e nos dois usos, com caixa diferente inclusive. O parâmetro,
+    // a string e o comentário ficam.
+    let r = rename(&mut editor, 0, 15, "nTotal");
+    let edit = r.response_result.unwrap();
+    let edits = edit["changes"][RULE].as_array().unwrap();
+    let mut places: Vec<_> = edits
+        .iter()
+        .map(|e| {
+            (
+                e["range"]["start"]["line"].as_u64().unwrap(),
+                e["range"]["start"]["character"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    places.sort();
+    assert_eq!(places, [(0, 15), (2, 0), (3, 12)]);
+    assert!(edits.iter().all(|e| e["newText"] == "nTotal"));
+
+    // O parâmetro muda só dentro da função dele e no `definir funcao`.
+    let r = rename(&mut editor, 4, 23, "p");
+    let edit = r.response_result.unwrap();
+    assert_eq!(edit["changes"][RULE].as_array().unwrap().len(), 3);
+
+    // Recusas.
+    for name in ["1x", "se", "f"] {
+        let r = rename(&mut editor, 0, 15, name);
+        assert!(r.response_result.is_err(), "{name}");
+    }
+    // Função do ERP não se renomeia.
+    let params =
+        json!({ "textDocument": { "uri": RULE }, "position": { "line": 3, "character": 2 } });
+    let r = editor.request(PrepareRenameRequest::METHOD, params);
+    assert!(r.response_result.unwrap().is_null());
     editor.stop();
 }

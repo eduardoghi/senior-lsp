@@ -2,7 +2,7 @@
 
 use lsp_types::{
     CompletionItem, CompletionItemKind, DocumentSymbol, Hover, HoverContents, Location,
-    MarkupContent, MarkupKind, Position, Range, SymbolKind, Uri,
+    MarkupContent, MarkupKind, Position, Range, SymbolKind, TextEdit, Uri, WorkspaceEdit,
 };
 use text_size::{TextRange, TextSize};
 
@@ -215,6 +215,81 @@ impl Context<'_> {
             }),
             range: Some(self.range(range)),
         })
+    }
+
+    /// Trecho do nome que pode ser renomeado na posição. `None` quando ali não há nome definido
+    /// no arquivo nem numa regra acima no formulário, como uma função do ERP.
+    pub(crate) fn prepare_rename(&self, position: Position) -> Option<Range> {
+        let offset = self.offset(position);
+        let symbols = &self.doc.symbols;
+        let local = symbols
+            .references
+            .iter()
+            .map(|r| r.range)
+            .chain(symbols.definitions.iter().map(|d| d.name))
+            .find(|r| r.contains_inclusive(offset));
+        match local {
+            Some(range) => Some(self.range(range)),
+            None => self
+                .inherited_at(offset)
+                .map(|(range, _)| self.range(range)),
+        }
+    }
+
+    /// Troca o nome na posição por `new_name` em todos os lugares que o "achar referências"
+    /// encontra, nos arquivos do formulário SGI inclusive. Recusa nome que não é identificador,
+    /// palavra reservada e nome que já existe no arquivo.
+    // O `WorkspaceEdit` do protocolo guarda as trocas num mapa com `Uri` como chave, e o `Uri` do
+    // lsp-types tem um cache interno que o clippy vê como chave mutável.
+    #[allow(clippy::mutable_key_type)]
+    pub(crate) fn rename(
+        &self,
+        position: Position,
+        new_name: &str,
+    ) -> Result<Option<WorkspaceEdit>, std::string::String> {
+        let valid = new_name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && new_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && new_name.len() <= 100;
+        if !valid {
+            return Err(format!(
+                "\"{new_name}\" não é um nome válido. Use letras, dígitos e _, começando por letra \
+                 ou _, com até 100 caracteres."
+            ));
+        }
+        if SyntaxKind::keyword(new_name).is_some() {
+            return Err(format!("\"{new_name}\" é palavra reservada da linguagem."));
+        }
+        let Some(range) = self.prepare_rename(position) else {
+            return Ok(None);
+        };
+        let text = &self.doc.text;
+        let start = self.offset(range.start);
+        let end = self.offset(range.end);
+        let old = &text[usize::from(start)..usize::from(end)];
+        let taken = self
+            .doc
+            .symbols
+            .definitions
+            .iter()
+            .any(|d| text[d.name].eq_ignore_ascii_case(new_name));
+        if taken && !old.eq_ignore_ascii_case(new_name) {
+            return Err(format!("Já existe \"{new_name}\" definido neste arquivo."));
+        }
+        let mut changes: std::collections::HashMap<Uri, Vec<TextEdit>> =
+            std::collections::HashMap::new();
+        for location in self.references(position, true) {
+            let edit = TextEdit::new(location.range, new_name.to_owned());
+            changes.entry(location.uri).or_default().push(edit);
+        }
+        Ok(Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..WorkspaceEdit::default()
+        }))
     }
 
     /// Nomes que cabem na posição, filtrados pelo começo já digitado, sem diferença de caixa.
