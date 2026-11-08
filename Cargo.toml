@@ -3,6 +3,7 @@ name = "senior-lsp"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.86"
+license = "MIT"
 
 [lib]
 # O harness padrão do libtest não entende as opções do criterion, como --save-baseline.
