@@ -533,7 +533,7 @@ impl<'a> Parser<'a> {
                 // Nome sozinho, como `a;` ou `lbl :`. O compilador lê como começo de atribuição.
                 self.error(ParseErrorKind::Expected(Eq));
                 if terminated {
-                    self.recover_statement();
+                    self.recover_after_progress();
                 }
             }
         }
@@ -586,8 +586,20 @@ impl<'a> Parser<'a> {
     /// Pula até um ponto seguro dentro de um `ErrorNode`. O `;` que encerra o trecho entra no
     /// nó. Fim de bloco, `senao` e palavras que só começam comando ficam para quem está em volta.
     fn recover_statement(&mut self) {
+        self.recover(true);
+    }
+
+    /// Recuperação depois de um trecho que já consumiu tokens. Um comando que começa logo em
+    /// seguida, como a `funcao` depois de uma linha incompleta, fica para ele.
+    fn recover_after_progress(&mut self) {
+        self.recover(false);
+    }
+
+    /// Com `force`, consome ao menos um token, para o parser avançar mesmo parado num token que
+    /// começa comando.
+    fn recover(&mut self, force: bool) {
         self.b.start_node(ErrorNode);
-        let mut first = true;
+        let mut first = force;
         loop {
             let kind = self.current();
             if kind == Eof || (!first && (starts_statement(kind) || is_block_end(kind))) {
@@ -1395,6 +1407,15 @@ mod tests {
         }
         // As outras chamadas continuam aceitando expressão.
         assert!(erros_regra("f(\"a\" + aTxt, 1 * 2); x = f(\"a\" + aTxt);").is_empty());
+    }
+
+    #[test]
+    fn linha_incompleta_nao_engole_o_comando_seguinte() {
+        assert_eq!(
+            regra("nT\nfuncao f(); { x = 1; }"),
+            "nT (ErrorNode) (FuncImpl f (ParamList) (Block (Assign x 1)))"
+        );
+        assert_eq!(erros_regra("nT\nse (a = 1) { }"), [Expected(Eq)]);
     }
 
     #[test]
