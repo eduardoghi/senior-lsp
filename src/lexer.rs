@@ -523,7 +523,14 @@ impl Lexer<'_> {
                         Some(_) => self.pos += self.char_at(self.pos).len_utf8(),
                     }
                 }
-                _ => self.pos += self.char_at(self.pos).len_utf8(),
+                // Pula direto até o próximo byte que importa. Os bytes de um caractere
+                // acentuado em UTF-8 nunca são iguais a esses, então não precisa decodificar.
+                _ => {
+                    self.pos += self.bytes[self.pos..]
+                        .iter()
+                        .position(|&b| matches!(b, b'"' | b'\\' | b'\n' | b'\r'))
+                        .unwrap_or(self.bytes.len() - self.pos);
+                }
             }
         }
     }
