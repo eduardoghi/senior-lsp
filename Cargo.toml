@@ -2,10 +2,22 @@
 name = "senior-lsp"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.86"
+
+[lib]
+# O harness padrão do libtest não entende as opções do criterion, como --save-baseline.
+bench = false
 
 [dependencies]
 text-size = "1.1.1"
+
+[dev-dependencies]
+# Sem plotters e rayon, que só servem para gráficos e para paralelizar a análise.
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "lexer"
+harness = false
 
 [profile.release]
 lto = "fat"
