@@ -6,9 +6,12 @@
 //! nenhum aparece nas regras que compilam. Um tipo novo sem essa conferência começa desligado em
 //! [`describe_parse`].
 
+use std::collections::HashSet;
+
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 use text_size::TextRange;
 
+use crate::builtins::Context;
 use crate::line_index::{ColumnEncoding, LineIndex};
 use crate::symbols::Symbols;
 use crate::validate::{Check, CheckKind, validate};
@@ -18,6 +21,8 @@ pub(crate) fn diagnostics(
     text: &str,
     tree: &Tree,
     symbols: &Symbols,
+    context: Context,
+    inherited: &HashSet<String>,
     index: &LineIndex,
     encoding: ColumnEncoding,
 ) -> Vec<Diagnostic> {
@@ -33,14 +38,16 @@ pub(crate) fn diagnostics(
     let errors = lex
         .chain(parse)
         .map(|(range, described)| (range, described, DiagnosticSeverity::ERROR));
-    let checks = validate(tree, symbols, text).into_iter().map(|c| {
-        let severity = if c.kind.is_error() {
-            DiagnosticSeverity::ERROR
-        } else {
-            DiagnosticSeverity::WARNING
-        };
-        (c.range, describe_check(&c, tree, text), severity)
-    });
+    let checks = validate(tree, symbols, text, context, inherited)
+        .into_iter()
+        .map(|c| {
+            let severity = if c.kind.is_error() {
+                DiagnosticSeverity::ERROR
+            } else {
+                DiagnosticSeverity::WARNING
+            };
+            (c.range, describe_check(&c, tree, text), severity)
+        });
     errors
         .chain(checks)
         .map(|(range, (code, message), severity)| Diagnostic {
@@ -137,7 +144,11 @@ fn describe_parse(kind: ParseErrorKind) -> Option<(&'static str, String)> {
 }
 
 fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, String) {
-    let name = check.name.map_or("", |name| &text[tree.text_range(name)]);
+    let name = match (check.name, check.label) {
+        (Some(node), _) => &text[tree.text_range(node)],
+        (None, Some(label)) => label,
+        (None, None) => "",
+    };
     match check.kind {
         CheckKind::MinusTakesOneToken => (
             "SEN040",
@@ -206,6 +217,19 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
              operadores não compatíveis)."
                 .to_owned(),
         ),
+        CheckKind::ConstantInEndParameter => (
+            "SEN053",
+            format!(
+                "O parâmetro {name} é end e devolve um valor, então precisa de uma variável (não \
+                 pode ser constante)."
+            ),
+        ),
+        CheckKind::UnknownFunction => (
+            "SEN052",
+            "Não há função com esse nome no ERP nem definir funcao no arquivo. O compilador lê o \
+             nome como variável (falta \"=\")."
+                .to_owned(),
+        ),
         CheckKind::LowercaseChar => (
             "SEN064",
             "O compilador lê o apóstrofo em maiúscula, então esta letra vale como maiúscula, \
@@ -262,6 +286,8 @@ mod tests {
             text,
             &tree,
             &Symbols::build(&tree, text),
+            Context::Rule,
+            &HashSet::new(),
             &LineIndex::new(text),
             encoding,
         )
@@ -318,6 +344,8 @@ mod tests {
             text,
             &tree,
             &Symbols::build(&tree, text),
+            Context::Rule,
+            &HashSet::new(),
             &LineIndex::new(text),
             ColumnEncoding::Utf16,
         );
@@ -350,6 +378,8 @@ mod tests {
             text,
             &tree,
             &Symbols::build(&tree, text),
+            Context::Rule,
+            &HashSet::new(),
             &LineIndex::new(text),
             ColumnEncoding::Utf16,
         );

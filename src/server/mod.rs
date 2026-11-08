@@ -209,6 +209,8 @@ impl Server<'_> {
             &doc.text,
             &doc.tree,
             &doc.symbols,
+            doc.context,
+            &doc.inherited,
             &doc.index,
             self.encoding,
         );

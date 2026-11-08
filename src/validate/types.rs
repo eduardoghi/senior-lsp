@@ -14,6 +14,7 @@
 //! também dão erro.
 
 use crate::SyntaxKind::*;
+use crate::builtins::{self, Context};
 use crate::symbols::{DefKind, Symbols, VarType};
 use crate::{NodeId, Tree};
 
@@ -26,7 +27,14 @@ enum Ty {
     Unknown,
 }
 
-pub(super) fn check(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check>) {
+pub(super) fn check(
+    tree: &Tree,
+    symbols: &Symbols,
+    text: &str,
+    context: Context,
+    node: NodeId,
+    checks: &mut Vec<Check>,
+) {
     match tree.kind(node) {
         Assign => {
             let mut children = tree.children(node);
@@ -59,10 +67,11 @@ pub(super) fn check(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut V
                     kind: CheckKind::AlfaOperatorInComparison,
                     range: tree.tokens().range(op),
                     name: None,
+                    label: None,
                 });
             }
         }
-        CallExpr => call(tree, symbols, node, checks),
+        CallExpr => call(tree, symbols, text, context, node, checks),
         _ => {}
     }
 }
@@ -74,6 +83,7 @@ fn alfa_rhs(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check
             kind,
             range,
             name: None,
+            label: None,
         });
         true
     };
@@ -96,6 +106,7 @@ fn alfa_rhs(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check
                 kind: CheckKind::AlfaOperator,
                 range: tree.tokens().range(op),
                 name: None,
+                label: None,
             });
             true
         }
@@ -135,7 +146,14 @@ fn numeric_rhs(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Ch
 
 /// Chamada de função do arquivo, contra os parâmetros do `definir funcao`, ou da `funcao` se
 /// não houver `definir funcao`.
-fn call(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check>) {
+fn call(
+    tree: &Tree,
+    symbols: &Symbols,
+    text: &str,
+    context: Context,
+    node: NodeId,
+    checks: &mut Vec<Check>,
+) {
     let mut children = tree.children(node);
     let (Some(callee), Some(args)) = (children.next(), children.next()) else {
         return;
@@ -144,6 +162,9 @@ fn call(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check>) {
         return;
     }
     let Some(reference) = symbols.reference_at(tree.text_range(callee)) else {
+        if let Some(builtin) = builtins::lookup(&text[tree.text_range(callee)], context) {
+            builtin_call(tree, symbols, builtin, callee, args, checks);
+        }
         return;
     };
     let defs = || reference.targets.iter().map(|&t| &symbols.definitions[t]);
@@ -194,11 +215,49 @@ fn concatenation(tree: &Tree, symbols: &Symbols, node: NodeId) -> Option<usize> 
         .then_some(op)
 }
 
+/// Chamada de função do ERP, contra a declaração que o compilador registra.
+fn builtin_call(
+    tree: &Tree,
+    symbols: &Symbols,
+    builtin: &'static builtins::Builtin,
+    callee: NodeId,
+    args: NodeId,
+    checks: &mut Vec<Check>,
+) {
+    let args: Vec<NodeId> = tree.children(args).collect();
+    if args.len() != builtin.params.len() {
+        let kind = if args.len() > builtin.params.len() {
+            CheckKind::TooManyArguments
+        } else {
+            CheckKind::TooFewArguments
+        };
+        push(tree, checks, kind, callee, None);
+        return;
+    }
+    for (&arg, param) in args.iter().zip(&builtin.params) {
+        let kind = match (param.ty, leaf_type(tree, symbols, arg)) {
+            (VarType::Numero | VarType::Data, Ty::Alfa) => CheckKind::AlfaArgument,
+            (VarType::Alfa, Ty::Num) => CheckKind::NumberArgument,
+            // O parâmetro `end` devolve o valor, então o compilador exige uma variável.
+            _ if param.by_ref && tree.kind(arg) == Literal => CheckKind::ConstantInEndParameter,
+            _ => continue,
+        };
+        checks.push(Check {
+            kind,
+            range: tree.text_range(arg),
+            name: None,
+            label: Some(param.name.as_str()),
+        });
+        return;
+    }
+}
+
 fn push(tree: &Tree, checks: &mut Vec<Check>, kind: CheckKind, node: NodeId, name: Option<NodeId>) {
     checks.push(Check {
         kind,
         range: tree.text_range(node),
         name,
+        label: None,
     });
 }
 
@@ -340,6 +399,12 @@ mod tests {
         assert_eq!(checks(&caso("f(aTxt);")), [(AlfaArgument, "aTxt")]);
         assert_eq!(checks(&caso("f(1, 2);")), [(TooManyArguments, "f")]);
         assert_eq!(checks(&caso("f();")), [(TooFewArguments, "f")]);
+    }
+
+    #[test]
+    fn constante_no_parametro_end_de_funcao_do_erp() {
+        let text = "definir alfa a;\nAgluCtbContas(1, a); AgluCtbContas(1, \"x\");";
+        assert_eq!(checks(text), [(ConstantInEndParameter, "\"x\"")]);
     }
 
     #[test]

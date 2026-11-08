@@ -4,9 +4,12 @@
 //! dependem de onde uma construção aparece e os avisos de código que compila mas faz outra coisa
 //! do que parece. Cada verificação foi conferida no compilador.
 
+use std::collections::HashSet;
+
 use text_size::TextRange;
 
 use crate::SyntaxKind::{self, *};
+use crate::builtins::{self, Context};
 use crate::symbols::{DefKind, Symbols, VarType};
 
 mod types;
@@ -40,10 +43,15 @@ pub enum CheckKind {
     AlfaArgument,
     /// Número num parâmetro alfa.
     NumberArgument,
+    /// Constante num parâmetro `end` de função do ERP, que só aceita variável.
+    ConstantInEndParameter,
     /// `+` entre alfas dentro de uma comparação.
     AlfaOperatorInComparison,
     /// `'a'` com letra minúscula, que o compilador lê em maiúscula.
     LowercaseChar,
+    /// Chamada a um nome que não é função do arquivo nem do ERP. O compilador lê o nome como
+    /// variável e espera uma atribuição.
+    UnknownFunction,
     TooManyArguments,
     TooFewArguments,
 }
@@ -62,9 +70,11 @@ impl CheckKind {
                 | CheckKind::TwoStringLiterals
                 | CheckKind::AlfaArgument
                 | CheckKind::NumberArgument
+                | CheckKind::ConstantInEndParameter
                 | CheckKind::AlfaOperatorInComparison
                 | CheckKind::TooManyArguments
                 | CheckKind::TooFewArguments
+                | CheckKind::UnknownFunction
         )
     }
 }
@@ -75,17 +85,30 @@ pub struct Check {
     pub range: TextRange,
     /// Nome citado na mensagem, como a função ou o parâmetro.
     pub name: Option<NodeId>,
+    /// Nome citado que não está no arquivo, como o parâmetro de uma função do ERP.
+    pub label: Option<&'static str>,
 }
 
-pub fn validate(tree: &Tree, symbols: &Symbols, text: &str) -> Vec<Check> {
+/// `inherited` são os nomes de função, em maiúsculas, definidos em outras regras que valem
+/// para esta, como a regra da raiz de um formulário SGI.
+pub fn validate(
+    tree: &Tree,
+    symbols: &Symbols,
+    text: &str,
+    context: Context,
+    inherited: &HashSet<std::string::String>,
+) -> Vec<Check> {
     let mut checks = Vec::new();
     let mut stack = vec![tree.root()];
     while let Some(node) = stack.pop() {
-        types::check(tree, symbols, node, &mut checks);
+        types::check(tree, symbols, text, context, node, &mut checks);
         match tree.kind(node) {
             BinaryExpr => binary(tree, node, &mut checks),
             Assign => assignment(tree, node, &mut checks),
             CallExpr => message_text(tree, symbols, node, &mut checks),
+            CallStmt => {
+                unknown_function(tree, symbols, text, context, inherited, node, &mut checks)
+            }
             Literal => lowercase_char(tree, text, node, &mut checks),
             FuncImpl => function(tree, node, &mut checks),
             _ => {}
@@ -104,6 +127,7 @@ pub fn validate(tree: &Tree, symbols: &Symbols, text: &str) -> Vec<Check> {
                 kind: CheckKind::ForeignParameter,
                 range: r.range,
                 name: None,
+                label: None,
             }),
     );
     checks.sort_by_key(|c| c.range.start());
@@ -125,6 +149,7 @@ fn binary(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
                 kind: CheckKind::MinusTakesOneToken,
                 range: tree.text_range(operand),
                 name: None,
+                label: None,
             });
         }
     } else if matches!(op, EKw | OuKw) {
@@ -132,6 +157,7 @@ fn binary(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
             kind: CheckKind::LogicalMinus,
             range: tree.text_range(rhs),
             name: None,
+            label: None,
         });
     }
 }
@@ -155,6 +181,7 @@ fn assignment(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
             kind: CheckKind::ComparisonInAssignment,
             range: tree.tokens().range(op),
             name: None,
+            label: None,
         });
     }
 }
@@ -169,6 +196,51 @@ fn lowercase_char(tree: &Tree, text: &str, node: NodeId, checks: &mut Vec<Check>
             kind: CheckKind::LowercaseChar,
             range,
             name: None,
+            label: None,
+        });
+    }
+}
+
+/// `Nome(...);` como comando, com um nome sem `definir funcao` e fora das funções do ERP. Em
+/// web service fica de fora, porque não se sabe se o compilador de lá acrescenta funções.
+fn unknown_function(
+    tree: &Tree,
+    symbols: &Symbols,
+    text: &str,
+    context: Context,
+    inherited: &HashSet<std::string::String>,
+    node: NodeId,
+    checks: &mut Vec<Check>,
+) {
+    if context == Context::WebService {
+        return;
+    }
+    let Some(call) = tree
+        .children(node)
+        .next()
+        .filter(|&c| tree.kind(c) == CallExpr)
+    else {
+        return;
+    };
+    let Some(callee) = tree
+        .children(call)
+        .next()
+        .filter(|&c| tree.kind(c) == NameRef)
+    else {
+        return;
+    };
+    let range = tree.text_range(callee);
+    let is_ident = tree.tokens().kind(tree.token_range(callee).start) == Ident;
+    if is_ident
+        && symbols.reference_at(range).is_none()
+        && builtins::lookup(&text[range], context).is_none()
+        && !inherited.contains(&text[range].to_uppercase())
+    {
+        checks.push(Check {
+            kind: CheckKind::UnknownFunction,
+            range,
+            name: None,
+            label: None,
         });
     }
 }
@@ -208,6 +280,7 @@ fn message_text(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<C
             kind: CheckKind::NonAlfaMessageText,
             range,
             name: None,
+            label: None,
         });
     }
 }
@@ -224,6 +297,7 @@ fn function(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
                 kind: CheckKind::FunctionInsideBlock,
                 range: tree.text_range(name),
                 name: Some(name),
+                label: None,
             });
             break;
         }
@@ -248,6 +322,7 @@ fn function(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
             kind: CheckKind::CodeAfterFunctionBlock,
             range: tree.text_range(after),
             name: Some(name),
+            label: None,
         });
     }
 }
@@ -272,10 +347,16 @@ mod tests {
     pub(super) fn checks(text: &str) -> Vec<(CheckKind, &str)> {
         let tree = crate::parse(text).unwrap();
         assert!(tree.errors().is_empty(), "{text}");
-        validate(&tree, &Symbols::build(&tree, text), text)
-            .into_iter()
-            .map(|c| (c.kind, &text[c.range]))
-            .collect()
+        validate(
+            &tree,
+            &Symbols::build(&tree, text),
+            text,
+            Context::Rule,
+            &HashSet::new(),
+        )
+        .into_iter()
+        .map(|c| (c.kind, &text[c.range]))
+        .collect()
     }
 
     #[test]
@@ -297,7 +378,10 @@ mod tests {
         );
         assert_eq!(checks("x = a = b;"), [(ComparisonInAssignment, "=")]);
         assert_eq!(checks("x = a + 1 <> b;"), [(ComparisonInAssignment, "<>")]);
-        assert!(checks("x = (a > 0); se (a > 1) { f(a > 1); } x++;").is_empty());
+        assert!(
+            checks("definir funcao f(numero p);\nx = (a > 0); se (a > 1) { f(a > 1); } x++;")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -340,6 +424,50 @@ mod tests {
         let text = "definir funcao f(numero p);\nfuncao f(numero p); { Mensagem(Erro, p); }";
         assert_eq!(checks(text), [(NonAlfaMessageText, "p")]);
         assert!(checks("Mensagem(Erro, aSemDefinir);").is_empty());
+    }
+
+    #[test]
+    fn funcoes_do_erp() {
+        let text = "definir alfa a; definir numero n;\n\
+                    IntParaAlfa(n, a);\n\
+                    IntParaAlfa(n);\n\
+                    IntParaAlfa(a, a);\n\
+                    IntParaAlfaa(n, a);";
+        assert_eq!(
+            checks(text),
+            [
+                (TooFewArguments, "IntParaAlfa"),
+                (AlfaArgument, "a"),
+                (UnknownFunction, "IntParaAlfaa"),
+            ]
+        );
+    }
+
+    #[test]
+    fn funcao_desconhecida_por_contexto() {
+        let run = |text: &str, context, inherited: &[&str]| -> Vec<CheckKind> {
+            let tree = crate::parse(text).unwrap();
+            let inherited = inherited.iter().map(|s| s.to_uppercase()).collect();
+            validate(
+                &tree,
+                &Symbols::build(&tree, text),
+                text,
+                context,
+                &inherited,
+            )
+            .into_iter()
+            .map(|c| c.kind)
+            .collect()
+        };
+        let sgi = "AbrirTelaSGI(\"T\");";
+        assert_eq!(run(sgi, Context::Rule, &[]), [UnknownFunction]);
+        assert!(run(sgi, Context::Sgi, &[]).is_empty());
+        // Função da raiz do formulário SGI e web service ficam sem erro.
+        assert!(run("CallWs();", Context::Sgi, &["CallWs"]).is_empty());
+        assert!(run("Qualquer(1);", Context::WebService, &[]).is_empty());
+        // Função definida no arquivo, método de cursor e Mensagem não são nome desconhecido.
+        let text = "definir funcao f(); definir cursor c;\nf(); c.AbrirCursor(); Mensagem(Erro, \"x\");\nfuncao f(); { }";
+        assert!(run(text, Context::Rule, &[]).is_empty());
     }
 
     #[test]

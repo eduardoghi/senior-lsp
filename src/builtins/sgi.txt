@@ -1,0 +1,8 @@
+Funcao AtualizarTabela (Alfa NomeTabela);
+Funcao FecharFormularioSGI();
+Funcao AtribuirFocoComponenteSGI(Alfa NomeComponente);
+Funcao AdicionaValorComboSGI(Alfa Chave, Alfa Valor, Alfa End Valor);
+Funcao LimparValorCampoSGI(Alfa NomeComponente);
+Funcao InserirValoresSGI();
+Funcao AbrirTelaSGI(Alfa TelaNome);
+Funcao AbrirTelaSGICarregandoChave(Alfa TelaNome, Alfa ParametrosChave, Alfa NomeComponente);

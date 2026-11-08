@@ -1,7 +1,9 @@
 //! Language server para a linguagem de regras (LSP) do ERP Senior.
 
+pub mod builtins;
 pub mod cp1252;
 mod delphi_float;
+pub mod form;
 mod lexer;
 pub mod line_index;
 mod parser;

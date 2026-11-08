@@ -269,6 +269,19 @@ fn definicao_referencias_hover_e_simbolos() {
         "{value}"
     );
 
+    // Função do ERP mostra a declaração que o compilador usa.
+    editor.change(RULE, 2, "definir alfa a;\nIntParaAlfa(1, a);");
+    editor.diagnostics();
+    let r = editor.request(HoverRequest::METHOD, at(1, 3));
+    let hover = r.response_result.unwrap();
+    let value = hover["contents"]["value"].as_str().unwrap();
+    assert!(
+        value.contains("Funcao IntParaAlfa(Numero Origem, Alfa end Retorno);"),
+        "{value}"
+    );
+    editor.change(RULE, 3, text);
+    editor.diagnostics();
+
     // Hover fora de nome é `null`.
     let r = editor.request(HoverRequest::METHOD, at(2, 7));
     assert!(r.response_result.unwrap().is_null());

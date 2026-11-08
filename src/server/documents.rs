@@ -4,10 +4,11 @@
 //! ainda não foi salvo também é analisado. A análise é refeita a cada mudança e fica guardada
 //! para os pedidos do editor, como ir para a definição.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use lsp_types::Uri;
 
+use crate::builtins::Context;
 use crate::line_index::LineIndex;
 use crate::symbols::Symbols;
 use crate::{TextTooLarge, Tree};
@@ -18,6 +19,9 @@ pub(crate) struct Document {
     pub(crate) tree: Tree,
     pub(crate) symbols: Symbols,
     pub(crate) index: LineIndex,
+    pub(crate) context: Context,
+    /// Funções definidas nas regras acima desta no formulário SGI, em maiúsculas.
+    pub(crate) inherited: HashSet<String>,
 }
 
 #[derive(Default)]
@@ -30,12 +34,20 @@ impl Documents {
         let tree = crate::parse(&text)?;
         let symbols = Symbols::build(&tree, &text);
         let index = LineIndex::new(&text);
+        let context = Context::from_uri(uri.as_str());
+        // As regras de cima são lidas do disco a cada mudança. Um formulário tem poucas.
+        let inherited = match (context, crate::form::path_from_uri(uri.as_str())) {
+            (Context::Sgi, Some(path)) => crate::form::inherited_functions(&path),
+            _ => HashSet::new(),
+        };
         let doc = Document {
             text,
             version,
             tree,
             symbols,
             index,
+            context,
+            inherited,
         };
         self.open.insert(uri, doc);
         Ok(())

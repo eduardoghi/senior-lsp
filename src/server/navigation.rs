@@ -7,6 +7,7 @@ use lsp_types::{
 use text_size::{TextRange, TextSize};
 
 use super::documents::Document;
+use crate::builtins;
 use crate::line_index::{ColumnEncoding, LineCol};
 use crate::symbols::{DefKind, VarType};
 use crate::{NodeId, SyntaxKind};
@@ -88,7 +89,9 @@ impl Context<'_> {
     pub(crate) fn hover(&self, position: Position) -> Option<Hover> {
         let offset = self.offset(position);
         let symbols = &self.doc.symbols;
-        let targets = symbols.at(offset)?;
+        let Some(targets) = symbols.at(offset) else {
+            return self.builtin_hover(offset);
+        };
         let range = symbols
             .references
             .iter()
@@ -120,6 +123,21 @@ impl Context<'_> {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
                 value,
+            }),
+            range: Some(self.range(range)),
+        })
+    }
+
+    /// Hover de uma chamada a função do ERP, como `IntParaAlfa`.
+    fn builtin_hover(&self, offset: TextSize) -> Option<Hover> {
+        let tree = &self.doc.tree;
+        let callee = callee_at(tree, offset)?;
+        let range = tree.text_range(callee);
+        let builtin = builtins::lookup(&self.doc.text[range], self.doc.context)?;
+        Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!("```lsp\n{}\n```\nFunção do ERP", builtin.decl),
             }),
             range: Some(self.range(range)),
         })
@@ -181,6 +199,22 @@ impl Context<'_> {
             }
         }
         top
+    }
+}
+
+/// Nome chamado (`NameRef` que é o primeiro filho de um `CallExpr`) que contém `offset`.
+fn callee_at(tree: &crate::Tree, offset: TextSize) -> Option<NodeId> {
+    let mut node = tree.root();
+    loop {
+        let child = tree
+            .children(node)
+            .find(|&c| tree.text_range(c).contains_inclusive(offset))?;
+        if tree.kind(child) == SyntaxKind::NameRef {
+            let call = tree.parent(child)?;
+            let first = tree.children(call).next() == Some(child);
+            return (tree.kind(call) == SyntaxKind::CallExpr && first).then_some(child);
+        }
+        node = child;
     }
 }
 

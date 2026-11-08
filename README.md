@@ -11,12 +11,19 @@ O servidor oferece:
 - avisos de código que compila mas faz outra coisa do que parece
 - ir para a definição e achar as referências de variáveis, funções, parâmetros e rótulos
 - hover com a linha do `definir`
+- as funções que o ERP já traz, como `IntParaAlfa`, com a declaração no hover e a conferência dos
+  parâmetros na chamada
 - a lista de variáveis e funções do arquivo
 
 Só arquivos chamados `Rule.txt`, sem diferenciar maiúsculas, são analisados. Os nomes seguem as
 regras do compilador. Eles não diferenciam caixa, e um `definir` vale no arquivo inteiro,
-inclusive antes dele e dentro de funções. Funções e variáveis que o próprio ERP fornece, como `IntParaAlfa`,
-não têm `definir` e ficam sem definição e sem verificação de tipo.
+inclusive antes dele e dentro de funções.
+
+As funções do ERP dependem de onde a regra roda, e o servidor decide pela pasta da exportação do
+gerenciador de artefatos. Uma regra de tela SGI, na pasta `Formulários SGI`, ganha as funções de
+tela e as que a regra da raiz do formulário define. Numa regra de web service, na pasta
+`Web Services`, nome de função desconhecido não é acusado. Variáveis que o ERP fornece não têm
+`definir` e ficam sem verificação de tipo.
 
 ## Compilar
 
@@ -89,6 +96,8 @@ Cada diagnóstico tem um código fixo.
 | SEN049 | erro | parâmetros a menos na chamada |
 | SEN050 | erro | número em parâmetro alfa |
 | SEN051 | erro | `+` entre alfas dentro de uma comparação |
+| SEN052 | erro | chamada a uma função que não existe no ERP nem no arquivo |
+| SEN053 | erro | constante num parâmetro `end` de função do ERP |
 | SEN060 | aviso | `e` ou `ou` seguido de `-`, que não grava o valor da atribuição |
 | SEN061 | aviso | comando depois do bloco de uma função, que ainda faz parte dela |
 | SEN062 | aviso | `funcao` com um bloco de outra função ainda aberto |
