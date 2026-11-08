@@ -7,7 +7,11 @@ use lsp_types::{
 use text_size::{TextRange, TextSize};
 
 use super::documents::Document;
+use std::fs;
+use std::path::Path;
+
 use crate::builtins;
+use crate::form::InheritedDef;
 use crate::line_index::{ColumnEncoding, LineCol};
 use crate::symbols::{DefKind, VarType};
 use crate::{NodeId, SyntaxKind};
@@ -54,16 +58,67 @@ impl Context<'_> {
             .collect()
     }
 
-    /// Lugar de uma função chamada aqui e definida em outra regra do formulário SGI.
+    /// Lugar de uma função ou variável usada aqui e definida em outra regra do formulário SGI.
     fn inherited_definition(&self, offset: TextSize) -> Option<Location> {
-        let callee = callee_at(&self.doc.tree, offset)?;
-        let name = &self.doc.text[self.doc.tree.text_range(callee)];
-        let function = self.doc.inherited.get(name)?;
-        let uri = crate::form::uri_from_path(&function.path).parse().ok()?;
-        Some(Location::new(
-            uri,
-            self.range_in(&function.text, function.name),
-        ))
+        let (_, def) = self.inherited_at(offset)?;
+        self.location_in(&def.path, &def.text, def.name)
+    }
+
+    /// Nome na posição que vem de uma regra acima no formulário, com o trecho dele aqui.
+    fn inherited_at(&self, offset: TextSize) -> Option<(TextRange, &InheritedDef)> {
+        let (node, is_callee) = name_at(&self.doc.tree, offset)?;
+        let range = self.doc.tree.text_range(node);
+        let name = &self.doc.text[range];
+        let def = if is_callee {
+            self.doc.inherited.get(name)
+        } else {
+            self.doc.inherited.variable(name)
+        }?;
+        Some((range, def))
+    }
+
+    fn location_in(&self, path: &Path, text: &str, range: TextRange) -> Option<Location> {
+        let uri = crate::form::uri_from_path(path).parse().ok()?;
+        Some(Location::new(uri, self.range_in(text, range)))
+    }
+
+    /// Usos de `name` nas regras abaixo de `rule` no formulário que não o definem de novo. A
+    /// regra aberta no editor usa o texto do editor, e as outras são lidas do disco.
+    fn uses_below(&self, rule: &Path, name: &str) -> Vec<Location> {
+        let current = crate::form::path_from_uri(self.uri.as_str());
+        let mut out = Vec::new();
+        for path in crate::form::descendant_rules(rule) {
+            if current.as_deref() == Some(path.as_path()) {
+                let ranges = crate::form::uses(&self.doc.text, name, false);
+                out.extend(ranges.into_iter().map(|r| self.location(r)));
+                continue;
+            }
+            let Some(text) = fs::read(&path).ok().and_then(|b| crate::cp1252::decode(&b)) else {
+                continue;
+            };
+            for r in crate::form::uses(&text, name, false) {
+                out.extend(self.location_in(&path, &text, r));
+            }
+        }
+        out
+    }
+
+    /// Referências de um nome usado aqui e definido numa regra acima. Inclui a definição, os usos
+    /// na regra dela e os usos nas regras abaixo dela, esta inclusive.
+    fn inherited_references(&self, offset: TextSize, include_declaration: bool) -> Vec<Location> {
+        let Some((range, def)) = self.inherited_at(offset) else {
+            return Vec::new();
+        };
+        let name = &self.doc.text[range];
+        let mut out = Vec::new();
+        if include_declaration {
+            out.extend(self.location_in(&def.path, &def.text, def.name));
+        }
+        for r in crate::form::uses(&def.text, name, true) {
+            out.extend(self.location_in(&def.path, &def.text, r));
+        }
+        out.extend(self.uses_below(&def.path, name));
+        out
     }
 
     /// Trecho de outro texto em linha e coluna, na codificação negociada.
@@ -83,9 +138,10 @@ impl Context<'_> {
         position: Position,
         include_declaration: bool,
     ) -> Vec<Location> {
+        let offset = self.offset(position);
         let symbols = &self.doc.symbols;
-        let Some(mut targets) = symbols.at(self.offset(position)) else {
-            return Vec::new();
+        let Some(mut targets) = symbols.at(offset) else {
+            return self.inherited_references(offset, include_declaration);
         };
         // Do `definir funcao` chega na `funcao` pelos usos, que alcançam as duas.
         for r in &symbols.references {
@@ -107,7 +163,16 @@ impl Context<'_> {
             ranges.extend(targets.iter().map(|&t| symbols.definitions[t].name));
         }
         ranges.sort_by_key(|r| r.start());
-        ranges.into_iter().map(|r| self.location(r)).collect()
+        let mut out: Vec<Location> = ranges.into_iter().map(|r| self.location(r)).collect();
+        // Função ou variável deste arquivo num formulário SGI também é usada nas regras abaixo.
+        let first = &symbols.definitions[targets[0]];
+        let global = !matches!(first.kind, DefKind::Parameter(_) | DefKind::Label);
+        if global && self.doc.context == builtins::Context::Sgi {
+            if let Some(path) = crate::form::path_from_uri(self.uri.as_str()) {
+                out.extend(self.uses_below(&path, &self.doc.text[first.name]));
+            }
+        }
+        out
     }
 
     pub(crate) fn hover(&self, position: Position) -> Option<Hover> {
@@ -152,23 +217,30 @@ impl Context<'_> {
         })
     }
 
-    /// Hover de uma chamada a função do ERP, como `IntParaAlfa`, ou a função de outra regra do
-    /// formulário SGI.
+    /// Hover de uma chamada a função do ERP, como `IntParaAlfa`, ou de uma função ou variável de
+    /// outra regra do formulário SGI.
     fn builtin_hover(&self, offset: TextSize) -> Option<Hover> {
         let tree = &self.doc.tree;
-        let callee = callee_at(tree, offset)?;
-        let range = tree.text_range(callee);
-        let name = &self.doc.text[range];
-        let value = if let Some(builtin) = builtins::lookup(name, self.doc.context) {
-            format!("```lsp\n{}\n```\nFunção do ERP", builtin.decl)
-        } else {
-            let function = self.doc.inherited.get(name)?;
-            let line = self.range_in(&function.text, function.name).start.line + 1;
-            format!(
-                "```lsp\n{}\n```\nFunção definida em {}, linha {line}",
-                function.decl,
-                function.path.display()
+        let builtin = callee_at(tree, offset).and_then(|callee| {
+            let range = tree.text_range(callee);
+            let found = builtins::lookup(&self.doc.text[range], self.doc.context)?;
+            Some((range, found))
+        });
+        let (range, value) = if let Some((range, builtin)) = builtin {
+            (
+                range,
+                format!("```lsp\n{}\n```\nFunção do ERP", builtin.decl),
             )
+        } else {
+            let (range, def) = self.inherited_at(offset)?;
+            let line = self.range_in(&def.text, def.name).start.line + 1;
+            let value = format!(
+                "```lsp\n{}\n```\n{} em {}, linha {line}",
+                def.decl,
+                describe(def.kind),
+                def.path.display()
+            );
+            (range, value)
         };
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
@@ -235,6 +307,27 @@ impl Context<'_> {
             }
         }
         top
+    }
+}
+
+/// Nome que contém `offset`, fora de campo depois de ponto, e se ele é o nome chamado numa
+/// chamada.
+fn name_at(tree: &crate::Tree, offset: TextSize) -> Option<(NodeId, bool)> {
+    let mut node = tree.root();
+    loop {
+        let child = tree
+            .children(node)
+            .find(|&c| tree.text_range(c).contains_inclusive(offset))?;
+        if tree.kind(child) == SyntaxKind::NameRef {
+            let parent = tree.parent(child)?;
+            let first = tree.children(parent).next() == Some(child);
+            return match tree.kind(parent) {
+                SyntaxKind::FieldExpr if !first => None,
+                SyntaxKind::CallExpr if first => Some((child, true)),
+                _ => Some((child, false)),
+            };
+        }
+        node = child;
     }
 }
 

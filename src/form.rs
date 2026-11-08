@@ -16,9 +16,10 @@ use crate::builtins::Param;
 use crate::symbols::{DefKind, Symbols, VarType};
 use crate::{Element, NodeId, SyntaxKind, Tree};
 
-/// Função definida em outra regra do formulário.
+/// Função ou variável definida em outra regra do formulário.
 #[derive(Debug, Clone)]
-pub struct InheritedFunction {
+pub struct InheritedDef {
+    pub kind: DefKind,
     pub path: PathBuf,
     /// Texto da regra onde a função está, para converter a posição em linha e coluna.
     pub text: Arc<str>,
@@ -26,18 +27,26 @@ pub struct InheritedFunction {
     pub name: TextRange,
     /// Primeira linha da declaração, como `definir funcao Soma(numero p);`.
     pub decl: String,
+    /// Parâmetros, nas funções.
     pub params: Vec<Param>,
 }
 
-/// Funções das regras acima, pelo nome em maiúsculas. A regra mais próxima vence.
+/// Funções e variáveis das regras acima, pelo nome em maiúsculas. A regra mais próxima vence.
+/// Variáveis aqui são tudo que um `definir` cria fora de função, como variável, cursor, lista,
+/// tabela e web service.
 #[derive(Debug, Clone, Default)]
 pub struct Inherited {
-    functions: HashMap<String, InheritedFunction>,
+    functions: HashMap<String, InheritedDef>,
+    variables: HashMap<String, InheritedDef>,
 }
 
 impl Inherited {
-    pub fn get(&self, name: &str) -> Option<&InheritedFunction> {
+    pub fn get(&self, name: &str) -> Option<&InheritedDef> {
         self.functions.get(&name.to_uppercase())
+    }
+
+    pub fn variable(&self, name: &str) -> Option<&InheritedDef> {
+        self.variables.get(&name.to_uppercase())
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -53,12 +62,23 @@ impl Inherited {
                 continue;
             };
             let symbols = Symbols::build(&tree, &text);
-            let functions = symbols
-                .definitions
-                .iter()
-                .filter(|d| d.kind == DefKind::Function);
-            for def in functions {
+            for def in &symbols.definitions {
                 let key = text[def.name].to_uppercase();
+                if def.kind != DefKind::Function {
+                    let is_value = !matches!(def.kind, DefKind::Parameter(_) | DefKind::Label);
+                    if is_value && !inherited.variables.contains_key(&key) {
+                        let var = InheritedDef {
+                            kind: def.kind,
+                            path: path.clone(),
+                            text: text.clone(),
+                            name: def.name,
+                            decl: header(&tree, &text, def.node),
+                            params: Vec::new(),
+                        };
+                        inherited.variables.insert(key, var);
+                    }
+                    continue;
+                }
                 let is_decl = tree.kind(def.node) == SyntaxKind::FuncDecl;
                 let entry = inherited.functions.entry(key);
                 // Na mesma regra, o `definir funcao` dá os parâmetros e a `funcao` dá o lugar.
@@ -70,7 +90,8 @@ impl Inherited {
                         }
                         f
                     }
-                    std::collections::hash_map::Entry::Vacant(e) => e.insert(InheritedFunction {
+                    std::collections::hash_map::Entry::Vacant(e) => e.insert(InheritedDef {
+                        kind: DefKind::Function,
                         path: path.clone(),
                         text: text.clone(),
                         name: def.name,
@@ -110,6 +131,84 @@ pub fn inherited_functions(rule: &Path) -> Inherited {
         dir = Some(d);
     }
     Inherited::from_rules(rules)
+}
+
+/// Regras abaixo de `rule` no formulário, os `rule.txt` das subpastas da pasta dele, em ordem.
+/// Vazio se `rule` não está num formulário SGI.
+pub fn descendant_rules(rule: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if !in_form(rule) {
+        return out;
+    }
+    let Some(dir) = rule.parent() else {
+        return out;
+    };
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(d) = pending.pop() {
+        for entry in fs::read_dir(&d).into_iter().flatten().flatten() {
+            let path = entry.path();
+            // `file_type` não segue link simbólico. Seguir um link para uma pasta acima faria a
+            // busca rodar sem fim.
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                pending.push(path);
+            } else if kind.is_file()
+                && path != rule
+                && path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("rule.txt"))
+            {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Usos de `name` no texto de uma regra, fora de campo depois de ponto. Com `own`, só os que
+/// apontam para uma definição do próprio texto. Sem `own`, só os que não apontam para nada dele,
+/// que vêm de uma regra acima.
+pub fn uses(text: &str, name: &str, own: bool) -> Vec<TextRange> {
+    let Ok(tree) = crate::parse(text) else {
+        return Vec::new();
+    };
+    let symbols = Symbols::build(&tree, text);
+    let mut out = Vec::new();
+    let mut stack = vec![tree.root()];
+    while let Some(node) = stack.pop() {
+        stack.extend(tree.children(node));
+        if tree.kind(node) != SyntaxKind::NameRef {
+            continue;
+        }
+        let range = tree.text_range(node);
+        let member = tree.parent(node).is_some_and(|p| {
+            tree.kind(p) == SyntaxKind::FieldExpr && tree.children(p).next() != Some(node)
+        });
+        if member || !text[range].eq_ignore_ascii_case(name) {
+            continue;
+        }
+        if symbols.reference_at(range).is_some() == own {
+            out.push(range);
+        }
+    }
+    out.sort_by_key(|r| r.start());
+    out
+}
+
+/// Diz se o caminho está dentro de um formulário SGI, a raiz dele inclusive.
+fn in_form(rule: &Path) -> bool {
+    let parts: Vec<_> = rule.components().collect();
+    parts
+        .iter()
+        .position(|c| {
+            c.as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("Formulários SGI")
+        })
+        .is_some_and(|i| parts.len() >= i + 4)
 }
 
 /// Caminho local de uma URI `file://`. `None` para outro esquema.
@@ -220,7 +319,11 @@ mod tests {
             "definir funcao Global(numero p, alfa end r);\nfuncao Global(numero p, alfa end r); { }",
         )
         .unwrap();
-        fs::write(form.join("actions/rule.txt"), "definir funcao DoMeio();").unwrap();
+        fs::write(
+            form.join("actions/rule.txt"),
+            "definir funcao DoMeio();\ndefinir numero nMeio;",
+        )
+        .unwrap();
         fs::write(action.join("rule.txt"), "definir funcao Propria();").unwrap();
         let inherited = inherited_functions(&action.join("rule.txt"));
         assert!(inherited.contains("global") && inherited.contains("DOMEIO"));
@@ -239,10 +342,51 @@ mod tests {
         );
         assert_eq!(global.params.len(), 2);
         assert!(global.params[1].by_ref);
+        assert!(inherited.variable("Global").is_none());
+        let var = inherited.variable("NMEIO").unwrap();
+        assert_eq!(var.kind, DefKind::Variable(Some(VarType::Numero)));
+        assert_eq!(var.decl, "definir numero nMeio;");
 
         // Fora de formulário SGI não há regras herdadas.
         assert!(!inherited_functions(&base.join("regras/R1/Rule.txt")).contains("Global"));
         fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn regras_abaixo_e_usos() {
+        let base = std::env::temp_dir().join(format!("senior-lsp-desc-{}", std::process::id()));
+        let form = base.join("Formulários SGI/interface/F1");
+        fs::create_dir_all(form.join("actions/A1")).unwrap();
+        fs::create_dir_all(form.join("tables/T1/actions/A2")).unwrap();
+        for p in [
+            "rule.txt",
+            "actions/A1/rule.txt",
+            "tables/T1/actions/A2/rule.txt",
+        ] {
+            fs::write(form.join(p), "").unwrap();
+        }
+        let below = descendant_rules(&form.join("rule.txt"));
+        assert_eq!(
+            below,
+            [
+                form.join("actions/A1/rule.txt"),
+                form.join("tables/T1/actions/A2/rule.txt")
+            ]
+        );
+        assert!(descendant_rules(&base.join("regras/R/Rule.txt")).is_empty());
+        // Link para uma pasta acima não faz a busca rodar sem fim.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&form, form.join("actions/A1/volta")).unwrap();
+            assert_eq!(descendant_rules(&form.join("rule.txt")).len(), 2);
+        }
+        fs::remove_dir_all(&base).unwrap();
+
+        let text = "definir numero x;\nx = n + 1; cur.n = 2; f(n);";
+        assert_eq!(uses(text, "x", true).len(), 1);
+        assert!(uses(text, "x", false).is_empty());
+        // `cur.n` é campo e não conta.
+        assert_eq!(uses(text, "N", false).len(), 2);
     }
 
     #[test]

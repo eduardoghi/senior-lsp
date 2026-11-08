@@ -98,13 +98,18 @@ pub fn validate(
     inherited: &Inherited,
 ) -> Vec<Check> {
     let mut checks = Vec::new();
+    let scope = types::Scope {
+        symbols,
+        text,
+        inherited,
+    };
     let mut stack = vec![tree.root()];
     while let Some(node) = stack.pop() {
-        types::check(tree, symbols, text, context, inherited, node, &mut checks);
+        types::check(tree, &scope, context, node, &mut checks);
         match tree.kind(node) {
             BinaryExpr => binary(tree, node, &mut checks),
             Assign => assignment(tree, node, &mut checks),
-            CallExpr => message_text(tree, symbols, node, &mut checks),
+            CallExpr => message_text(tree, &scope, node, &mut checks),
             CallStmt => {
                 unknown_function(tree, symbols, text, context, inherited, node, &mut checks)
             }
@@ -240,7 +245,7 @@ fn unknown_function(
     }
 }
 
-fn message_text(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check>) {
+fn message_text(tree: &Tree, scope: &types::Scope, node: NodeId, checks: &mut Vec<Check>) {
     let mut children = tree.children(node);
     let (Some(callee), Some(args)) = (children.next(), children.next()) else {
         return;
@@ -256,9 +261,6 @@ fn message_text(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<C
         return;
     };
     let range = tree.text_range(text);
-    let Some(reference) = symbols.reference_at(range) else {
-        return;
-    };
     let numeric = |kind| {
         matches!(
             kind,
@@ -266,11 +268,17 @@ fn message_text(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<C
                 | DefKind::Parameter(Some(VarType::Numero | VarType::Data))
         )
     };
-    if reference
-        .targets
-        .iter()
-        .all(|&t| numeric(symbols.definitions[t].kind))
-    {
+    let is_numeric = match scope.symbols.reference_at(range) {
+        Some(reference) => reference
+            .targets
+            .iter()
+            .all(|&t| numeric(scope.symbols.definitions[t].kind)),
+        None => scope
+            .inherited
+            .variable(&scope.text[range])
+            .is_some_and(|v| numeric(v.kind)),
+    };
+    if is_numeric {
         checks.push(Check {
             kind: CheckKind::NonAlfaMessageText,
             range,
@@ -488,6 +496,30 @@ mod tests {
                 (AlfaArgument, Some("p".to_owned())),
                 (TooFewArguments, None),
                 (ConstantInEndParameter, Some("r".to_owned())),
+            ]
+        );
+    }
+
+    #[test]
+    fn tipo_de_variavel_herdada() {
+        let rules = [(
+            std::path::PathBuf::from("/f/rule.txt"),
+            "definir alfa aRaiz; definir numero nRaiz;".to_owned(),
+        )];
+        let inherited = Inherited::from_rules(rules);
+        let text = "aRaiz = \"x\"; aRaiz = nRaiz; nRaiz = aRaiz; Mensagem(Erro, nRaiz);";
+        let tree = crate::parse(text).unwrap();
+        let symbols = Symbols::build(&tree, text);
+        let kinds: Vec<_> = validate(&tree, &symbols, text, Context::Sgi, &inherited)
+            .into_iter()
+            .map(|c| (c.kind, &text[c.range]))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (AlfaAndNumber, "nRaiz"),
+                (NumberAndAlfa, "aRaiz"),
+                (NonAlfaMessageText, "nRaiz"),
             ]
         );
     }

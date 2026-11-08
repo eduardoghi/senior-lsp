@@ -1,7 +1,7 @@
 //! Erros de tipo entre alfa e número, pela tabela de símbolos.
 //!
-//! O tipo de um nome sai do `definir` dele. Nome sem `definir`, como as funções e variáveis do
-//! ERP, tem tipo desconhecido e nunca gera erro. Data conta como número. Dentro da função, um
+//! O tipo de um nome sai do `definir` dele, no arquivo ou numa regra acima no formulário SGI. Nome
+//! sem `definir`, como as variáveis do ERP, tem tipo desconhecido e nunca gera erro. Data conta como número. Dentro da função, um
 //! parâmetro alfa, com ou sem `end`, também se comporta como número, e só na chamada ele é alfa.
 //! O apóstrofo (`'c'`) vale como alfa na atribuição alfa e é o código do caractere numa conta,
 //! então fica de fora.
@@ -28,12 +28,18 @@ enum Ty {
     Unknown,
 }
 
+/// O que o validador de tipos consulta para saber o tipo de um nome. É a tabela do arquivo e, para
+/// nome sem `definir` aqui, as variáveis das regras acima no formulário SGI.
+pub(super) struct Scope<'a> {
+    pub(super) symbols: &'a Symbols,
+    pub(super) text: &'a str,
+    pub(super) inherited: &'a Inherited,
+}
+
 pub(super) fn check(
     tree: &Tree,
-    symbols: &Symbols,
-    text: &str,
+    scope: &Scope,
     context: Context,
-    inherited: &Inherited,
     node: NodeId,
     checks: &mut Vec<Check>,
 ) {
@@ -46,9 +52,9 @@ pub(super) fn check(
             if tree.kind(lhs) != NameRef {
                 return;
             }
-            match name_type(tree, symbols, lhs) {
-                Ty::Alfa => alfa_rhs(tree, symbols, rhs, checks),
-                Ty::Num => numeric_rhs(tree, symbols, rhs, checks),
+            match name_type(tree, scope, lhs) {
+                Ty::Alfa => alfa_rhs(tree, scope, rhs, checks),
+                Ty::Num => numeric_rhs(tree, scope, rhs, checks),
                 Ty::Unknown => false,
             };
         }
@@ -57,13 +63,13 @@ pub(super) fn check(
             let (Some(l), Some(r)) = (children.next(), children.next()) else {
                 return;
             };
-            let types = (leaf_type(tree, symbols, l), leaf_type(tree, symbols, r));
+            let types = (leaf_type(tree, scope, l), leaf_type(tree, scope, r));
             if is_string(tree, l) && is_string(tree, r) {
                 push(tree, checks, CheckKind::TwoStringLiterals, r, None);
             } else if matches!(types, (Ty::Alfa, Ty::Num) | (Ty::Num, Ty::Alfa)) {
                 push(tree, checks, CheckKind::NumberAndAlfa, r, None);
             } else if let Some(op) =
-                concatenation(tree, symbols, l).or_else(|| concatenation(tree, symbols, r))
+                concatenation(tree, scope, l).or_else(|| concatenation(tree, scope, r))
             {
                 checks.push(Check {
                     kind: CheckKind::AlfaOperatorInComparison,
@@ -73,13 +79,13 @@ pub(super) fn check(
                 });
             }
         }
-        CallExpr => call(tree, symbols, text, context, inherited, node, checks),
+        CallExpr => call(tree, scope, context, node, checks),
         _ => {}
     }
 }
 
 /// Lado direito de atribuição alfa. Para no primeiro erro, como o compilador.
-fn alfa_rhs(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check>) -> bool {
+fn alfa_rhs(tree: &Tree, scope: &Scope, node: NodeId, checks: &mut Vec<Check>) -> bool {
     let mut push = |kind, range| {
         checks.push(Check {
             kind,
@@ -95,14 +101,14 @@ fn alfa_rhs(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check
             let (Some(l), Some(r)) = (children.next(), children.next()) else {
                 return false;
             };
-            if alfa_rhs(tree, symbols, l, checks) {
+            if alfa_rhs(tree, scope, l, checks) {
                 return true;
             }
             let Some(op) = operator_token(tree, node) else {
                 return false;
             };
             if tree.tokens().kind(op) == Plus {
-                return alfa_rhs(tree, symbols, r, checks);
+                return alfa_rhs(tree, scope, r, checks);
             }
             checks.push(Check {
                 kind: CheckKind::AlfaOperator,
@@ -116,7 +122,7 @@ fn alfa_rhs(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check
             let first = tree.token_range(node).start;
             push(CheckKind::AlfaAndNumber, tree.tokens().range(first))
         }
-        Literal | NameRef if leaf_type(tree, symbols, node) == Ty::Num => {
+        Literal | NameRef if leaf_type(tree, scope, node) == Ty::Num => {
             push(CheckKind::AlfaAndNumber, tree.text_range(node))
         }
         _ => false,
@@ -124,7 +130,7 @@ fn alfa_rhs(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check
 }
 
 /// Lado direito de atribuição numérica, descendo só pelas contas com `+ - * /`.
-fn numeric_rhs(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Check>) -> bool {
+fn numeric_rhs(tree: &Tree, scope: &Scope, node: NodeId, checks: &mut Vec<Check>) -> bool {
     match tree.kind(node) {
         BinaryExpr => {
             let arithmetic = operator_token(tree, node).is_some_and(|op| {
@@ -136,9 +142,9 @@ fn numeric_rhs(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Ch
             arithmetic
                 && tree
                     .children(node)
-                    .any(|c| numeric_rhs(tree, symbols, c, checks))
+                    .any(|c| numeric_rhs(tree, scope, c, checks))
         }
-        Literal | NameRef if leaf_type(tree, symbols, node) == Ty::Alfa => {
+        Literal | NameRef if leaf_type(tree, scope, node) == Ty::Alfa => {
             push(tree, checks, CheckKind::NumberAndAlfa, node, None);
             true
         }
@@ -148,15 +154,7 @@ fn numeric_rhs(tree: &Tree, symbols: &Symbols, node: NodeId, checks: &mut Vec<Ch
 
 /// Chamada de função do arquivo, contra os parâmetros do `definir funcao`, ou da `funcao` se
 /// não houver `definir funcao`.
-fn call(
-    tree: &Tree,
-    symbols: &Symbols,
-    text: &str,
-    context: Context,
-    inherited: &Inherited,
-    node: NodeId,
-    checks: &mut Vec<Check>,
-) {
+fn call(tree: &Tree, scope: &Scope, context: Context, node: NodeId, checks: &mut Vec<Check>) {
     let mut children = tree.children(node);
     let (Some(callee), Some(args)) = (children.next(), children.next()) else {
         return;
@@ -164,16 +162,21 @@ fn call(
     if tree.kind(callee) != NameRef {
         return;
     }
-    let Some(reference) = symbols.reference_at(tree.text_range(callee)) else {
-        let name = &text[tree.text_range(callee)];
+    let Some(reference) = scope.symbols.reference_at(tree.text_range(callee)) else {
+        let name = &scope.text[tree.text_range(callee)];
         if let Some(builtin) = builtins::lookup(name, context) {
-            external_call(tree, symbols, &builtin.params, callee, args, checks);
-        } else if let Some(function) = inherited.get(name) {
-            external_call(tree, symbols, &function.params, callee, args, checks);
+            external_call(tree, scope, &builtin.params, callee, args, checks);
+        } else if let Some(function) = scope.inherited.get(name) {
+            external_call(tree, scope, &function.params, callee, args, checks);
         }
         return;
     };
-    let defs = || reference.targets.iter().map(|&t| &symbols.definitions[t]);
+    let defs = || {
+        reference
+            .targets
+            .iter()
+            .map(|&t| &scope.symbols.definitions[t])
+    };
     if !defs().all(|d| d.kind == DefKind::Function) {
         return;
     }
@@ -195,14 +198,14 @@ fn call(
         return;
     }
     for (&arg, &param) in args.iter().zip(&params) {
-        let expected = symbols.definitions.iter().find_map(|d| match d.kind {
+        let expected = scope.symbols.definitions.iter().find_map(|d| match d.kind {
             DefKind::Parameter(Some(t)) if d.node == param => Some(t),
             _ => None,
         });
         let by_ref = tree
             .elements(param)
             .any(|e| matches!(e, crate::Element::Token(t) if tree.tokens().kind(t) == EndKw));
-        let kind = match (expected, leaf_type(tree, symbols, arg)) {
+        let kind = match (expected, leaf_type(tree, scope, arg)) {
             (Some(VarType::Numero | VarType::Data), Ty::Alfa) => CheckKind::AlfaArgument,
             (Some(VarType::Alfa), Ty::Num) => CheckKind::NumberArgument,
             _ if by_ref && tree.kind(arg) == Literal => CheckKind::ConstantInEndParameter,
@@ -215,20 +218,20 @@ fn call(
 }
 
 /// `+` entre dois operandos alfa, que não vale dentro de comparação.
-fn concatenation(tree: &Tree, symbols: &Symbols, node: NodeId) -> Option<usize> {
+fn concatenation(tree: &Tree, scope: &Scope, node: NodeId) -> Option<usize> {
     if tree.kind(node) != BinaryExpr {
         return None;
     }
     let op = operator_token(tree, node).filter(|&op| tree.tokens().kind(op) == Plus)?;
     tree.children(node)
-        .all(|c| leaf_type(tree, symbols, c) == Ty::Alfa)
+        .all(|c| leaf_type(tree, scope, c) == Ty::Alfa)
         .then_some(op)
 }
 
 /// Chamada de função de fora do arquivo, do ERP ou de outra regra do formulário SGI.
 fn external_call(
     tree: &Tree,
-    symbols: &Symbols,
+    scope: &Scope,
     params: &[builtins::Param],
     callee: NodeId,
     args: NodeId,
@@ -245,7 +248,7 @@ fn external_call(
         return;
     }
     for (&arg, param) in args.iter().zip(params) {
-        let kind = match (param.ty, leaf_type(tree, symbols, arg)) {
+        let kind = match (param.ty, leaf_type(tree, scope, arg)) {
             (VarType::Numero | VarType::Data, Ty::Alfa) => CheckKind::AlfaArgument,
             (VarType::Alfa, Ty::Num) => CheckKind::NumberArgument,
             // O parâmetro `end` devolve o valor, então o compilador exige uma variável.
@@ -272,26 +275,31 @@ fn push(tree: &Tree, checks: &mut Vec<Check>, kind: CheckKind, node: NodeId, nam
 }
 
 /// Tipo de uma string, número ou nome, sem olhar expressões.
-fn leaf_type(tree: &Tree, symbols: &Symbols, node: NodeId) -> Ty {
+fn leaf_type(tree: &Tree, scope: &Scope, node: NodeId) -> Ty {
     match tree.kind(node) {
         Literal => match tree.tokens().kind(tree.token_range(node).start) {
             String => Ty::Alfa,
             Number => Ty::Num,
             _ => Ty::Unknown,
         },
-        NameRef => name_type(tree, symbols, node),
+        NameRef => name_type(tree, scope, node),
         _ => Ty::Unknown,
     }
 }
 
 /// Tipo de um nome, quando todas as definições que ele alcança concordam.
-fn name_type(tree: &Tree, symbols: &Symbols, node: NodeId) -> Ty {
-    let Some(reference) = symbols.reference_at(tree.text_range(node)) else {
-        return Ty::Unknown;
+fn name_type(tree: &Tree, scope: &Scope, node: NodeId) -> Ty {
+    let range = tree.text_range(node);
+    let Some(reference) = scope.symbols.reference_at(range) else {
+        return match scope.inherited.variable(&scope.text[range]).map(|v| v.kind) {
+            Some(DefKind::Variable(Some(VarType::Alfa))) => Ty::Alfa,
+            Some(DefKind::Variable(Some(_))) => Ty::Num,
+            _ => Ty::Unknown,
+        };
     };
     let mut ty = Ty::Unknown;
     for &t in &reference.targets {
-        let this = match symbols.definitions[t].kind {
+        let this = match scope.symbols.definitions[t].kind {
             DefKind::Variable(Some(VarType::Alfa)) => Ty::Alfa,
             DefKind::Variable(Some(_)) | DefKind::Parameter(Some(_)) => Ty::Num,
             _ => return Ty::Unknown,

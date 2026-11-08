@@ -359,3 +359,70 @@ fn funcao_de_outra_regra_do_formulario_sgi() {
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn variavel_e_referencias_entre_regras_do_formulario_sgi() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-sgi-ref-{}", std::process::id()));
+    let form = base.join("Formulários SGI/interface/F1");
+    for d in ["actions/A1", "actions/A2"] {
+        std::fs::create_dir_all(form.join(d)).unwrap();
+    }
+    let root = form.join("rule.txt");
+    std::fs::write(&root, "definir alfa aNome;\naNome = \"x\";").unwrap();
+    std::fs::write(form.join("actions/A2/rule.txt"), "aNome = \"y\";").unwrap();
+    let a1 = form.join("actions/A1/rule.txt");
+    std::fs::write(&a1, "aNome = 1;").unwrap();
+    let a1_uri = crate::form::uri_from_path(&a1);
+    let root_uri = crate::form::uri_from_path(&root);
+
+    let (mut editor, _) = Editor::start(None);
+    // O tipo vem da raiz, então número na variável alfa herdada é erro.
+    editor.open(&a1_uri, 1, "aNome = 1;");
+    let d = editor.diagnostics();
+    assert_eq!(
+        d.diagnostics[0].code,
+        Some(lsp_types::NumberOrString::String("SEN043".to_owned()))
+    );
+
+    let at = |uri: &str, line: u32, character: u32| json!({ "textDocument": { "uri": uri }, "position": { "line": line, "character": character } });
+    let r = editor.request(GotoDefinition::METHOD, at(&a1_uri, 0, 2));
+    let locations = r.response_result.unwrap();
+    assert_eq!(locations[0]["uri"], root_uri.as_str());
+
+    let r = editor.request(HoverRequest::METHOD, at(&a1_uri, 0, 2));
+    let hover = r.response_result.unwrap();
+    let value = hover["contents"]["value"].as_str().unwrap();
+    assert!(value.contains("definir alfa aNome;"), "{value}");
+    assert!(value.contains("Variável definida em"), "{value}");
+
+    // Da ação vêm a definição e o uso na raiz e os usos nas duas ações.
+    let mut params = at(&a1_uri, 0, 2);
+    params["context"] = json!({ "includeDeclaration": true });
+    let r = editor.request(References::METHOD, params);
+    let refs = r.response_result.unwrap();
+    let files: Vec<_> = refs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            l["uri"]
+                .as_str()
+                .unwrap()
+                .rsplit('/')
+                .nth(1)
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(files, ["F1", "F1", "A1", "A2"]);
+
+    // Da raiz vêm os usos nela e nas duas ações.
+    editor.open(&root_uri, 1, "definir alfa aNome;\naNome = \"x\";");
+    editor.diagnostics();
+    let mut params = at(&root_uri, 0, 15);
+    params["context"] = json!({ "includeDeclaration": false });
+    let r = editor.request(References::METHOD, params);
+    assert_eq!(r.response_result.unwrap().as_array().unwrap().len(), 3);
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}

@@ -23,7 +23,7 @@ chamar:
 | Pasta | Arquivo | Regra |
 |---|---|---|
 | `Regras` | `Rule.txt` | regra de identificador, com as funções comuns do ERP |
-| `Formulários SGI` | `rule.txt` | regra de tela SGI, que ganha as funções de tela e as definidas nas regras acima dela no formulário, como a da raiz |
+| `Formulários SGI` | `rule.txt` | regra de tela SGI, que ganha as funções de tela e as funções e variáveis definidas nas regras acima dela no formulário, como a da raiz |
 | `Web Services` | `Rule.txt` | regra de web service, com as mesmas funções da regra de identificador |
 
 O servidor só precisa reconhecer a pasta `Formulários SGI`. Qualquer outro arquivo de regra conta
