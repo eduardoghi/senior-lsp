@@ -103,6 +103,9 @@ impl Tokens {
 /// Corta `text` em tokens. Erros não interrompem a leitura, vão para [`Tokens::errors`].
 pub fn lex(text: &str) -> Result<Tokens, TextTooLarge> {
     let end = TextSize::try_from(text.len()).map_err(|_| TextTooLarge)?;
+    // No corpus sai um token a cada 8,5 bytes em média. Reservar para um a cada 4 cobre quase todo
+    // arquivo sem realocar.
+    let guess = text.len() / 4;
     let mut lexer = Lexer {
         text,
         bytes: text.as_bytes(),
@@ -112,8 +115,8 @@ pub fn lex(text: &str) -> Result<Tokens, TextTooLarge> {
         consumed_end: 0,
         last_line_done: false,
         tokens: Tokens {
-            kinds: Vec::new(),
-            starts: Vec::new(),
+            kinds: Vec::with_capacity(guess),
+            starts: Vec::with_capacity(guess + 1),
             errors: Vec::new(),
         },
     };
