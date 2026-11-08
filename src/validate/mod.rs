@@ -42,7 +42,7 @@ pub enum CheckKind {
     AlfaArgument,
     /// Número num parâmetro alfa.
     NumberArgument,
-    /// Constante num parâmetro `end` de função do ERP, que só aceita variável.
+    /// Constante num parâmetro `end`, que só aceita variável.
     ConstantInEndParameter,
     /// `+` entre alfas dentro de uma comparação.
     AlfaOperatorInComparison,
@@ -482,12 +482,12 @@ mod tests {
             .into_iter()
             .map(|c| (c.kind, c.label))
             .collect();
-        // Constante no `end` só é acusada nas funções do ERP, onde foi conferida.
         assert_eq!(
             kinds,
             [
                 (AlfaArgument, Some("p".to_owned())),
                 (TooFewArguments, None),
+                (ConstantInEndParameter, Some("r".to_owned())),
             ]
         );
     }

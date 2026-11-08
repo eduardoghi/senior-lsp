@@ -167,9 +167,9 @@ fn call(
     let Some(reference) = symbols.reference_at(tree.text_range(callee)) else {
         let name = &text[tree.text_range(callee)];
         if let Some(builtin) = builtins::lookup(name, context) {
-            external_call(tree, symbols, &builtin.params, true, callee, args, checks);
+            external_call(tree, symbols, &builtin.params, callee, args, checks);
         } else if let Some(function) = inherited.get(name) {
-            external_call(tree, symbols, &function.params, false, callee, args, checks);
+            external_call(tree, symbols, &function.params, callee, args, checks);
         }
         return;
     };
@@ -199,9 +199,13 @@ fn call(
             DefKind::Parameter(Some(t)) if d.node == param => Some(t),
             _ => None,
         });
+        let by_ref = tree
+            .elements(param)
+            .any(|e| matches!(e, crate::Element::Token(t) if tree.tokens().kind(t) == EndKw));
         let kind = match (expected, leaf_type(tree, symbols, arg)) {
             (Some(VarType::Numero | VarType::Data), Ty::Alfa) => CheckKind::AlfaArgument,
             (Some(VarType::Alfa), Ty::Num) => CheckKind::NumberArgument,
+            _ if by_ref && tree.kind(arg) == Literal => CheckKind::ConstantInEndParameter,
             _ => continue,
         };
         let name = tree.children(param).find(|&c| tree.kind(c) == Name);
@@ -221,13 +225,11 @@ fn concatenation(tree: &Tree, symbols: &Symbols, node: NodeId) -> Option<usize> 
         .then_some(op)
 }
 
-/// Chamada de função de fora do arquivo, do ERP ou de outra regra do formulário SGI. Constante em
-/// parâmetro `end` só é acusada nas do ERP, as únicas em que isso foi conferido.
+/// Chamada de função de fora do arquivo, do ERP ou de outra regra do formulário SGI.
 fn external_call(
     tree: &Tree,
     symbols: &Symbols,
     params: &[builtins::Param],
-    is_builtin: bool,
     callee: NodeId,
     args: NodeId,
     checks: &mut Vec<Check>,
@@ -247,9 +249,7 @@ fn external_call(
             (VarType::Numero | VarType::Data, Ty::Alfa) => CheckKind::AlfaArgument,
             (VarType::Alfa, Ty::Num) => CheckKind::NumberArgument,
             // O parâmetro `end` devolve o valor, então o compilador exige uma variável.
-            _ if is_builtin && param.by_ref && tree.kind(arg) == Literal => {
-                CheckKind::ConstantInEndParameter
-            }
+            _ if param.by_ref && tree.kind(arg) == Literal => CheckKind::ConstantInEndParameter,
             _ => continue,
         };
         checks.push(Check {
@@ -412,9 +412,13 @@ mod tests {
     }
 
     #[test]
-    fn constante_no_parametro_end_de_funcao_do_erp() {
+    fn constante_no_parametro_end() {
         let text = "definir alfa a;\nAgluCtbContas(1, a); AgluCtbContas(1, \"x\");";
         assert_eq!(checks(text), [(ConstantInEndParameter, "\"x\"")]);
+        let text = "definir numero x; definir funcao Dobra(numero n, numero end r);\n\
+                    Dobra(5, x); Dobra(5, 3);\n\
+                    funcao Dobra(numero n, numero end r); { r = n * 2; }";
+        assert_eq!(checks(text), [(ConstantInEndParameter, "3")]);
     }
 
     #[test]
