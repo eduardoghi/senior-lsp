@@ -245,6 +245,16 @@ impl Builder {
     }
 
     /// Consome o próximo token que não é trivia, com a trivia antes dele.
+    /// Posição vazia logo depois do último token consumido que não é trivia, ou o começo do texto
+    /// se nada foi consumido. É onde fica um token que faltou.
+    pub fn after_last_range(&self) -> TextRange {
+        let end = match self.last_end {
+            0 => TextSize::new(0),
+            n => self.tokens.range(n as usize - 1).end(),
+        };
+        TextRange::empty(end)
+    }
+
     /// Posição do próximo token não consumido. Serve para conferir se o parser avançou.
     pub fn position(&self) -> usize {
         self.pos

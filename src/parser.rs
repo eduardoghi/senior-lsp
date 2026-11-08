@@ -91,15 +91,18 @@ impl Parser {
         self.b.error(kind, range);
     }
 
-    /// Consome `kind` se for o token atual, senão registra que ele faltou.
+    /// Consome `kind` se for o token atual, senão registra que ele faltou. O erro fica logo depois
+    /// do token anterior, e não no próximo, que pode estar em outra linha ou no fim do arquivo.
     fn expect(&mut self, kind: SyntaxKind) -> bool {
         if self.at(kind) {
             self.bump();
-            true
-        } else {
-            self.error(ParseErrorKind::Expected(kind));
-            false
+            return true;
         }
+        if !self.gave_up {
+            let range = self.b.after_last_range();
+            self.b.error(ParseErrorKind::Expected(kind), range);
+        }
+        false
     }
 
     /// Analisa um comando e garante que o parser avançou. Se nada foi consumido, o token atual
@@ -1271,6 +1274,15 @@ mod tests {
         assert_eq!(erros_regra("ExecSql \"x\""), [Expected(Semicolon)]);
         let text = "ExecSql \"UPDATE T \\\n SET A = 1\";";
         assert!(erros_regra(text).is_empty());
+    }
+
+    #[test]
+    fn token_que_falta_fica_logo_depois_do_anterior() {
+        let posicao = |text: &str| -> u32 { parse(text).unwrap().errors()[0].range.start().into() };
+        // Logo depois do `1`, e não na linha seguinte nem no fim do arquivo.
+        assert_eq!(posicao("x = 1\r\n\r\n"), 5);
+        assert_eq!(posicao("x = 1\ny = 2;"), 5);
+        assert_eq!(posicao("se (a = 1 { }"), 9);
     }
 
     #[test]
