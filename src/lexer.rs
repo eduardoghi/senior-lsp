@@ -11,9 +11,9 @@
 use text_size::{TextRange, TextSize};
 
 use crate::SyntaxKind::{
-    self, AtComment, BlockComment, Colon, Comma, Dot, Eq, ErrorToken, Gt, GtEq, Ident, LBrace,
-    LBracket, LParen, Lt, LtEq, Minus, MinusMinus, Neq, Newline, Number, Plus, PlusPlus, RBrace,
-    RBracket, RParen, RelRun, Semicolon, Slash, Star, Whitespace,
+    self, AtComment, BlockComment, Char, Colon, Comma, Dot, Eq, ErrorToken, Gt, GtEq, Ident,
+    LBrace, LBracket, LParen, Lt, LtEq, Minus, MinusMinus, Neq, Newline, Number, Plus, PlusPlus,
+    RBrace, RBracket, RParen, RelRun, Semicolon, Slash, Star, Whitespace,
 };
 use crate::delphi_float;
 
@@ -33,12 +33,14 @@ pub struct TextTooLarge;
 pub enum LexErrorKind {
     /// Caractere que não pertence à linguagem fora de string ou comentário.
     InvalidChar,
+    /// String sem `"` de fechamento (`cadeia de caracteres sem terminação`).
     UnterminatedString,
     UnterminatedAtComment,
     UnterminatedBlockComment,
     /// Identificador com mais de 100 caracteres.
     IdentTooLong,
-    /// Literal de caractere vazio ou com mais de um caractere, como `''` ou `'ab'`.
+    /// Literal de caractere sem o `'` de fechamento logo depois do caractere (`falta '`), como
+    /// `'ab'` ou `'` no fim da linha.
     MalformedChar,
     /// Número que o compilador recusa (`identificador mal-formado`), como `12abc` ou `1E4933`.
     MalformedNumber,
@@ -161,6 +163,8 @@ impl Lexer<'_> {
             b'/' if self.bytes.get(start + 1) == Some(&b'*') => self.block_comment(start),
             b'/' => self.single(Slash),
             b'@' => self.at_comment(start),
+            b'"' => self.string(start),
+            b'\'' => self.char_literal(start),
             b'+' => self.doubled(b'+', Plus, PlusPlus),
             b'-' => self.doubled(b'-', Minus, MinusMinus),
             b'<' | b'>' | b'=' => self.relational(),
@@ -396,6 +400,104 @@ impl Lexer<'_> {
         BlockComment
     }
 
+    /// String entre `"`. `\"` e `\\` são escape, e qualquer outro `\` descarta o resto da linha e
+    /// continua a string na linha seguinte. O token cobre também o trecho descartado.
+    fn string(&mut self, start: usize) -> SyntaxKind {
+        self.pos = start + 1;
+        loop {
+            let Some(&b) = self.bytes.get(self.pos) else {
+                return self.unterminated_string(start);
+            };
+            match b {
+                b'"' => {
+                    self.pos += 1;
+                    return SyntaxKind::String;
+                }
+                b'\n' | b'\r' => return self.unterminated_string(start),
+                b'\\' => {
+                    if self.is_escape() {
+                        self.pos += 2;
+                        continue;
+                    }
+                    let eol = self.line_end(self.pos);
+                    let Some(next_line) = self.after_newline(eol) else {
+                        self.pos = self.bytes.len();
+                        return self.unterminated_string(start);
+                    };
+                    // A linha nova vem com o espaço do fim.
+                    self.no_trailing_space = false;
+                    self.pos = next_line;
+                    // O primeiro caractere da linha nova entra no valor sem ser examinado, então
+                    // um `"` ou `\` ali não fecha nem escapa. Linha vazia ou fim do arquivo
+                    // deixam a string sem fechamento.
+                    match self.bytes.get(self.pos) {
+                        None | Some(b'\n' | b'\r') => return self.unterminated_string(start),
+                        Some(_) => self.pos += self.char_at(self.pos).len_utf8(),
+                    }
+                }
+                _ => self.pos += self.char_at(self.pos).len_utf8(),
+            }
+        }
+    }
+
+    /// Diz se o `\` em `pos` é escape. O compilador exige `"` ou `\` depois dele e que esse
+    /// caractere não seja o último da linha. Numa linha normal o espaço do fim garante isso, mas
+    /// na linha onde um comentário de várias linhas fechou, `\"` encostado na quebra vira
+    /// continuação.
+    fn is_escape(&self) -> bool {
+        if !matches!(self.bytes.get(self.pos + 1), Some(b'"' | b'\\')) {
+            return false;
+        }
+        let escaped_is_last = matches!(self.bytes.get(self.pos + 2), None | Some(b'\n' | b'\r'));
+        !(self.no_trailing_space && escaped_is_last)
+    }
+
+    fn unterminated_string(&mut self, start: usize) -> SyntaxKind {
+        self.error_at(LexErrorKind::UnterminatedString, start, start + 1);
+        SyntaxKind::String
+    }
+
+    /// Posição da quebra de linha a partir de `pos`, ou o fim do texto.
+    fn line_end(&self, pos: usize) -> usize {
+        self.bytes[pos..]
+            .iter()
+            .position(|&b| matches!(b, b'\n' | b'\r'))
+            .map_or(self.bytes.len(), |i| pos + i)
+    }
+
+    /// Começo da linha seguinte à quebra em `eol`, ou `None` se `eol` é o fim do texto.
+    fn after_newline(&self, eol: usize) -> Option<usize> {
+        match self.bytes.get(eol)? {
+            b'\r' if self.bytes.get(eol + 1) == Some(&b'\n') => Some(eol + 2),
+            _ => Some(eol + 1),
+        }
+    }
+
+    /// `'x'` com qualquer caractere no meio. Sem o segundo `'`, o compilador dá `falta '` onde
+    /// esperava o apóstrofo.
+    fn char_literal(&mut self, start: usize) -> SyntaxKind {
+        self.pos = start + 1;
+        match self.bytes.get(self.pos) {
+            // O compilador toma o espaço do fim da linha como o caractere.
+            None | Some(b'\n' | b'\r') => {
+                self.error_at(LexErrorKind::MalformedChar, start, start + 1);
+                return Char;
+            }
+            Some(_) => self.pos += self.char_at(self.pos).len_utf8(),
+        }
+        match self.bytes.get(self.pos) {
+            Some(b'\'') => self.pos += 1,
+            None | Some(b'\n' | b'\r') => {
+                self.error_at(LexErrorKind::MalformedChar, start, start + 1);
+            }
+            Some(_) => {
+                let end = self.pos + self.char_at(self.pos).len_utf8();
+                self.error_at(LexErrorKind::MalformedChar, self.pos, end);
+            }
+        }
+        Char
+    }
+
     /// Caractere que começa em `pos`, que tem que ser uma fronteira de caractere.
     fn char_at(&self, pos: usize) -> char {
         self.text[pos..].chars().next().unwrap_or('\0')
@@ -426,9 +528,11 @@ fn offset(pos: usize) -> TextSize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SyntaxKind::String as Str;
     use crate::SyntaxKind::{EKw, GravarNlEolKw, SeKw, SenaoKw};
     use LexErrorKind::{
-        InvalidChar, MalformedNumber, UnterminatedAtComment, UnterminatedBlockComment,
+        InvalidChar, MalformedChar, MalformedNumber, UnterminatedAtComment,
+        UnterminatedBlockComment, UnterminatedString,
     };
 
     /// Confere as invariantes que valem para qualquer entrada e devolve os tokens.
@@ -790,6 +894,86 @@ mod tests {
                 Plus
             ]
         );
+    }
+
+    #[test]
+    fn strings_com_escape() {
+        for texto in ["\"abc\"", "\"\"", "\"a\\\"b\\\\c\"", "\"é @ /* \""] {
+            let tokens = lex_ok(texto);
+            assert_eq!(tokens.kinds(), [Str], "{texto}");
+            assert!(tokens.errors().is_empty(), "{texto}");
+        }
+        assert_eq!(kinds("a\"x\""), [Ident, Str]);
+    }
+
+    #[test]
+    fn string_sem_fechar_para_no_fim_da_linha() {
+        assert_eq!(kinds("\"abc"), [Str]);
+        assert_eq!(erros("\"abc"), [(UnterminatedString, 0, 1)]);
+        assert_eq!(kinds("\"abc\nx"), [Str, Newline, Ident]);
+        // \" no fim de uma linha normal é escape, então a string fica aberta.
+        assert_eq!(kinds("\"ab\\\"\nc").first(), Some(&Str));
+        assert_eq!(erros("\"ab\\\"\nc"), [(UnterminatedString, 0, 1)]);
+    }
+
+    #[test]
+    fn barra_continua_a_string_na_linha_seguinte() {
+        let texto = "\"a\\nXYZ\";\nb\";";
+        let tokens = lex_ok(texto);
+        assert_eq!(tokens.kinds(), [Str, Semicolon]);
+        assert_eq!(tokens.text(0, texto), "\"a\\nXYZ\";\nb\"");
+        assert!(tokens.errors().is_empty());
+
+        assert_eq!(kinds("\"abc\\\r\nd\""), [Str]);
+        assert_eq!(kinds("\"abc\\\rd\""), [Str]);
+    }
+
+    #[test]
+    fn primeiro_caractere_da_linha_seguinte_entra_sem_ser_examinado() {
+        assert_eq!(kinds("\"abc\\\n\"def\";"), [Str, Semicolon]);
+        assert_eq!(kinds("\"x\\\n\\y\""), [Str]);
+        assert!(lex_ok("\"x\\\n\\y\"").errors().is_empty());
+    }
+
+    #[test]
+    fn barra_sem_linha_seguinte_deixa_a_string_aberta() {
+        // Linha vazia depois da barra.
+        let texto = "\"abc\\\n\nx";
+        let tokens = lex_ok(texto);
+        assert_eq!(tokens.kinds(), [Str, Newline, Ident]);
+        assert_eq!(tokens.text(0, texto), "\"abc\\\n");
+        assert_eq!(erros(texto), [(UnterminatedString, 0, 1)]);
+        // Barra na última linha.
+        assert_eq!(erros("\"abc\\"), [(UnterminatedString, 0, 1)]);
+        assert_eq!(kinds("\"abc\\\n"), [Str]);
+        assert_eq!(erros("\"abc\\\n"), [(UnterminatedString, 0, 1)]);
+    }
+
+    #[test]
+    fn barra_aspas_no_fim_da_linha_onde_o_comentario_fechou_continua_a_string() {
+        let texto = "/* x\n*/ \"ab\\\"\nc\";";
+        let tokens = lex_ok(texto);
+        assert_eq!(tokens.kinds(), [BlockComment, Whitespace, Str, Semicolon]);
+        assert!(tokens.errors().is_empty());
+    }
+
+    #[test]
+    fn literal_de_caractere() {
+        for texto in ["'''", "' '", "'é'", "'\"'", "'x'"] {
+            let tokens = lex_ok(texto);
+            assert_eq!(tokens.kinds(), [Char], "{texto}");
+            assert!(tokens.errors().is_empty(), "{texto}");
+        }
+    }
+
+    #[test]
+    fn literal_sem_o_segundo_apostrofo() {
+        assert_eq!(kinds("'ab'"), [Char, Ident]);
+        assert_eq!(erros("'ab'"), [(MalformedChar, 2, 3)]);
+        assert_eq!(kinds("'"), [Char]);
+        assert_eq!(erros("'"), [(MalformedChar, 0, 1)]);
+        assert_eq!(kinds("'\nx"), [Char, Newline, Ident]);
+        assert_eq!(erros("'a\nx"), [(MalformedChar, 0, 1)]);
     }
 
     #[test]
