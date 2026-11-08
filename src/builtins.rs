@@ -13,30 +13,25 @@ use std::sync::LazyLock;
 
 use crate::symbols::VarType;
 
-/// Onde a regra roda, pela pasta da exportação do gerenciador de artefatos.
+/// Onde a regra roda, pela pasta da exportação do gerenciador de artefatos. O compilador da regra
+/// de web service não acrescenta funções, então ela conta como regra de identificador.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Context {
-    /// Regra de identificador e tudo que não tem pasta conhecida.
+    /// Regra de identificador, de web service e tudo fora de `Formulários SGI`.
     Rule,
     /// Regra de tela SGI, na pasta `Formulários SGI`.
     Sgi,
-    /// Regra de web service. Recebe o grupo de regra, mas ainda não se sabe se o compilador de
-    /// web service acrescenta funções, então nome desconhecido não é acusado.
-    WebService,
 }
 
 impl Context {
     /// Contexto pelo caminho do arquivo, em forma de URI (`file:///...`).
     pub fn from_uri(uri: &str) -> Context {
         let path = percent_decode(uri);
-        let mut segments = path.split('/');
-        if segments
-            .clone()
+        if path
+            .split('/')
             .any(|s| s.eq_ignore_ascii_case("Formulários SGI"))
         {
             Context::Sgi
-        } else if segments.any(|s| s.eq_ignore_ascii_case("Web Services")) {
-            Context::WebService
         } else {
             Context::Rule
         }
@@ -201,7 +196,6 @@ mod tests {
     #[test]
     fn funcao_de_sgi_so_na_tela() {
         assert!(lookup("AbrirTelaSGI", Context::Rule).is_none());
-        assert!(lookup("AbrirTelaSGI", Context::WebService).is_none());
         assert!(lookup("AbrirTelaSGI", Context::Sgi).is_some());
         assert!(lookup("IntParaAlfa", Context::Sgi).is_some());
         assert!(lookup("InsClauSQLWhere", Context::Sgi).is_none());
@@ -221,7 +215,7 @@ mod tests {
         );
         assert_eq!(
             ctx("file:///c/Web%20Services/interno/X/Rule.txt"),
-            Context::WebService
+            Context::Rule
         );
     }
 }

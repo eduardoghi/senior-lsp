@@ -200,8 +200,7 @@ fn lowercase_char(tree: &Tree, text: &str, node: NodeId, checks: &mut Vec<Check>
     }
 }
 
-/// `Nome(...);` como comando, com um nome sem `definir funcao` e fora das funções do ERP. Em
-/// web service fica de fora, porque não se sabe se o compilador de lá acrescenta funções.
+/// `Nome(...);` como comando, com um nome sem `definir funcao` e fora das funções do ERP.
 fn unknown_function(
     tree: &Tree,
     symbols: &Symbols,
@@ -211,9 +210,6 @@ fn unknown_function(
     node: NodeId,
     checks: &mut Vec<Check>,
 ) {
-    if context == Context::WebService {
-        return;
-    }
     let Some(call) = tree
         .children(node)
         .next()
@@ -465,9 +461,8 @@ mod tests {
         let sgi = "AbrirTelaSGI(\"T\");";
         assert_eq!(run(sgi, Context::Rule, &[]), [UnknownFunction]);
         assert!(run(sgi, Context::Sgi, &[]).is_empty());
-        // Função da raiz do formulário SGI e web service ficam sem erro.
+        // Função da raiz do formulário SGI fica sem erro.
         assert!(run("CallWs();", Context::Sgi, &["CallWs"]).is_empty());
-        assert!(run("Qualquer(1);", Context::WebService, &[]).is_empty());
         // Função definida no arquivo, método de cursor e Mensagem não são nome desconhecido.
         let text = "definir funcao f(); definir cursor c;\nf(); c.AbrirCursor(); Mensagem(Erro, \"x\");\nfuncao f(); { }";
         assert!(run(text, Context::Rule, &[]).is_empty());

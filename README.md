@@ -24,10 +24,10 @@ chamar:
 |---|---|---|
 | `Regras` | `Rule.txt` | regra de identificador, com as funções comuns do ERP |
 | `Formulários SGI` | `rule.txt` | regra de tela SGI, que ganha as funções de tela e as definidas nas regras acima dela no formulário, como a da raiz |
-| `Web Services` | `Rule.txt` | regra de web service, em que nome de função desconhecido não é acusado |
+| `Web Services` | `Rule.txt` | regra de web service, com as mesmas funções da regra de identificador |
 
-O servidor reconhece as pastas `Formulários SGI` e `Web Services`, e qualquer outro arquivo de regra
-conta como regra de identificador, então renomear a pasta `Regras` não muda nada. Os outros tipos
+O servidor só precisa reconhecer a pasta `Formulários SGI`. Qualquer outro arquivo de regra conta
+como regra de identificador, então renomear a pasta `Regras` não muda nada. Os outros tipos
 de artefato não exportam arquivo de regra. Os modelos de relatório (`Modelos`) guardam as regras
 dentro de arquivos JSON e não são analisados.
 
