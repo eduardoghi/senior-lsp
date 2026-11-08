@@ -34,6 +34,10 @@ pub enum ParseErrorKind {
     TooDeep,
     /// Faltou o tipo, como em `definir 5;` ou num parâmetro de função.
     ExpectedType,
+    /// Tipo do `Mensagem` que não é `Erro`, `Refaz` nem `Retorna`.
+    InvalidMessageType,
+    /// Texto do `Mensagem` que não é string nem variável, como um número ou um campo.
+    ExpectedMessageText,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -108,6 +108,16 @@ fn describe_parse(kind: ParseErrorKind) -> Option<(&'static str, String)> {
             "SEN026",
             "Falta o tipo, que é alfa, numero ou data.".to_owned(),
         ),
+        ParseErrorKind::InvalidMessageType => (
+            "SEN027",
+            "O tipo do Mensagem é Erro, Refaz ou Retorna (tipo de mensagem inválido).".to_owned(),
+        ),
+        ParseErrorKind::ExpectedMessageText => (
+            "SEN028",
+            "O texto do Mensagem tem que ser uma string ou uma variável alfa \
+             (Cláusula \"Mensagem\", falta \"mensagem\")."
+                .to_owned(),
+        ),
     })
 }
 

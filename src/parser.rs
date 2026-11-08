@@ -11,7 +11,7 @@ use crate::{TextTooLarge, lex};
 /// Analisa o texto de uma regra. Só falha se o texto passar do limite das posições, os erros de
 /// sintaxe ficam em [`Tree::errors`] e os do lexer nos tokens.
 pub fn parse(text: &str) -> Result<Tree, TextTooLarge> {
-    let mut p = Parser::new(Builder::new(lex(text)?));
+    let mut p = Parser::new(Builder::new(lex(text)?), text);
     while !p.at(Eof) {
         p.statement_or_skip();
     }
@@ -23,8 +23,9 @@ pub fn parse(text: &str) -> Result<Tree, TextTooLarge> {
 /// limite (`O Comando é muito complexo`).
 const MAX_DEPTH: u32 = 256;
 
-pub(crate) struct Parser {
+pub(crate) struct Parser<'a> {
     b: Builder,
+    text: &'a str,
     depth: u32,
     /// Blocos `{ }` ou `inicio fim` abertos. O compilador conta isso de forma global, atravessando
     /// as funções, então uma `funcao` pode começar com um bloco de outra ainda aberto.
@@ -33,10 +34,11 @@ pub(crate) struct Parser {
     gave_up: bool,
 }
 
-impl Parser {
-    pub(crate) fn new(b: Builder) -> Parser {
+impl<'a> Parser<'a> {
+    pub(crate) fn new(b: Builder, text: &'a str) -> Parser<'a> {
         Parser {
             b,
+            text,
             depth: 0,
             open_blocks: 0,
             gave_up: false,
@@ -541,6 +543,7 @@ impl Parser {
     /// saber se é chamada.
     fn designator(&mut self) -> Option<DesignatorEnd> {
         let start = self.b.checkpoint();
+        let simple_args = self.at(MensagemKw);
         if self.at_name_start() {
             self.leaf(NameRef);
         } else {
@@ -552,7 +555,7 @@ impl Parser {
             match self.current() {
                 LParen => {
                     self.b.start_node_at(start, CallExpr);
-                    self.arg_list();
+                    self.call_args(simple_args && last.is_none());
                     self.b.finish_node();
                     last = Some(if last == Some(Field) { FieldCall } else { Call });
                 }
@@ -673,6 +676,7 @@ impl Parser {
     /// Operando seguido de chamada, índice ou campo, em qualquer combinação.
     fn postfix(&mut self) {
         let start = self.b.checkpoint();
+        let mut simple_args = self.at(MensagemKw);
         if !self.primary() {
             return;
         }
@@ -680,8 +684,9 @@ impl Parser {
             match self.current() {
                 LParen => {
                     self.b.start_node_at(start, CallExpr);
-                    self.arg_list();
+                    self.call_args(simple_args);
                     self.b.finish_node();
+                    simple_args = false;
                 }
                 LBracket => {
                     self.b.start_node_at(start, IndexExpr);
@@ -689,8 +694,10 @@ impl Parser {
                     self.expr();
                     self.expect(RBracket);
                     self.b.finish_node();
+                    simple_args = false;
                 }
                 Dot => {
+                    simple_args = false;
                     self.b.start_node_at(start, FieldExpr);
                     self.bump();
                     // Depois do ponto, palavra reservada vale como nome (`cursor.Achou`).
@@ -750,6 +757,14 @@ impl Parser {
         self.b.finish_node();
     }
 
+    fn call_args(&mut self, mensagem: bool) {
+        if mensagem {
+            self.mensagem_args();
+        } else {
+            self.arg_list();
+        }
+    }
+
     /// `( arg, arg, ... )`.
     fn arg_list(&mut self) {
         self.b.start_node(ArgList);
@@ -774,6 +789,72 @@ impl Parser {
             }
         }
         self.expect(RParen);
+        self.b.finish_node();
+    }
+
+    /// `(tipo, texto)` do `Mensagem`. O tipo é `Erro`, `Refaz` ou `Retorna`, e o texto só pode
+    /// ser uma string ou uma variável. Número, apóstrofo, parênteses, campo e concatenação não
+    /// compilam. Uma variável numérica também não, mas isso depende do tipo dela e fica para quem
+    /// conhece as declarações.
+    fn mensagem_args(&mut self) {
+        self.b.start_node(ArgList);
+        self.bump();
+        if self.at(Ident) && is_message_type(&self.text[self.b.current_range()]) {
+            self.leaf(NameRef);
+        } else {
+            self.error(ParseErrorKind::InvalidMessageType);
+            if self.at(Ident) {
+                self.leaf(NameRef);
+            } else if !matches!(self.current(), Comma | RParen)
+                && !is_expression_end(self.current())
+            {
+                self.b.start_node(ErrorNode);
+                self.bump();
+                self.b.finish_node();
+            }
+        }
+        self.expect(Comma);
+        let text_ok = match self.current() {
+            SyntaxKind::String => {
+                self.leaf(Literal);
+                true
+            }
+            Ident if !matches!(self.b.peek_second(), Dot | LParen | LBracket) => {
+                self.leaf(NameRef);
+                true
+            }
+            _ => {
+                self.error(ParseErrorKind::ExpectedMessageText);
+                false
+            }
+        };
+        // Depois de um erro, o resto até o `)` vai para um `ErrorNode`, para o `;` que vem depois
+        // não gerar um segundo erro. Um `+` de concatenação dá `falta ")"`, como no compilador.
+        if !text_ok || !self.expect(RParen) {
+            self.skip_to_rparen();
+        }
+        self.b.finish_node();
+    }
+
+    /// Consome num `ErrorNode` o que sobrou até o `)`, inclusive. Para antes de `;`, de fim de
+    /// bloco e de palavra que começa comando, que ficam para quem está em volta.
+    fn skip_to_rparen(&mut self) {
+        self.b.start_node(ErrorNode);
+        let mut depth = 0u32;
+        loop {
+            match self.current() {
+                Eof | Semicolon => break,
+                kind if is_block_end(kind) || starts_statement(kind) => break,
+                LParen => depth += 1,
+                RParen if depth == 0 => {
+                    self.bump();
+                    break;
+                }
+                RParen => depth -= 1,
+                _ => {}
+            }
+            self.bump();
+        }
         self.b.finish_node();
     }
 }
@@ -814,6 +895,13 @@ fn is_block_end(kind: SyntaxKind) -> bool {
 
 fn is_relational(kind: SyntaxKind) -> bool {
     matches!(kind, Eq | Lt | Gt | LtEq | GtEq | Neq | RelRun)
+}
+
+/// Tipo do `Mensagem`, sem diferença entre maiúsculas e minúsculas.
+fn is_message_type(text: &str) -> bool {
+    ["erro", "refaz", "retorna"]
+        .iter()
+        .any(|t| text.eq_ignore_ascii_case(t))
 }
 
 /// Palavras reservadas que podem aparecer como valor, como `x = Mensagem(Retorna, aTexto)`.
@@ -863,7 +951,7 @@ fn is_expression_end(kind: SyntaxKind) -> bool {
 /// `ErrorNode`.
 #[cfg(test)]
 pub(crate) fn parse_expression(text: &str) -> Tree {
-    let mut p = Parser::new(Builder::new(lex(text).unwrap()));
+    let mut p = Parser::new(Builder::new(lex(text).unwrap()), text);
     p.expr();
     if !p.at(Eof) {
         p.error(ParseErrorKind::Expected(Eof));
@@ -1274,6 +1362,39 @@ mod tests {
         assert_eq!(erros_regra("ExecSql \"x\""), [Expected(Semicolon)]);
         let text = "ExecSql \"UPDATE T \\\n SET A = 1\";";
         assert!(erros_regra(text).is_empty());
+    }
+
+    #[test]
+    fn argumentos_do_mensagem() {
+        use ParseErrorKind::{Expected, ExpectedMessageText, InvalidMessageType};
+        let ok = [
+            "Mensagem(Erro, \"a\");",
+            "mensagem(retorna, aTxt);",
+            "Mensagem(REFAZ, aTxt);",
+            "x = Mensagem(Retorna, \"a\");",
+        ];
+        for text in ok {
+            assert!(erros_regra(text).is_empty(), "{text}");
+        }
+        // Cada caso dá um erro só, e o `;` depois do `)` não gera outro.
+        let casos = [
+            ("Mensagem(Erro, \"a\" + aTxt);", Expected(RParen)),
+            ("x = Mensagem(Retorna, aTxt + \"b\");", Expected(RParen)),
+            ("Mensagem(Retorna, 5);", ExpectedMessageText),
+            ("Mensagem(Retorna, 'a');", ExpectedMessageText),
+            ("Mensagem(Retorna, (\"abc\"));", ExpectedMessageText),
+            ("Mensagem(Retorna, Cur_Emp.NomEmp);", ExpectedMessageText),
+            ("Mensagem(Retorna, f(1));", ExpectedMessageText),
+            ("Mensagem(Aviso, \"abc\");", InvalidMessageType),
+            ("Mensagem(x, \"abc\");", InvalidMessageType),
+            ("Mensagem(Retorna \"abc\");", Expected(Comma)),
+            ("Mensagem(Retorna, \"abc\"\n;", Expected(RParen)),
+        ];
+        for (text, erro) in casos {
+            assert_eq!(erros_regra(&format!("{text} y = 1;")), [erro], "{text}");
+        }
+        // As outras chamadas continuam aceitando expressão.
+        assert!(erros_regra("f(\"a\" + aTxt, 1 * 2); x = f(\"a\" + aTxt);").is_empty());
     }
 
     #[test]
