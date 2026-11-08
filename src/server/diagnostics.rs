@@ -1,0 +1,191 @@
+//! Erros do lexer e do parser como diagnósticos do protocolo.
+//!
+//! Cada tipo de erro tem um código estável (`SEN001`...) e uma mensagem. Quando o texto do
+//! compilador da Senior foi conferido para o mesmo caso, ele aparece entre parênteses, para quem
+//! conhece o erro do ERP reconhecer. Todos os erros de hoje foram conferidos no compilador e
+//! nenhum aparece nas regras que compilam. Um tipo novo sem essa conferência começa desligado em
+//! [`describe_parse`].
+
+use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
+use text_size::TextRange;
+
+use crate::line_index::{ColumnEncoding, LineIndex};
+use crate::{LexErrorKind, ParseErrorKind, SyntaxKind, Tree};
+
+pub(crate) fn diagnostics(
+    text: &str,
+    tree: &Tree,
+    index: &LineIndex,
+    encoding: ColumnEncoding,
+) -> Vec<Diagnostic> {
+    let lex = tree
+        .tokens()
+        .errors()
+        .iter()
+        .map(|e| (e.range, describe_lex(e.kind, &text[e.range])));
+    let parse = tree
+        .errors()
+        .iter()
+        .filter_map(|e| Some((e.range, describe_parse(e.kind)?)));
+    lex.chain(parse)
+        .map(|(range, (code, message))| Diagnostic {
+            range: to_lsp(text, index, encoding, range),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String(code.to_owned())),
+            source: Some("senior-lsp".to_owned()),
+            message,
+            ..Diagnostic::default()
+        })
+        .collect()
+}
+
+fn to_lsp(text: &str, index: &LineIndex, encoding: ColumnEncoding, range: TextRange) -> Range {
+    let p = |offset| {
+        let lc = index.line_col(text, offset, encoding);
+        Position::new(lc.line, lc.col)
+    };
+    Range::new(p(range.start()), p(range.end()))
+}
+
+fn describe_lex(kind: LexErrorKind, text: &str) -> (&'static str, String) {
+    match kind {
+        LexErrorKind::InvalidChar => ("SEN001", format!("O caractere \"{text}\" é inválido.")),
+        LexErrorKind::UnterminatedString => (
+            "SEN002",
+            "String sem as aspas de fechamento (cadeia de caracteres sem terminação).".to_owned(),
+        ),
+        LexErrorKind::UnterminatedAtComment => (
+            "SEN003",
+            "Comentário sem o @ de fechamento na mesma linha (comentário inválido).".to_owned(),
+        ),
+        LexErrorKind::UnterminatedBlockComment => (
+            "SEN004",
+            "Comentário /* sem o */ de fechamento (comentário sem terminação).".to_owned(),
+        ),
+        LexErrorKind::IdentTooLong => (
+            "SEN005",
+            "Nome com mais de 100 caracteres (identificador muito extenso).".to_owned(),
+        ),
+        LexErrorKind::MalformedChar => (
+            "SEN006",
+            "Literal de caractere sem o apóstrofo de fechamento (falta ').".to_owned(),
+        ),
+        LexErrorKind::MalformedNumber => (
+            "SEN007",
+            "Número que o compilador não aceita (identificador mal-formado).".to_owned(),
+        ),
+        LexErrorKind::LineTooLong => (
+            "SEN008",
+            "Linha maior do que o compilador aceita (linha para o compilador é muito grande)."
+                .to_owned(),
+        ),
+    }
+}
+
+/// Mensagem de um erro do parser, ou `None` para não publicar.
+fn describe_parse(kind: ParseErrorKind) -> Option<(&'static str, String)> {
+    Some(match kind {
+        ParseErrorKind::Expected(token) => ("SEN020", format!("Falta {}.", expected(token))),
+        ParseErrorKind::ExpectedExpression => ("SEN021", "Falta um valor.".to_owned()),
+        ParseErrorKind::ChainedComparison => (
+            "SEN022",
+            "Só cabe uma comparação por expressão. Use parênteses, como em (a = 1) e (b = 2)."
+                .to_owned(),
+        ),
+        ParseErrorKind::ExpectedStatement => (
+            "SEN023",
+            "Isto não começa um comando (falta valor, expressão ou comando).".to_owned(),
+        ),
+        ParseErrorKind::UnmatchedEnd => (
+            "SEN024",
+            "Fim de bloco sem início (Cláusula \"Fim\" sem Cláusula \"Início\").".to_owned(),
+        ),
+        ParseErrorKind::TooDeep => (
+            "SEN025",
+            "Aninhamento grande demais. O resto do arquivo não foi analisado.".to_owned(),
+        ),
+        ParseErrorKind::ExpectedType => (
+            "SEN026",
+            "Falta o tipo, que é alfa, numero ou data.".to_owned(),
+        ),
+    })
+}
+
+fn expected(token: SyntaxKind) -> &'static str {
+    match token {
+        SyntaxKind::Semicolon => "\";\"",
+        SyntaxKind::RParen => "\")\"",
+        SyntaxKind::LParen => "\"(\"",
+        SyntaxKind::RBracket => "\"]\"",
+        SyntaxKind::RBrace => "\"}\"",
+        SyntaxKind::LBrace => "\"{\"",
+        SyntaxKind::Comma => "\",\"",
+        SyntaxKind::Eq => "\"=\"",
+        SyntaxKind::Ident => "um nome",
+        _ => "um token",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Código, início e fim de cada diagnóstico, com linha e coluna.
+    type Resumo = (String, (u32, u32), (u32, u32));
+
+    fn diags(text: &str, encoding: ColumnEncoding) -> Vec<Resumo> {
+        let tree = crate::parse(text).unwrap();
+        diagnostics(text, &tree, &LineIndex::new(text), encoding)
+            .into_iter()
+            .map(|d| {
+                let NumberOrString::String(code) = d.code.unwrap() else {
+                    unreachable!()
+                };
+                (
+                    code,
+                    (d.range.start.line, d.range.start.character),
+                    (d.range.end.line, d.range.end.character),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn erro_de_lexer_e_de_parser() {
+        let text = "x = 1;\ny = #;";
+        assert_eq!(
+            diags(text, ColumnEncoding::Utf16),
+            [
+                ("SEN001".to_owned(), (1, 4), (1, 5)),
+                ("SEN021".to_owned(), (1, 4), (1, 5)),
+            ]
+        );
+    }
+
+    #[test]
+    fn coluna_depois_de_acento_e_emoji() {
+        // `ç` e o emoji estão numa string, e o erro é o `;` que falta no fim.
+        let text = "x = \"ção😀\"";
+        let utf16 = diags(text, ColumnEncoding::Utf16);
+        let utf8 = diags(text, ColumnEncoding::Utf8);
+        assert_eq!(utf16[0].0, "SEN020");
+        // 4 + aspas + ç ã o (3) + emoji (2) + aspas = 11 em UTF-16.
+        assert_eq!(utf16[0].1, (0, 11));
+        // Em bytes são 4 + 1 + 2 + 2 + 1 + 4 + 1 = 15.
+        assert_eq!(utf8[0].1, (0, 15));
+    }
+
+    #[test]
+    fn regra_sem_erro_nao_tem_diagnostico() {
+        let text = "definir alfa a;\nse (a = \"x\") { a = \"y\"; }";
+        assert!(diags(text, ColumnEncoding::Utf16).is_empty());
+    }
+
+    #[test]
+    fn mensagem_do_caractere_invalido_mostra_o_caractere() {
+        let text = "x = 1; #";
+        let tree = crate::parse(text).unwrap();
+        let d = diagnostics(text, &tree, &LineIndex::new(text), ColumnEncoding::Utf16);
+        assert_eq!(d[0].message, "O caractere \"#\" é inválido.");
+    }
+}

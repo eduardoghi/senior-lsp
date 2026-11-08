@@ -43,6 +43,14 @@ const NAME_BYTES: [bool; 256] = {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextTooLarge;
 
+impl std::fmt::Display for TextTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("texto maior que 4 GiB")
+    }
+}
+
+impl std::error::Error for TextTooLarge {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LexErrorKind {
     /// Caractere que não pertence à linguagem fora de string ou comentário.
