@@ -140,6 +140,9 @@ impl Parser {
                 self.expect(Semicolon);
                 self.b.finish_node();
             }
+            ExecSqlKw | InsirirKw | CancelKw | CancelarKw if self.b.peek_second() != LParen => {
+                self.keyword_with_value();
+            }
             DefinirKw => self.definition(),
             FuncaoKw => self.func_impl(),
             PareKw => self.keyword_statement(Break),
@@ -173,6 +176,18 @@ impl Parser {
         kind == Ident
             || is_value_keyword(kind)
             || kind.is_keyword() && self.b.peek_second() == LParen
+    }
+
+    /// `ExecSql "UPDATE ...";`, `ExecSql aSql;`, `insirir "..."` e `cancel;`. O valor é
+    /// opcional na árvore, e quem confere se o comando exige um é o validador.
+    fn keyword_with_value(&mut self) {
+        self.b.start_node(KeywordStmt);
+        self.bump();
+        if !self.at(Semicolon) && starts_expression(self.current()) {
+            self.expr();
+        }
+        self.expect(Semicolon);
+        self.b.finish_node();
     }
 
     /// `definir ...;`, despachado pela palavra depois do `definir`.
@@ -1238,6 +1253,24 @@ mod tests {
         );
         // Sem bloco aberto, o fim sobrando continua sendo erro.
         assert_eq!(erros_regra("funcao f();\n x = 7;\n}"), [UnmatchedEnd]);
+    }
+
+    #[test]
+    fn comandos_de_palavra_reservada() {
+        assert_eq!(
+            regra("ExecSQL \"DELETE FROM T\"; ExecSql aSql; cancel; cancel(1);"),
+            "(KeywordStmt \"DELETE FROM T\") (KeywordStmt aSql) (KeywordStmt) \
+             (CallStmt (CallExpr cancel (ArgList 1)))"
+        );
+        assert_eq!(
+            regra("Mensagem(Erro, aMsg); IniciarTransacao(); ExecSqlEx(aSql, nErro, aErro);"),
+            "(CallStmt (CallExpr Mensagem (ArgList Erro aMsg))) \
+             (CallStmt (CallExpr IniciarTransacao (ArgList))) \
+             (CallStmt (CallExpr ExecSqlEx (ArgList aSql nErro aErro)))"
+        );
+        assert_eq!(erros_regra("ExecSql \"x\""), [Expected(Semicolon)]);
+        let text = "ExecSql \"UPDATE T \\\n SET A = 1\";";
+        assert!(erros_regra(text).is_empty());
     }
 
     #[test]

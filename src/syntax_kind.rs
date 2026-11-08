@@ -163,6 +163,9 @@ pub enum SyntaxKind {
     QualifiedName,
     ParamList,
     Param,
+    /// Comando de palavra reservada sem parênteses, como `ExecSql "UPDATE ...";` e `cancel;`. A
+    /// palavra é o primeiro token e diz qual comando é.
+    KeywordStmt,
 }
 
 use SyntaxKind::*;
