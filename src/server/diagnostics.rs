@@ -1,4 +1,4 @@
-//! Erros do lexer e do parser como diagnósticos do protocolo.
+//! Erros do lexer e do parser e verificações do validador como diagnósticos do protocolo.
 //!
 //! Cada tipo de erro tem um código estável (`SEN001`...) e uma mensagem. Quando o texto do
 //! compilador da Senior foi conferido para o mesmo caso, ele aparece entre parênteses, para quem
@@ -10,6 +10,7 @@ use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range}
 use text_size::TextRange;
 
 use crate::line_index::{ColumnEncoding, LineIndex};
+use crate::validate::{Check, CheckKind, validate};
 use crate::{LexErrorKind, ParseErrorKind, SyntaxKind, Tree};
 
 pub(crate) fn diagnostics(
@@ -27,10 +28,22 @@ pub(crate) fn diagnostics(
         .errors()
         .iter()
         .filter_map(|e| Some((e.range, describe_parse(e.kind)?)));
-    lex.chain(parse)
-        .map(|(range, (code, message))| Diagnostic {
+    let errors = lex
+        .chain(parse)
+        .map(|(range, described)| (range, described, DiagnosticSeverity::ERROR));
+    let checks = validate(tree).into_iter().map(|c| {
+        let severity = if c.kind.is_error() {
+            DiagnosticSeverity::ERROR
+        } else {
+            DiagnosticSeverity::WARNING
+        };
+        (c.range, describe_check(&c, tree, text), severity)
+    });
+    errors
+        .chain(checks)
+        .map(|(range, (code, message), severity)| Diagnostic {
             range: to_lsp(text, index, encoding, range),
-            severity: Some(DiagnosticSeverity::ERROR),
+            severity: Some(severity),
             code: Some(NumberOrString::String(code.to_owned())),
             source: Some("senior-lsp".to_owned()),
             message,
@@ -121,6 +134,43 @@ fn describe_parse(kind: ParseErrorKind) -> Option<(&'static str, String)> {
     })
 }
 
+fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, String) {
+    let function = check
+        .function
+        .map_or("", |name| &text[tree.text_range(name)]);
+    match check.kind {
+        CheckKind::MinusTakesOneToken => (
+            "SEN040",
+            "Depois de *, / ou e, o - pega só o próximo token, e o resto sobra (falta \";\")."
+                .to_owned(),
+        ),
+        CheckKind::ComparisonInAssignment => (
+            "SEN041",
+            "Comparação na atribuição só vale entre parênteses, como em x = (a > 1) \
+             (falta \";\")."
+                .to_owned(),
+        ),
+        CheckKind::LogicalMinus => (
+            "SEN060",
+            "e ou ou seguido de - compila, mas numa atribuição o valor não é gravado.".to_owned(),
+        ),
+        CheckKind::CodeAfterFunctionBlock => (
+            "SEN061",
+            format!(
+                "Este comando faz parte da função {function}. O corpo de uma função vai até a \
+                 próxima funcao ou o fim do arquivo, não só até o fim do bloco."
+            ),
+        ),
+        CheckKind::FunctionInsideBlock => (
+            "SEN062",
+            format!(
+                "A função {function} começa com um bloco de antes dela ainda aberto. O compilador \
+                 conta os blocos no arquivo todo, e o próximo fim de bloco fecha aquele."
+            ),
+        ),
+    }
+}
+
 fn expected(token: SyntaxKind) -> &'static str {
     match token {
         SyntaxKind::Semicolon => "\";\"",
@@ -189,6 +239,32 @@ mod tests {
     fn regra_sem_erro_nao_tem_diagnostico() {
         let text = "definir alfa a;\nse (a = \"x\") { a = \"y\"; }";
         assert!(diags(text, ColumnEncoding::Utf16).is_empty());
+    }
+
+    #[test]
+    fn aviso_do_validador_e_warning() {
+        let text = "definir funcao f();\nfuncao f(); { x = 1; }\nx = 2 e -3;";
+        let tree = crate::parse(text).unwrap();
+        let d = diagnostics(text, &tree, &LineIndex::new(text), ColumnEncoding::Utf16);
+        let resumo: Vec<_> = d
+            .iter()
+            .map(|d| {
+                (
+                    d.code.clone().unwrap(),
+                    d.severity.unwrap(),
+                    d.range.start.line,
+                )
+            })
+            .collect();
+        let code = |c: &str| NumberOrString::String(c.to_owned());
+        assert_eq!(
+            resumo,
+            [
+                (code("SEN061"), DiagnosticSeverity::WARNING, 2),
+                (code("SEN060"), DiagnosticSeverity::WARNING, 2),
+            ]
+        );
+        assert!(d[0].message.contains("função f."));
     }
 
     #[test]

@@ -9,6 +9,7 @@ mod scan;
 pub mod server;
 mod syntax_kind;
 mod tree;
+pub mod validate;
 
 pub use lexer::{LexError, LexErrorKind, TextTooLarge, Tokens, lex};
 pub use parser::parse;
