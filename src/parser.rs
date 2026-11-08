@@ -4,11 +4,19 @@
 //! nome, e as restrições do compilador que dependem de onde a expressão aparece (relacional no
 //! lado direito da atribuição, `-` logo depois de `e`) ficam para um validador que olha a árvore.
 
-// Por enquanto só os testes chamam o parser. Sai quando os comandos entrarem.
-#![allow(dead_code)]
-
 use crate::SyntaxKind::{self, *};
 use crate::tree::{Builder, ParseErrorKind, Tree};
+use crate::{TextTooLarge, lex};
+
+/// Analisa o texto de uma regra. Só falha se o texto passar do limite das posições, os erros de
+/// sintaxe ficam em [`Tree::errors`] e os do lexer nos tokens.
+pub fn parse(text: &str) -> Result<Tree, TextTooLarge> {
+    let mut p = Parser::new(Builder::new(lex(text)?));
+    while !p.at(Eof) {
+        p.statement_or_skip();
+    }
+    Ok(p.finish())
+}
 
 pub(crate) struct Parser {
     b: Builder,
@@ -49,6 +57,312 @@ impl Parser {
             self.error(ParseErrorKind::Expected(kind));
             false
         }
+    }
+
+    /// Analisa um comando e garante que o parser avançou. Se nada foi consumido, o token atual
+    /// não começa comando nenhum e é consumido num `ErrorNode`, para o laço nunca travar.
+    fn statement_or_skip(&mut self) {
+        let before = self.b.position();
+        self.statement();
+        if self.b.position() == before && !self.at(Eof) {
+            self.error(ParseErrorKind::ExpectedStatement);
+            self.b.start_node(ErrorNode);
+            self.bump();
+            self.b.finish_node();
+        }
+    }
+
+    fn statement(&mut self) {
+        match self.current() {
+            LBrace | InicioKw => self.block(),
+            RBrace | FimKw => {
+                self.error(ParseErrorKind::UnmatchedEnd);
+                self.skip_one_in_error();
+            }
+            SeKw => self.if_statement(),
+            EnquantoKw => self.while_statement(),
+            ParaKw => self.for_statement(),
+            VaParaKw => {
+                self.b.start_node(Goto);
+                self.bump();
+                if self.at(Ident) {
+                    self.leaf(NameRef);
+                } else {
+                    self.error(ParseErrorKind::Expected(Ident));
+                }
+                self.expect(Semicolon);
+                self.b.finish_node();
+            }
+            PareKw => self.keyword_statement(Break),
+            ContinueKw => self.keyword_statement(Continue),
+            Ident if self.b.next_is_glued(Colon) => {
+                self.b.start_node(Label);
+                self.bump();
+                self.bump();
+                if self.at(Semicolon) {
+                    self.bump();
+                }
+                self.b.finish_node();
+            }
+            SenaoKw => {
+                self.error(ParseErrorKind::ExpectedStatement);
+                self.skip_one_in_error();
+            }
+            _ if self.at_name_start() => self.simple_statement(),
+            _ => {
+                // `;` solto, `5;`, `(a);`, `senao` sem `se` e o que ainda não é analisado.
+                self.error(ParseErrorKind::ExpectedStatement);
+                self.recover_statement();
+            }
+        }
+    }
+
+    /// Começo de um comando ou designador por nome. Uma palavra reservada só vale se pode ser
+    /// valor ou se vem seguida de `(`, como `Mensagem(...)` e `HabilitarCampo(...)`.
+    fn at_name_start(&self) -> bool {
+        let kind = self.current();
+        kind == Ident
+            || is_value_keyword(kind)
+            || kind.is_keyword() && self.b.peek_second() == LParen
+    }
+
+    /// `pare;` e `continue;`.
+    fn keyword_statement(&mut self, kind: SyntaxKind) {
+        self.b.start_node(kind);
+        self.bump();
+        self.expect(Semicolon);
+        self.b.finish_node();
+    }
+
+    /// `{ ... }` ou `inicio ... fim`, que o compilador trata como o mesmo token. O `;` depois do
+    /// fim é opcional, um só.
+    fn block(&mut self) {
+        self.b.start_node(Block);
+        self.bump();
+        while !matches!(self.current(), RBrace | FimKw | Eof) {
+            self.statement_or_skip();
+        }
+        if matches!(self.current(), RBrace | FimKw) {
+            self.bump();
+            if self.at(Semicolon) {
+                self.bump();
+            }
+        } else {
+            self.error(ParseErrorKind::Expected(RBrace));
+        }
+        self.b.finish_node();
+    }
+
+    /// `se ( condição ) comando [ senao comando ]`.
+    fn if_statement(&mut self) {
+        self.b.start_node(If);
+        self.bump();
+        self.condition(true);
+        self.statement_or_skip();
+        if self.at(SenaoKw) {
+            self.b.start_node(ElseBranch);
+            self.bump();
+            self.statement_or_skip();
+            self.b.finish_node();
+        }
+        self.b.finish_node();
+    }
+
+    /// `enquanto ( condição ) comando`. A condição pode ser vazia.
+    fn while_statement(&mut self) {
+        self.b.start_node(While);
+        self.bump();
+        self.condition(false);
+        self.statement_or_skip();
+        self.b.finish_node();
+    }
+
+    /// `( condição )`. No `se` o compilador exige a condição, no `enquanto` não.
+    fn condition(&mut self, required: bool) {
+        if !self.expect(LParen) {
+            return;
+        }
+        if self.at(RParen) {
+            if required {
+                self.missing_operand();
+            }
+        } else {
+            self.expr();
+        }
+        self.expect(RParen);
+    }
+
+    /// `para ( atribuições ; condição ; atribuições ) comando`, com cada parte opcional e as
+    /// atribuições separadas por vírgula.
+    fn for_statement(&mut self) {
+        self.b.start_node(For);
+        self.bump();
+        if self.expect(LParen) {
+            self.for_assignments(ForInit, Semicolon);
+            self.expect(Semicolon);
+            if !self.at(Semicolon) {
+                self.expr();
+            }
+            self.expect(Semicolon);
+            self.for_assignments(ForStep, RParen);
+            self.expect(RParen);
+        }
+        self.statement_or_skip();
+        self.b.finish_node();
+    }
+
+    fn for_assignments(&mut self, kind: SyntaxKind, end: SyntaxKind) {
+        self.b.start_node(kind);
+        if !self.at(end) {
+            loop {
+                self.assignment_or_call(false);
+                if self.at(Comma) {
+                    self.bump();
+                    continue;
+                }
+                break;
+            }
+            // O compilador espera mais uma atribuição depois de vírgula ou o fim da lista, como
+            // em `para (...; i++;)`.
+            if !self.at(end) && !self.at(Eof) {
+                self.error(ParseErrorKind::Expected(Comma));
+                self.b.start_node(ErrorNode);
+                while !matches!(self.current(), RParen | Eof) && !self.at(end) {
+                    self.bump();
+                }
+                self.b.finish_node();
+            }
+        }
+        self.b.finish_node();
+    }
+
+    /// Comando que começa com nome, decidido pelo que vem depois do nome e dos seus campos e
+    /// índices.
+    fn simple_statement(&mut self) {
+        self.assignment_or_call(true);
+    }
+
+    /// `x = expr`, `x++`, `x--`, chamada `f(...)` ou `cur.SQL "..."`. Com `terminated`, cobra
+    /// o `;` do fim. Chamada de campo, como `cur.AbrirCursor()`, aceita ficar sem `;`, porque o
+    /// compilador dispensa nos comandos de cursor e só os tipos dizem se é cursor.
+    fn assignment_or_call(&mut self, terminated: bool) {
+        let start = self.b.checkpoint();
+        let designator = self.designator();
+        match self.current() {
+            Eq => {
+                self.b.start_node_at(start, Assign);
+                self.bump();
+                self.expr();
+                if terminated {
+                    self.expect(Semicolon);
+                }
+                self.b.finish_node();
+            }
+            PlusPlus | MinusMinus => {
+                self.b.start_node_at(start, Assign);
+                self.bump();
+                if terminated {
+                    self.expect(Semicolon);
+                }
+                self.b.finish_node();
+            }
+            _ if designator == Some(Call) || designator == Some(FieldCall) => {
+                self.b.start_node_at(start, CallStmt);
+                if terminated {
+                    if designator == Some(FieldCall) {
+                        if self.at(Semicolon) {
+                            self.bump();
+                        }
+                    } else {
+                        self.expect(Semicolon);
+                    }
+                }
+                self.b.finish_node();
+            }
+            kind if designator == Some(Field) && starts_expression(kind) => {
+                self.b.start_node_at(start, FieldCommand);
+                self.expr();
+                if terminated && self.at(Semicolon) {
+                    self.bump();
+                }
+                self.b.finish_node();
+            }
+            _ => {
+                // Nome sozinho, como `a;` ou `lbl :`. O compilador lê como começo de atribuição.
+                self.error(ParseErrorKind::Expected(Eq));
+                if terminated {
+                    self.recover_statement();
+                }
+            }
+        }
+    }
+
+    /// Nome seguido de campos, índices e chamadas. Diz qual foi o último sufixo, para o comando
+    /// saber se é chamada.
+    fn designator(&mut self) -> Option<DesignatorEnd> {
+        let start = self.b.checkpoint();
+        if self.at_name_start() {
+            self.leaf(NameRef);
+        } else {
+            self.missing_operand();
+            return None;
+        }
+        let mut last = None;
+        loop {
+            match self.current() {
+                LParen => {
+                    self.b.start_node_at(start, CallExpr);
+                    self.arg_list();
+                    self.b.finish_node();
+                    last = Some(if last == Some(Field) { FieldCall } else { Call });
+                }
+                LBracket => {
+                    self.b.start_node_at(start, IndexExpr);
+                    self.bump();
+                    self.expr();
+                    self.expect(RBracket);
+                    self.b.finish_node();
+                    last = Some(Index);
+                }
+                Dot => {
+                    self.b.start_node_at(start, FieldExpr);
+                    self.bump();
+                    if self.at(Ident) || self.current().is_keyword() {
+                        self.leaf(NameRef);
+                    } else {
+                        self.error(ParseErrorKind::Expected(Ident));
+                    }
+                    self.b.finish_node();
+                    last = Some(Field);
+                }
+                _ => return last,
+            }
+        }
+    }
+
+    /// Pula até um ponto seguro dentro de um `ErrorNode`. O `;` que encerra o trecho entra no
+    /// nó. Fim de bloco, `senao` e palavras que só começam comando ficam para quem está em volta.
+    fn recover_statement(&mut self) {
+        self.b.start_node(ErrorNode);
+        let mut first = true;
+        loop {
+            let kind = self.current();
+            if kind == Eof || (!first && (starts_statement(kind) || is_block_end(kind))) {
+                break;
+            }
+            self.bump();
+            first = false;
+            if kind == Semicolon {
+                break;
+            }
+        }
+        self.b.finish_node();
+    }
+
+    fn skip_one_in_error(&mut self) {
+        self.b.start_node(ErrorNode);
+        self.bump();
+        self.b.finish_node();
     }
 
     /// Expressão completa, com no máximo um relacional.
@@ -216,6 +530,40 @@ impl Parser {
     }
 }
 
+/// Último sufixo de um designador.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesignatorEnd {
+    Call,
+    /// Chamada logo depois de um campo, como `cur.AbrirCursor()`.
+    FieldCall,
+    Index,
+    Field,
+}
+
+use DesignatorEnd::{Call, Field, FieldCall, Index};
+
+/// Palavras que começam comando e servem de ponto seguro para a recuperação. `e` e `ou` não
+/// entram, porque aparecem no meio de expressão.
+fn starts_statement(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SeKw | SenaoKw
+            | EnquantoKw
+            | ParaKw
+            | VaParaKw
+            | PareKw
+            | ContinueKw
+            | DefinirKw
+            | FuncaoKw
+            | InicioKw
+            | LBrace
+    )
+}
+
+fn is_block_end(kind: SyntaxKind) -> bool {
+    matches!(kind, RBrace | FimKw | SenaoKw)
+}
+
 fn is_relational(kind: SyntaxKind) -> bool {
     matches!(kind, Eq | Lt | Gt | LtEq | GtEq | Neq | RelRun)
 }
@@ -258,7 +606,7 @@ fn is_expression_end(kind: SyntaxKind) -> bool {
 /// `ErrorNode`.
 #[cfg(test)]
 pub(crate) fn parse_expression(text: &str) -> Tree {
-    let mut p = Parser::new(Builder::new(crate::lex(text).unwrap()));
+    let mut p = Parser::new(Builder::new(lex(text).unwrap()));
     p.expr();
     if !p.at(Eof) {
         p.error(ParseErrorKind::Expected(Eof));
@@ -278,9 +626,8 @@ mod tests {
     use crate::tree::{NodeId, ParseError};
 
     /// A árvore em forma de lista, com o texto só nas folhas, como em `(BinaryExpr a b)`.
-    fn sexp(text: &str) -> std::string::String {
-        let tree = parse_expression(text);
-        check(&tree, text);
+    fn forma(tree: &Tree, text: &str) -> std::string::String {
+        check(tree, text);
         fn no(tree: &Tree, node: NodeId, text: &str) -> std::string::String {
             let kind = tree.kind(node);
             if matches!(kind, NameRef | Literal) {
@@ -294,13 +641,30 @@ mod tests {
             s.push(')');
             s
         }
-        let raiz = tree.root();
-        let filhos: Vec<_> = tree.children(raiz).map(|c| no(&tree, c, text)).collect();
+        let filhos: Vec<_> = tree
+            .children(tree.root())
+            .map(|c| no(tree, c, text))
+            .collect();
         filhos.join(" ")
+    }
+
+    fn sexp(text: &str) -> std::string::String {
+        forma(&parse_expression(text), text)
+    }
+
+    /// A árvore de uma regra inteira.
+    fn regra(text: &str) -> std::string::String {
+        forma(&parse(text).unwrap(), text)
     }
 
     fn erros(text: &str) -> Vec<ParseErrorKind> {
         let tree = parse_expression(text);
+        check(&tree, text);
+        tree.errors().iter().map(|e: &ParseError| e.kind).collect()
+    }
+
+    fn erros_regra(text: &str) -> Vec<ParseErrorKind> {
+        let tree = parse(text).unwrap();
         check(&tree, text);
         tree.errors().iter().map(|e: &ParseError| e.kind).collect()
     }
@@ -424,5 +788,146 @@ mod tests {
     fn operando_faltando_antes_da_quebra_de_linha_fica_dentro_do_pai() {
         let text = "af(f()ou1=\n,\n";
         check(&parse_expression(text), text);
+    }
+
+    use ParseErrorKind::{Expected, ExpectedExpression, ExpectedStatement, UnmatchedEnd};
+
+    #[test]
+    fn atribuicao_e_chamada() {
+        assert_eq!(regra("x = a + 1;"), "(Assign x (BinaryExpr a 1))");
+        assert_eq!(regra("x++; y--;"), "(Assign x) (Assign y)");
+        assert_eq!(
+            regra("v[i].c = 1;"),
+            "(Assign (FieldExpr (IndexExpr v i) c) 1)"
+        );
+        assert_eq!(regra("f(1);"), "(CallStmt (CallExpr f (ArgList 1)))");
+        assert_eq!(
+            regra("Mensagem(Erro, aMsg);"),
+            "(CallStmt (CallExpr Mensagem (ArgList Erro aMsg)))"
+        );
+        assert!(erros_regra("x = a + 1; f(1); Mensagem(Erro, a);").is_empty());
+        assert_eq!(erros_regra("f(1)"), [Expected(Semicolon)]);
+        assert_eq!(erros_regra("x = 1 y = 2;"), [Expected(Semicolon)]);
+    }
+
+    #[test]
+    fn comandos_de_campo_dispensam_o_ponto_e_virgula() {
+        let text = "cur.SQL \"SELECT 1\"\ncur.AbrirCursor()\ncur.FecharCursor();";
+        assert_eq!(
+            regra(text),
+            "(FieldCommand (FieldExpr cur SQL) \"SELECT 1\") \
+             (CallStmt (CallExpr (FieldExpr cur AbrirCursor) (ArgList))) \
+             (CallStmt (CallExpr (FieldExpr cur FecharCursor) (ArgList)))"
+        );
+        assert!(erros_regra(text).is_empty());
+    }
+
+    #[test]
+    fn nao_existe_comando_vazio_nem_expressao_como_comando() {
+        assert_eq!(erros_regra("x = 1;;"), [ExpectedStatement]);
+        assert_eq!(regra("x = 1;;"), "(Assign x 1) (ErrorNode)");
+        assert_eq!(erros_regra("5;"), [ExpectedStatement]);
+        assert_eq!(erros_regra("(a);"), [ExpectedStatement]);
+        // O compilador lê nome sozinho como começo de atribuição.
+        assert_eq!(erros_regra("a;"), [Expected(Eq)]);
+        assert_eq!(erros_regra("lbl :"), [Expected(Eq)]);
+    }
+
+    #[test]
+    fn blocos() {
+        assert_eq!(regra("{ }"), "(Block)");
+        assert_eq!(regra("inicio x = 1; fim"), "(Block (Assign x 1))");
+        assert!(erros_regra("{ x = 1; };").is_empty());
+        assert_eq!(erros_regra("{ x = 1; };;"), [ExpectedStatement]);
+        assert_eq!(erros_regra("{ x = 1;"), [Expected(RBrace)]);
+        assert_eq!(erros_regra("x = 1; }"), [UnmatchedEnd]);
+        assert_eq!(regra("{ { x = 1; } }"), "(Block (Block (Assign x 1)))");
+    }
+
+    #[test]
+    fn se_e_senao() {
+        assert_eq!(
+            regra("se (a = 1) x = 1; senao x = 2;"),
+            "(If (BinaryExpr a 1) (Assign x 1) (ElseBranch (Assign x 2)))"
+        );
+        assert_eq!(
+            regra("se (a = 9) { x = 1; } senao se (a = 1) { x = 2; } senao { x = 3; }"),
+            "(If (BinaryExpr a 9) (Block (Assign x 1)) (ElseBranch (If (BinaryExpr a 1) \
+             (Block (Assign x 2)) (ElseBranch (Block (Assign x 3))))))"
+        );
+        assert_eq!(erros_regra("se () { x = 1; }"), [ExpectedExpression]);
+        assert_eq!(
+            erros_regra("se (a = 1 e b = 2) { }"),
+            [ParseErrorKind::ChainedComparison]
+        );
+        // O senao solto vira erro e o comando dele é analisado normalmente.
+        assert_eq!(erros_regra("senao x = 1;"), [ExpectedStatement]);
+        assert_eq!(regra("senao x = 1;"), "(ErrorNode) (Assign x 1)");
+    }
+
+    #[test]
+    fn enquanto_e_para() {
+        assert_eq!(regra("enquanto () { pare; }"), "(While (Block (Break)))");
+        assert!(erros_regra("enquanto () { pare; }").is_empty());
+        assert_eq!(
+            regra("para (i = 0, j = 0; i < 3; i++, j++) { continue; }"),
+            "(For (ForInit (Assign i 0) (Assign j 0)) (BinaryExpr i 3) \
+             (ForStep (Assign i) (Assign j)) (Block (Continue)))"
+        );
+        assert_eq!(regra("para (;;) { }"), "(For (ForInit) (ForStep) (Block))");
+        assert!(erros_regra("para (;;) { }").is_empty());
+        assert_eq!(
+            erros_regra("para (i = 0; i < 3; i++;) { }"),
+            [Expected(Comma)]
+        );
+    }
+
+    #[test]
+    fn vapara_e_rotulo() {
+        assert_eq!(
+            regra("vapara fim2; x = 1; fim2:"),
+            "(Goto fim2) (Assign x 1) (Label)"
+        );
+        assert!(erros_regra("vapara L; L:;").is_empty());
+        assert_eq!(erros_regra("vapara ;"), [Expected(Ident)]);
+    }
+
+    #[test]
+    fn recuperacao_continua_depois_do_erro() {
+        let text = "se (a = 1 { x = 1; } y = 2;";
+        assert_eq!(erros_regra(text), [Expected(RParen)]);
+        assert_eq!(
+            regra(text),
+            "(If (BinaryExpr a 1) (Block (Assign x 1))) (Assign y 2)"
+        );
+        // Um erro dentro do bloco não leva o senao embora.
+        let text = "se (a) { # } senao x = 2;";
+        assert_eq!(
+            regra(text),
+            "(If a (Block (ErrorNode)) (ElseBranch (Assign x 2)))"
+        );
+    }
+
+    #[test]
+    fn regra_aleatoria_nunca_trava_nem_quebra_a_arvore() {
+        let pecas = [
+            "x", "1", "\"s\"", "(", ")", "[", "]", ",", ".", "+", "-", "=", "<", "++", ";", "{",
+            "}", "se", "senao", "enquanto", "para", "vapara", "pare", "lbl:", "f(", "inicio",
+            "fim", "e", "#", " ", "\n",
+        ];
+        let mut estado: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut proximo = move || {
+            estado ^= estado << 13;
+            estado ^= estado >> 7;
+            estado ^= estado << 17;
+            estado
+        };
+        for _ in 0..20_000 {
+            let n = (proximo() % 16) as usize;
+            let text: std::string::String = (0..n)
+                .map(|_| pecas[(proximo() % pecas.len() as u64) as usize])
+                .collect();
+            check(&parse(&text).unwrap(), &text);
+        }
     }
 }

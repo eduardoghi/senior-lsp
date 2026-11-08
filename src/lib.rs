@@ -9,5 +9,6 @@ mod syntax_kind;
 mod tree;
 
 pub use lexer::{LexError, LexErrorKind, TextTooLarge, Tokens, lex};
+pub use parser::parse;
 pub use syntax_kind::SyntaxKind;
 pub use tree::{Builder, Checkpoint, Element, NodeId, ParseError, ParseErrorKind, Tree};

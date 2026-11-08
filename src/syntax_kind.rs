@@ -127,6 +127,25 @@ pub enum SyntaxKind {
     IndexExpr,
     FieldExpr,
     ArgList,
+    Block,
+    If,
+    /// O `senao` e o comando dele.
+    ElseBranch,
+    While,
+    For,
+    /// Atribuições antes do primeiro `;` do `para`.
+    ForInit,
+    /// Atribuições depois do segundo `;` do `para`.
+    ForStep,
+    Goto,
+    Label,
+    Break,
+    Continue,
+    /// `x = expr`, `x++` e `x--`.
+    Assign,
+    CallStmt,
+    /// Campo seguido de um valor, sem `=`, como `cur.SQL "SELECT ..."`.
+    FieldCommand,
 }
 
 use SyntaxKind::*;
