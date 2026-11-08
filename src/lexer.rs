@@ -211,14 +211,18 @@ impl Lexer<'_> {
     /// Confere o limite da linha que termina em `eol`. `consumed_end` é até onde o compilador
     /// consumiu e `space` diz se ele consumiu também o espaço que acrescenta no fim da linha.
     fn finish_line(&mut self, eol: usize, consumed_end: usize, space: bool) {
-        let line = &self.text[self.line_start..eol];
-        // O compilador conta em cp1252, um byte por caractere.
-        let last_column = if space {
-            line.chars().count() + 1
+        let end = if space {
+            eol
         } else {
-            let end = consumed_end.clamp(self.line_start, eol);
-            self.text[self.line_start..end].chars().count()
+            consumed_end.clamp(self.line_start, eol)
         };
+        // Em UTF-8 uma linha nunca tem mais caracteres que bytes, então quase toda linha sai aqui
+        // sem contar os caracteres.
+        if end - self.line_start + usize::from(space) <= MAX_LINE_COLUMN {
+            return;
+        }
+        // O compilador conta em cp1252, um byte por caractere.
+        let last_column = self.text[self.line_start..end].chars().count() + usize::from(space);
         if last_column > MAX_LINE_COLUMN {
             let range = TextRange::new(offset(self.line_start), offset(eol));
             // Em ordem de posição, antes dos outros erros da mesma linha.
