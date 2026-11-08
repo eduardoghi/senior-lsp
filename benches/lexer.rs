@@ -1,6 +1,6 @@
 //! Vazão do lexer em bytes por segundo.
 //!
-//! Mede um texto sintético que fica no repositório e, se `SENIOR_CORPUS` apontar para uma pasta
+//! Mede regras sintéticas que ficam no repositório e, se `SENIOR_CORPUS` apontar para uma pasta
 //! com regras `Rule.txt`, também todas elas, uma por vez. Para comparar uma mudança:
 //!
 //! ```sh
@@ -12,7 +12,8 @@
 use std::hint::black_box;
 use std::path::Path;
 
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use criterion::measurement::WallTime;
+use criterion::{BenchmarkGroup, Criterion, Throughput, criterion_group, criterion_main};
 
 #[path = "../tests/support/mod.rs"]
 mod support;
@@ -53,10 +54,12 @@ const TRECHO: &str = concat!(
     "\r\n",
 );
 
-/// Repete o trecho até passar de 1 MB.
-fn texto_sintetico() -> String {
-    let repeticoes = 1_000_000 / TRECHO.len() + 1;
-    TRECHO.repeat(repeticoes)
+/// Regras sintéticas de uns 6 KB, o tamanho médio de uma regra real, somando 1 MB. Um texto
+/// único de 1 MB variava demais entre rodadas com o mesmo código.
+fn regras_sinteticas() -> Vec<String> {
+    let regra = TRECHO.repeat(6_000 / TRECHO.len() + 1);
+    let quantas = 1_000_000 / regra.len() + 1;
+    vec![regra; quantas]
 }
 
 fn regras_do_corpus() -> Vec<String> {
@@ -70,32 +73,31 @@ fn regras_do_corpus() -> Vec<String> {
 }
 
 fn lexer(c: &mut Criterion) {
-    let sintetico = texto_sintetico();
-    let tokens = senior_lsp::lex(&sintetico).unwrap();
+    let sinteticas = regras_sinteticas();
     assert!(
-        tokens.errors().is_empty(),
+        senior_lsp::lex(&sinteticas[0]).unwrap().errors().is_empty(),
         "o texto sintético tem erro de lexer"
     );
 
     let mut grupo = c.benchmark_group("lexer");
-    grupo.throughput(Throughput::Bytes(sintetico.len() as u64));
-    grupo.bench_function("sintetico", |b| {
-        b.iter(|| senior_lsp::lex(black_box(&sintetico)).unwrap())
-    });
-
-    let regras = regras_do_corpus();
-    if !regras.is_empty() {
-        let bytes: usize = regras.iter().map(String::len).sum();
-        grupo.throughput(Throughput::Bytes(bytes as u64));
-        grupo.bench_function("corpus", |b| {
-            b.iter(|| {
-                for regra in &regras {
-                    black_box(senior_lsp::lex(black_box(regra)).unwrap());
-                }
-            })
-        });
+    medir(&mut grupo, "sintetico", &sinteticas);
+    let corpus = regras_do_corpus();
+    if !corpus.is_empty() {
+        medir(&mut grupo, "corpus", &corpus);
     }
     grupo.finish();
+}
+
+fn medir(grupo: &mut BenchmarkGroup<'_, WallTime>, nome: &str, regras: &[String]) {
+    let bytes: usize = regras.iter().map(String::len).sum();
+    grupo.throughput(Throughput::Bytes(bytes as u64));
+    grupo.bench_function(nome, |b| {
+        b.iter(|| {
+            for regra in regras {
+                black_box(senior_lsp::lex(black_box(regra)).unwrap());
+            }
+        })
+    });
 }
 
 criterion_group!(benches, lexer);
