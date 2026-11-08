@@ -16,7 +16,7 @@ text-size = "1.1.1"
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]
-name = "lexer"
+name = "vazao"
 harness = false
 
 [profile.release]

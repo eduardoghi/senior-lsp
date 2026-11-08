@@ -1,12 +1,13 @@
-//! Vazão do lexer em bytes por segundo.
+//! Vazão do lexer e do parser em bytes por segundo.
 //!
 //! Mede regras sintéticas que ficam no repositório e, se `SENIOR_CORPUS` apontar para uma pasta
-//! com regras `Rule.txt`, também todas elas, uma por vez. Para comparar uma mudança:
+//! com regras `Rule.txt`, também todas elas, uma por vez. O grupo `parser` inclui o lexer. Para
+//! comparar uma mudança:
 //!
 //! ```sh
-//! cargo bench --bench lexer -- --save-baseline antes
+//! cargo bench --bench vazao -- --save-baseline antes
 //! # muda o código
-//! cargo bench --bench lexer -- --baseline antes
+//! cargo bench --bench vazao -- --baseline antes
 //! ```
 
 use std::hint::black_box;
@@ -79,22 +80,48 @@ fn lexer(c: &mut Criterion) {
         "o texto sintético tem erro de lexer"
     );
 
-    let mut grupo = c.benchmark_group("lexer");
-    medir(&mut grupo, "sintetico", &sinteticas);
+    let tree = senior_lsp::parse(&sinteticas[0]).unwrap();
+    assert!(
+        tree.errors().is_empty(),
+        "o texto sintético tem erro de parser"
+    );
     let corpus = regras_do_corpus();
+
+    let mut grupo = c.benchmark_group("lexer");
+    medir(&mut grupo, "sintetico", &sinteticas, |r| {
+        black_box(senior_lsp::lex(r).unwrap());
+    });
     if !corpus.is_empty() {
-        medir(&mut grupo, "corpus", &corpus);
+        medir(&mut grupo, "corpus", &corpus, |r| {
+            black_box(senior_lsp::lex(r).unwrap());
+        });
+    }
+    grupo.finish();
+
+    let mut grupo = c.benchmark_group("parser");
+    medir(&mut grupo, "sintetico", &sinteticas, |r| {
+        black_box(senior_lsp::parse(r).unwrap());
+    });
+    if !corpus.is_empty() {
+        medir(&mut grupo, "corpus", &corpus, |r| {
+            black_box(senior_lsp::parse(r).unwrap());
+        });
     }
     grupo.finish();
 }
 
-fn medir(grupo: &mut BenchmarkGroup<'_, WallTime>, nome: &str, regras: &[String]) {
+fn medir(
+    grupo: &mut BenchmarkGroup<'_, WallTime>,
+    nome: &str,
+    regras: &[String],
+    analisar: impl Fn(&str),
+) {
     let bytes: usize = regras.iter().map(String::len).sum();
     grupo.throughput(Throughput::Bytes(bytes as u64));
     grupo.bench_function(nome, |b| {
         b.iter(|| {
             for regra in regras {
-                black_box(senior_lsp::lex(black_box(regra)).unwrap());
+                analisar(black_box(regra));
             }
         })
     });
