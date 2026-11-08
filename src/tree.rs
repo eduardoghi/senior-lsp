@@ -32,6 +32,8 @@ pub enum ParseErrorKind {
     UnmatchedEnd,
     /// Aninhamento acima do limite do parser. O resto do arquivo vira um `ErrorNode`.
     TooDeep,
+    /// Faltou o tipo, como em `definir 5;` ou num parâmetro de função.
+    ExpectedType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

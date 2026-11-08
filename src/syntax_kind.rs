@@ -146,6 +146,23 @@ pub enum SyntaxKind {
     CallStmt,
     /// Campo seguido de um valor, sem `=`, como `cur.SQL "SELECT ..."`.
     FieldCommand,
+    /// Nome no lugar onde é definido, como o `a` de `definir alfa a;`. Na referência é `NameRef`.
+    Name,
+    /// `definir alfa|numero|data nome [ [N] ];`, e também cada campo de `definir tabela`.
+    VarDef,
+    CursorDef,
+    ListDef,
+    TableDef,
+    /// `definir funcao nome(...);`.
+    FuncDecl,
+    /// `funcao nome(...);` e todos os comandos até a próxima implementação ou o fim da regra.
+    FuncImpl,
+    /// `definir Interno.com.x.Servico nome;`.
+    WsDef,
+    /// Nome com pontos, como `Interno.com.x.Servico`.
+    QualifiedName,
+    ParamList,
+    Param,
 }
 
 use SyntaxKind::*;

@@ -26,6 +26,9 @@ const MAX_DEPTH: u32 = 256;
 pub(crate) struct Parser {
     b: Builder,
     depth: u32,
+    /// Blocos `{ }` ou `inicio fim` abertos. O compilador conta isso de forma global, atravessando
+    /// as funções, então uma `funcao` pode começar com um bloco de outra ainda aberto.
+    open_blocks: u32,
     /// Passou do limite de aninhamento. O resto do texto já foi consumido e nada mais é cobrado.
     gave_up: bool,
 }
@@ -35,6 +38,7 @@ impl Parser {
         Parser {
             b,
             depth: 0,
+            open_blocks: 0,
             gave_up: false,
         }
     }
@@ -136,6 +140,8 @@ impl Parser {
                 self.expect(Semicolon);
                 self.b.finish_node();
             }
+            DefinirKw => self.definition(),
+            FuncaoKw => self.func_impl(),
             PareKw => self.keyword_statement(Break),
             ContinueKw => self.keyword_statement(Continue),
             Ident if self.b.next_is_glued(Colon) => {
@@ -169,6 +175,177 @@ impl Parser {
             || kind.is_keyword() && self.b.peek_second() == LParen
     }
 
+    /// `definir ...;`, despachado pela palavra depois do `definir`.
+    fn definition(&mut self) {
+        let start = self.b.checkpoint();
+        self.bump();
+        let kind = match self.current() {
+            AlfaKw | NumeroKw | DataKw => {
+                self.bump();
+                self.name();
+                self.optional_size();
+                VarDef
+            }
+            CursorKw => {
+                self.bump();
+                self.name();
+                if self.at(UnicoKw) {
+                    self.bump();
+                }
+                CursorDef
+            }
+            // Sem o `;`, o compilador engole o token seguinte e o erro aparece longe. Aqui o erro
+            // fica no lugar do `;`.
+            ListaKw => {
+                self.bump();
+                self.name();
+                ListDef
+            }
+            TabelaKw => {
+                self.bump();
+                self.name();
+                self.optional_size();
+                self.expect(Eq);
+                self.table_fields();
+                TableDef
+            }
+            FuncaoKw => {
+                self.bump();
+                self.name();
+                self.param_list();
+                FuncDecl
+            }
+            Ident => {
+                self.qualified_name();
+                self.name();
+                WsDef
+            }
+            _ => {
+                self.error(ParseErrorKind::ExpectedType);
+                self.b.start_node_at(start, ErrorNode);
+                self.recover_statement();
+                self.b.finish_node();
+                return;
+            }
+        };
+        self.b.start_node_at(start, kind);
+        self.expect_definition_end();
+        self.b.finish_node();
+    }
+
+    /// `;` do fim de uma definição. Se faltar, o resto até o `;` vai para um `ErrorNode` sem outro
+    /// erro, como em `definir alfa a, b;`. O pulo para numa palavra que começa comando, então a
+    /// lista sem `;` não leva junto o `definir` de baixo.
+    fn expect_definition_end(&mut self) {
+        if self.expect(Semicolon) {
+            return;
+        }
+        let kind = self.current();
+        if kind == Eof || starts_statement(kind) || is_block_end(kind) {
+            return;
+        }
+        self.recover_statement();
+    }
+
+    fn name(&mut self) {
+        if self.at(Ident) {
+            self.leaf(Name);
+        } else {
+            self.error(ParseErrorKind::Expected(Ident));
+        }
+    }
+
+    /// `[N]` depois do nome. O compilador pede um número, mas qualquer expressão entra na árvore.
+    fn optional_size(&mut self) {
+        if self.at(LBracket) {
+            self.bump();
+            self.expr();
+            self.expect(RBracket);
+        }
+    }
+
+    /// `{ tipo nome [ [N] ]; ... }` de `definir tabela`.
+    fn table_fields(&mut self) {
+        if !self.expect(LBrace) {
+            return;
+        }
+        while matches!(self.current(), AlfaKw | NumeroKw | DataKw) {
+            self.b.start_node(VarDef);
+            self.bump();
+            self.name();
+            self.optional_size();
+            self.expect(Semicolon);
+            self.b.finish_node();
+        }
+        self.expect(RBrace);
+    }
+
+    /// `Interno.com.x.Servico`. Palavra reservada depois de ponto vale como parte do nome.
+    fn qualified_name(&mut self) {
+        self.b.start_node(QualifiedName);
+        self.bump();
+        while self.at(Dot) {
+            self.bump();
+            if self.at(Ident) || self.current().is_keyword() {
+                self.bump();
+            } else {
+                self.error(ParseErrorKind::Expected(Ident));
+                break;
+            }
+        }
+        self.b.finish_node();
+    }
+
+    /// `( tipo [end] nome [ [N] ], ... )`.
+    fn param_list(&mut self) {
+        self.b.start_node(ParamList);
+        if self.expect(LParen) && !self.at(RParen) {
+            loop {
+                self.param();
+                if self.at(Comma) {
+                    self.bump();
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(RParen);
+        self.b.finish_node();
+    }
+
+    fn param(&mut self) {
+        self.b.start_node(Param);
+        if matches!(self.current(), AlfaKw | NumeroKw | DataKw) {
+            self.bump();
+        } else {
+            self.error(ParseErrorKind::ExpectedType);
+        }
+        if self.at(EndKw) {
+            self.bump();
+        }
+        self.name();
+        self.optional_size();
+        self.b.finish_node();
+    }
+
+    /// `funcao nome(...);` seguido do corpo. O compilador põe um retorno antes de cada
+    /// implementação, então o corpo vai até a próxima `funcao` ou o fim da regra, e não só até o
+    /// fim do bloco seguinte.
+    fn func_impl(&mut self) {
+        self.b.start_node(FuncImpl);
+        self.bump();
+        self.name();
+        self.param_list();
+        self.expect(Semicolon);
+        // Com um bloco aberto em volta, o `}` é dele e encerra também esta função.
+        while !matches!(self.current(), FuncaoKw | Eof)
+            && !(self.open_blocks > 0 && matches!(self.current(), RBrace | FimKw))
+        {
+            self.statement_or_skip();
+        }
+        self.b.finish_node();
+    }
+
     /// `pare;` e `continue;`.
     fn keyword_statement(&mut self, kind: SyntaxKind) {
         self.b.start_node(kind);
@@ -182,9 +359,11 @@ impl Parser {
     fn block(&mut self) {
         self.b.start_node(Block);
         self.bump();
+        self.open_blocks += 1;
         while !matches!(self.current(), RBrace | FimKw | Eof) {
             self.statement_or_skip();
         }
+        self.open_blocks -= 1;
         if matches!(self.current(), RBrace | FimKw) {
             self.bump();
             if self.at(Semicolon) {
@@ -518,6 +697,8 @@ impl Parser {
             Ident => self.leaf(NameRef),
             Number | SyntaxKind::String | Char => self.leaf(Literal),
             _ if is_value_keyword(kind) => self.leaf(NameRef),
+            // Tipo como valor, nas funções de lista, como em `Lst.AdicionarCampo("CodRep", numero)`.
+            AlfaKw | NumeroKw | DataKw => self.leaf(NameRef),
             LParen => {
                 self.b.start_node(ParenExpr);
                 self.bump();
@@ -639,7 +820,16 @@ fn is_value_keyword(kind: SyntaxKind) -> bool {
 fn starts_expression(kind: SyntaxKind) -> bool {
     matches!(
         kind,
-        Ident | Number | SyntaxKind::String | Char | LParen | Plus | Minus
+        Ident
+            | Number
+            | SyntaxKind::String
+            | Char
+            | LParen
+            | Plus
+            | Minus
+            | AlfaKw
+            | NumeroKw
+            | DataKw
     ) || is_value_keyword(kind)
 }
 
@@ -679,7 +869,7 @@ mod tests {
         check(tree, text);
         fn no(tree: &Tree, node: NodeId, text: &str) -> std::string::String {
             let kind = tree.kind(node);
-            if matches!(kind, NameRef | Literal) {
+            if matches!(kind, NameRef | Literal | Name | QualifiedName) {
                 return text[tree.text_range(node)].to_owned();
             }
             let mut s = format!("({kind:?}");
@@ -778,6 +968,15 @@ mod tests {
             sexp("Mensagem(Retorna, a)"),
             "(CallExpr Mensagem (ArgList Retorna a))"
         );
+    }
+
+    #[test]
+    fn tipo_como_argumento() {
+        assert_eq!(
+            sexp("Lst.AdicionarCampo(\"CodPro\", Alfa, 14)"),
+            "(CallExpr (FieldExpr Lst AdicionarCampo) (ArgList \"CodPro\" Alfa 14))"
+        );
+        assert!(erros("l.AdicionarCampo(\"c\", numero)").is_empty());
     }
 
     #[test]
@@ -958,6 +1157,90 @@ mod tests {
     }
 
     #[test]
+    fn definicoes_de_variavel() {
+        assert_eq!(
+            regra("definir alfa a; definir numero n; definir data d;"),
+            "(VarDef a) (VarDef n) (VarDef d)"
+        );
+        assert_eq!(regra("definir alfa a[10];"), "(VarDef a 10)");
+        assert_eq!(regra("definir numero v[3];"), "(VarDef v 3)");
+        assert!(erros_regra("definir alfa a[10]; definir numero v[3];").is_empty());
+        assert_eq!(erros_regra("definir alfa a, b;"), [Expected(Semicolon)]);
+        assert_eq!(erros_regra("definir 5;"), [ParseErrorKind::ExpectedType]);
+    }
+
+    #[test]
+    fn cursor_lista_tabela_e_web_service() {
+        assert_eq!(
+            regra("definir cursor c; definir cursor u unico; definir lista l;"),
+            "(CursorDef c) (CursorDef u) (ListDef l)"
+        );
+        assert_eq!(
+            regra("Definir Tabela Indice[2000] = {Numero VlrInd; alfa Nome[5];};"),
+            "(TableDef Indice 2000 (VarDef VlrInd) (VarDef Nome 5))"
+        );
+        assert_eq!(
+            regra("Definir Interno.com.empresa.Produtos.Estoque.Transferir Ws_Transf;"),
+            "(WsDef Interno.com.empresa.Produtos.Estoque.Transferir Ws_Transf)"
+        );
+        assert!(erros_regra("definir Interno.com.senior.g5.co.mcm.Servico ws;").is_empty());
+    }
+
+    #[test]
+    fn lista_sem_ponto_e_virgula_acusa_no_lugar_certo() {
+        // O compilador engole o definir de baixo e acusa o numero. Aqui o erro fica na lista.
+        let text = "definir lista l\ndefinir numero n;";
+        assert_eq!(erros_regra(text), [Expected(Semicolon)]);
+        assert_eq!(regra(text), "(ListDef l) (VarDef n)");
+    }
+
+    #[test]
+    fn declaracao_de_funcao() {
+        assert_eq!(
+            regra("definir funcao f(numero end p, alfa a);"),
+            "(FuncDecl f (ParamList (Param p) (Param a)))"
+        );
+        assert_eq!(regra("definir funcao g();"), "(FuncDecl g (ParamList))");
+        assert_eq!(
+            erros_regra("definir funcao f(p);"),
+            [ParseErrorKind::ExpectedType]
+        );
+    }
+
+    #[test]
+    fn corpo_da_funcao_vai_ate_a_proxima_funcao() {
+        let text = "x = 0;\nfuncao f(); { x = 1; }\nx = 5;\nfuncao g(numero end p); { p = 9; }";
+        assert_eq!(
+            regra(text),
+            "(Assign x 0) \
+             (FuncImpl f (ParamList) (Block (Assign x 1)) (Assign x 5)) \
+             (FuncImpl g (ParamList (Param p)) (Block (Assign p 9)))"
+        );
+        assert!(erros_regra(text).is_empty());
+        assert_eq!(erros_regra("funcao f() { }"), [Expected(Semicolon)]);
+    }
+
+    #[test]
+    fn funcao_dentro_de_bloco_ainda_aberto() {
+        // Os blocos são contados no arquivo todo, então o bloco de `a` só fecha no
+        // fim, depois de outras funções.
+        let text = "funcao a(); { x = 1;\n\
+                    funcao b(); { y = 2; }\n\
+                    funcao c();\n z = 3;\n}\n\
+                    funcao d(); { }";
+        assert!(erros_regra(text).is_empty());
+        assert_eq!(
+            regra(text),
+            "(FuncImpl a (ParamList) (Block (Assign x 1) \
+             (FuncImpl b (ParamList) (Block (Assign y 2))) \
+             (FuncImpl c (ParamList) (Assign z 3)))) \
+             (FuncImpl d (ParamList) (Block))"
+        );
+        // Sem bloco aberto, o fim sobrando continua sendo erro.
+        assert_eq!(erros_regra("funcao f();\n x = 7;\n}"), [UnmatchedEnd]);
+    }
+
+    #[test]
     fn aninhamento_enorme_nao_estoura_a_pilha() {
         for text in [
             format!("x = {}", "(".repeat(100_000)),
@@ -986,7 +1269,7 @@ mod tests {
         let pecas = [
             "x", "1", "\"s\"", "(", ")", "[", "]", ",", ".", "+", "-", "=", "<", "++", ";", "{",
             "}", "se", "senao", "enquanto", "para", "vapara", "pare", "lbl:", "f(", "inicio",
-            "fim", "e", "#", " ", "\n",
+            "fim", "e", "#", " ", "\n", "definir", "alfa", "funcao", "lista", "tabela", "end",
         ];
         let mut estado: u64 = 0x2545_f491_4f6c_dd1d;
         let mut proximo = move || {
