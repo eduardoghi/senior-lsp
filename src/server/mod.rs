@@ -6,6 +6,7 @@
 
 mod diagnostics;
 mod documents;
+mod navigation;
 
 use std::error::Error;
 
@@ -14,13 +15,18 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
     Notification as LspNotification, PublishDiagnostics,
 };
+use lsp_types::request::{
+    DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Request as LspRequest,
+};
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, PositionEncodingKind, PublishDiagnosticsParams,
-    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, OneOf,
+    PositionEncodingKind, PublishDiagnosticsParams, ReferenceParams, ServerCapabilities,
+    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 
-use crate::line_index::{ColumnEncoding, LineIndex};
+use crate::line_index::ColumnEncoding;
 use documents::{Documents, is_rule};
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -37,6 +43,10 @@ pub fn run(connection: Connection) -> Result<()> {
                 ColumnEncoding::Utf16 => PositionEncodingKind::UTF16,
             }),
             text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+            definition_provider: Some(OneOf::Left(true)),
+            references_provider: Some(OneOf::Left(true)),
+            hover_provider: Some(HoverProviderCapability::Simple(true)),
+            document_symbol_provider: Some(OneOf::Left(true)),
             ..ServerCapabilities::default()
         },
         server_info: Some(ServerInfo {
@@ -88,13 +98,67 @@ struct Server<'a> {
 
 impl Server<'_> {
     fn request(&mut self, request: Request) -> Result<()> {
-        let response = Response::new_err(
-            request.id,
-            ErrorCode::MethodNotFound as i32,
-            format!("método não suportado: {}", request.method),
-        );
+        let id = request.id.clone();
+        let result = match request.method.as_str() {
+            GotoDefinition::METHOD => {
+                let params: GotoDefinitionParams = serde_json::from_value(request.params)?;
+                let at = params.text_document_position_params;
+                self.with(&at.text_document.uri, |c| {
+                    serde_json::to_value(GotoDefinitionResponse::Array(c.definition(at.position)))
+                })
+            }
+            References::METHOD => {
+                let params: ReferenceParams = serde_json::from_value(request.params)?;
+                let at = params.text_document_position;
+                let declaration = params.context.include_declaration;
+                self.with(&at.text_document.uri, |c| {
+                    serde_json::to_value(c.references(at.position, declaration))
+                })
+            }
+            HoverRequest::METHOD => {
+                let params: HoverParams = serde_json::from_value(request.params)?;
+                let at = params.text_document_position_params;
+                self.with(&at.text_document.uri, |c| {
+                    serde_json::to_value(c.hover(at.position))
+                })
+            }
+            DocumentSymbolRequest::METHOD => {
+                let params: DocumentSymbolParams = serde_json::from_value(request.params)?;
+                self.with(&params.text_document.uri, |c| {
+                    serde_json::to_value(DocumentSymbolResponse::Nested(c.document_symbols()))
+                })
+            }
+            method => {
+                let response = Response::new_err(
+                    id,
+                    ErrorCode::MethodNotFound as i32,
+                    format!("método não suportado: {method}"),
+                );
+                self.connection.sender.send(response.into())?;
+                return Ok(());
+            }
+        };
+        let response = Response::new_ok(id, result?);
         self.connection.sender.send(response.into())?;
         Ok(())
+    }
+
+    /// Resposta de um pedido sobre o documento, ou `null` se ele não está aberto, como uma regra
+    /// que o servidor não analisa.
+    fn with(
+        &self,
+        uri: &Uri,
+        f: impl FnOnce(&navigation::Context) -> serde_json::Result<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let Some(doc) = self.documents.get(uri) else {
+            return Ok(serde_json::Value::Null);
+        };
+        let context = navigation::Context {
+            doc,
+            uri,
+            encoding: self.encoding,
+        };
+        Ok(f(&context)?)
     }
 
     fn notification(&mut self, notification: Notification) -> Result<()> {
@@ -104,7 +168,7 @@ impl Server<'_> {
                     serde_json::from_value(notification.params)?;
                 let doc = params.text_document;
                 if is_rule(&doc.uri) {
-                    self.documents.set(doc.uri.clone(), doc.text, doc.version);
+                    self.documents.set(doc.uri.clone(), doc.text, doc.version)?;
                     self.publish(&doc.uri)?;
                 }
             }
@@ -118,7 +182,7 @@ impl Server<'_> {
                 // Com a sincronização completa, a última mudança traz o texto inteiro.
                 if let Some(change) = params.content_changes.into_iter().last() {
                     self.documents
-                        .set(uri.clone(), change.text, params.text_document.version);
+                        .set(uri.clone(), change.text, params.text_document.version)?;
                     self.publish(&uri)?;
                 }
             }
@@ -141,9 +205,13 @@ impl Server<'_> {
         let Some(doc) = self.documents.get(uri) else {
             return Ok(());
         };
-        let tree = crate::parse(&doc.text)?;
-        let index = LineIndex::new(&doc.text);
-        let diagnostics = diagnostics::diagnostics(&doc.text, &tree, &index, self.encoding);
+        let diagnostics = diagnostics::diagnostics(
+            &doc.text,
+            &doc.tree,
+            &doc.symbols,
+            &doc.index,
+            self.encoding,
+        );
         self.send_diagnostics(uri.clone(), diagnostics, Some(doc.version))
     }
 

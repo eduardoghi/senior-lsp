@@ -8,7 +8,10 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
     Notification as _, PublishDiagnostics,
 };
-use lsp_types::request::{HoverRequest, Initialize, Request as _, Shutdown};
+use lsp_types::request::{
+    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, Initialize, References,
+    Request as _, Shutdown,
+};
 use lsp_types::{
     ClientCapabilities, GeneralClientCapabilities, InitializeResult, PositionEncodingKind,
     PublishDiagnosticsParams, Uri,
@@ -211,7 +214,7 @@ fn pedido_desconhecido_nao_derruba_o_servidor() {
     let (mut editor, _) = Editor::start(None);
     let params =
         json!({ "textDocument": { "uri": RULE }, "position": { "line": 0, "character": 0 } });
-    let response = editor.request(HoverRequest::METHOD, params);
+    let response = editor.request(Completion::METHOD, params);
     assert_eq!(
         response.response_result.unwrap_err().code,
         ErrorCode::MethodNotFound as i32
@@ -219,5 +222,79 @@ fn pedido_desconhecido_nao_derruba_o_servidor() {
     // O servidor continua atendendo depois.
     editor.open(RULE, 1, "x = 1;");
     assert!(editor.diagnostics().diagnostics.is_empty());
+    editor.stop();
+}
+
+#[test]
+fn definicao_referencias_hover_e_simbolos() {
+    let text = "definir numero nTotal;\n\
+                definir funcao Soma(numero p);\n\
+                nTotal = 0;\n\
+                Soma(2);\n\
+                funcao Soma(numero p); {\n\
+                \x20 definir alfa aLocal;\n\
+                \x20 ntotal = nTotal + p;\n\
+                }";
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let at = |line: u32, character: u32| json!({ "textDocument": { "uri": RULE }, "position": { "line": line, "character": character } });
+    let lines = |v: &serde_json::Value| -> Vec<u64> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["range"]["start"]["line"].as_u64().unwrap())
+            .collect()
+    };
+
+    // `ntotal`, em minúsculas na linha 6, vai para o `definir` da linha 0.
+    let r = editor.request(GotoDefinition::METHOD, at(6, 3));
+    assert_eq!(lines(&r.response_result.unwrap()), [0]);
+
+    let mut params = at(0, 16);
+    params["context"] = json!({ "includeDeclaration": true });
+    let r = editor.request(References::METHOD, params);
+    assert_eq!(lines(&r.response_result.unwrap()), [0, 2, 6, 6]);
+
+    // A chamada alcança o `definir funcao` e a `funcao`.
+    let r = editor.request(GotoDefinition::METHOD, at(3, 1));
+    assert_eq!(lines(&r.response_result.unwrap()), [1, 4]);
+
+    let r = editor.request(HoverRequest::METHOD, at(6, 20));
+    let hover = r.response_result.unwrap();
+    let value = hover["contents"]["value"].as_str().unwrap();
+    assert!(value.contains("funcao Soma(numero p);"), "{value}");
+    assert!(
+        value.ends_with("Parâmetro definido na linha 2, também na linha 5"),
+        "{value}"
+    );
+
+    // Hover fora de nome é `null`.
+    let r = editor.request(HoverRequest::METHOD, at(2, 7));
+    assert!(r.response_result.unwrap().is_null());
+
+    let r = editor.request(
+        DocumentSymbolRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE } }),
+    );
+    let symbols = r.response_result.unwrap();
+    let names: Vec<_> = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["nTotal", "Soma"]);
+    assert_eq!(symbols[1]["children"][0]["name"], "aLocal");
+    editor.stop();
+}
+
+#[test]
+fn pedido_em_documento_fechado_responde_null() {
+    let (mut editor, _) = Editor::start(None);
+    let params =
+        json!({ "textDocument": { "uri": RULE }, "position": { "line": 0, "character": 0 } });
+    let r = editor.request(GotoDefinition::METHOD, params);
+    assert!(r.response_result.unwrap().is_null());
     editor.stop();
 }

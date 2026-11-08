@@ -17,6 +17,7 @@ use crate::{LexErrorKind, ParseErrorKind, SyntaxKind, Tree};
 pub(crate) fn diagnostics(
     text: &str,
     tree: &Tree,
+    symbols: &Symbols,
     index: &LineIndex,
     encoding: ColumnEncoding,
 ) -> Vec<Diagnostic> {
@@ -32,8 +33,7 @@ pub(crate) fn diagnostics(
     let errors = lex
         .chain(parse)
         .map(|(range, described)| (range, described, DiagnosticSeverity::ERROR));
-    let symbols = Symbols::build(tree, text);
-    let checks = validate(tree, &symbols).into_iter().map(|c| {
+    let checks = validate(tree, symbols).into_iter().map(|c| {
         let severity = if c.kind.is_error() {
             DiagnosticSeverity::ERROR
         } else {
@@ -203,19 +203,25 @@ mod tests {
 
     fn diags(text: &str, encoding: ColumnEncoding) -> Vec<Resumo> {
         let tree = crate::parse(text).unwrap();
-        diagnostics(text, &tree, &LineIndex::new(text), encoding)
-            .into_iter()
-            .map(|d| {
-                let NumberOrString::String(code) = d.code.unwrap() else {
-                    unreachable!()
-                };
-                (
-                    code,
-                    (d.range.start.line, d.range.start.character),
-                    (d.range.end.line, d.range.end.character),
-                )
-            })
-            .collect()
+        diagnostics(
+            text,
+            &tree,
+            &Symbols::build(&tree, text),
+            &LineIndex::new(text),
+            encoding,
+        )
+        .into_iter()
+        .map(|d| {
+            let NumberOrString::String(code) = d.code.unwrap() else {
+                unreachable!()
+            };
+            (
+                code,
+                (d.range.start.line, d.range.start.character),
+                (d.range.end.line, d.range.end.character),
+            )
+        })
+        .collect()
     }
 
     #[test]
@@ -253,7 +259,13 @@ mod tests {
     fn aviso_do_validador_e_warning() {
         let text = "definir funcao f();\nfuncao f(); { x = 1; }\nx = 2 e -3;";
         let tree = crate::parse(text).unwrap();
-        let d = diagnostics(text, &tree, &LineIndex::new(text), ColumnEncoding::Utf16);
+        let d = diagnostics(
+            text,
+            &tree,
+            &Symbols::build(&tree, text),
+            &LineIndex::new(text),
+            ColumnEncoding::Utf16,
+        );
         let resumo: Vec<_> = d
             .iter()
             .map(|d| {
@@ -279,7 +291,13 @@ mod tests {
     fn mensagem_do_caractere_invalido_mostra_o_caractere() {
         let text = "x = 1; #";
         let tree = crate::parse(text).unwrap();
-        let d = diagnostics(text, &tree, &LineIndex::new(text), ColumnEncoding::Utf16);
+        let d = diagnostics(
+            text,
+            &tree,
+            &Symbols::build(&tree, text),
+            &LineIndex::new(text),
+            ColumnEncoding::Utf16,
+        );
         assert_eq!(d[0].message, "O caractere \"#\" é inválido.");
     }
 }

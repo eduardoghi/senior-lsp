@@ -65,6 +65,34 @@ impl LineIndex {
         }
     }
 
+    /// Posição em bytes da linha e coluna do editor. Coluna depois do fim da linha fica no fim
+    /// dela, e linha depois da última fica no fim do texto, como o protocolo pede.
+    pub fn offset(&self, text: &str, lc: LineCol, encoding: ColumnEncoding) -> TextSize {
+        let Some(&start) = self.line_starts.get(lc.line as usize) else {
+            return TextSize::of(text);
+        };
+        let start = usize::from(start);
+        let end = self
+            .line_starts
+            .get(lc.line as usize + 1)
+            .map_or(text.len(), |&e| usize::from(e));
+        let line = text[start..end].trim_end_matches(['\r', '\n']);
+        let mut col = lc.col as usize;
+        let mut bytes = 0;
+        for ch in line.chars() {
+            let width = match encoding {
+                ColumnEncoding::Utf8 => ch.len_utf8(),
+                ColumnEncoding::Utf16 => ch.len_utf16(),
+            };
+            if col < width {
+                break;
+            }
+            col -= width;
+            bytes += ch.len_utf8();
+        }
+        TextSize::new((start + bytes) as u32)
+    }
+
     pub fn line_count(&self) -> usize {
         self.line_starts.len()
     }
@@ -101,6 +129,21 @@ mod tests {
         // O emoji ocupa 4 bytes e 2 unidades de UTF-16. O offset 17 é o `#`.
         assert_eq!(lc(text, 17, Utf8), (1, 7));
         assert_eq!(lc(text, 17, Utf16), (1, 5));
+    }
+
+    #[test]
+    fn offset_volta_da_linha_e_coluna() {
+        let text = "x = 'é';\r\n\"😀\" #\nfim";
+        let index = LineIndex::new(text);
+        let off = |line, col, enc| u32::from(index.offset(text, LineCol { line, col }, enc));
+        assert_eq!(off(0, 6, Utf16), 7);
+        assert_eq!(off(0, 7, Utf8), 7);
+        assert_eq!(off(1, 5, Utf16), 18);
+        assert_eq!(off(1, 7, Utf8), 18);
+        // Coluna no meio do emoji fica antes dele, coluna além da linha fica no fim dela.
+        assert_eq!(off(1, 2, Utf16), 12);
+        assert_eq!(off(0, 99, Utf16), 9);
+        assert_eq!(off(9, 0, Utf16), text.len() as u32);
     }
 
     #[test]

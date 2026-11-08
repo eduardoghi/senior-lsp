@@ -1,15 +1,23 @@
 //! Documentos abertos no editor.
 //!
 //! O texto vem sempre do editor, pelo `didOpen` e pelo `didChange`, e nunca do disco. Assim o que
-//! ainda não foi salvo também é analisado.
+//! ainda não foi salvo também é analisado. A análise é refeita a cada mudança e fica guardada
+//! para os pedidos do editor, como ir para a definição.
 
 use std::collections::HashMap;
 
 use lsp_types::Uri;
 
+use crate::line_index::LineIndex;
+use crate::symbols::Symbols;
+use crate::{TextTooLarge, Tree};
+
 pub(crate) struct Document {
     pub(crate) text: String,
     pub(crate) version: i32,
+    pub(crate) tree: Tree,
+    pub(crate) symbols: Symbols,
+    pub(crate) index: LineIndex,
 }
 
 #[derive(Default)]
@@ -18,8 +26,19 @@ pub(crate) struct Documents {
 }
 
 impl Documents {
-    pub(crate) fn set(&mut self, uri: Uri, text: String, version: i32) {
-        self.open.insert(uri, Document { text, version });
+    pub(crate) fn set(&mut self, uri: Uri, text: String, version: i32) -> Result<(), TextTooLarge> {
+        let tree = crate::parse(&text)?;
+        let symbols = Symbols::build(&tree, &text);
+        let index = LineIndex::new(&text);
+        let doc = Document {
+            text,
+            version,
+            tree,
+            symbols,
+            index,
+        };
+        self.open.insert(uri, doc);
+        Ok(())
     }
 
     pub(crate) fn get(&self, uri: &Uri) -> Option<&Document> {
