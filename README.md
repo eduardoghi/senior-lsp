@@ -31,19 +31,28 @@ servidor LSP.
 
 ## Instalar no Claude Code
 
-O repositório tem um catálogo de plugin do Claude Code. O plugin procura o executável em
-`plugin/claude-code/server/senior-lsp`, então compile e crie o link antes de instalar:
+```sh
+claude plugin marketplace add eduardoghi/senior-lsp
+claude plugin install senior-lsp@senior-lsp
+```
+
+Numa sessão aberta, `/reload-plugins --force` carrega o plugin. Na primeira vez que o servidor
+inicia, o plugin baixa o binário da versão instalada do release do GitHub, confere o SHA-256 e
+guarda na pasta de dados do plugin. Há binário pronto para Linux x86_64. Em outro sistema,
+instale a partir de um clone.
+
+### A partir de um clone
+
+Com o binário compilado, o plugin usa o `target/release` do clone em vez de baixar:
 
 ```sh
 cargo build --release
-mkdir -p plugin/claude-code/server
-ln -s ../../../target/release/senior-lsp plugin/claude-code/server/senior-lsp
 claude plugin marketplace add "$PWD"
 claude plugin install senior-lsp@senior-lsp
 ```
 
-Numa sessão aberta, `/reload-plugins --force` carrega o plugin. O Claude Code lê o plugin direto
-desta pasta, então depois de um `cargo build --release` basta recarregar.
+O Claude Code lê o plugin direto desta pasta, então depois de um `cargo build --release` basta
+recarregar.
 
 ## Diagnósticos
 

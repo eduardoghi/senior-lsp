@@ -1,0 +1,34 @@
+name: Release
+
+# Publica o binário que o script do plugin baixa. A tag tem que ser v seguido da versão do
+# Cargo.toml, como v0.1.0.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    env:
+      TARGET: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confere a tag com o Cargo.toml
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          test "$GITHUB_REF_NAME" = "v$version"
+      - run: rustup target add "$TARGET"
+      - run: cargo test --locked
+      - run: cargo build --release --locked --target "$TARGET"
+      - name: Publica o release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir dist
+          name="senior-lsp-$TARGET"
+          cp "target/$TARGET/release/senior-lsp" "dist/$name"
+          (cd dist && sha256sum "$name" > "$name.sha256")
+          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,59 @@
+#!/bin/sh
+# Inicia o servidor para o plugin do Claude Code.
+#
+# Num clone com o binário compilado (cargo build --release), usa o de target/release. Senão, baixa
+# do release do GitHub o binário desta versão, confere o SHA-256 e guarda em CLAUDE_PLUGIN_DATA,
+# que o Claude Code mantém entre as atualizações do plugin. O stdout é do protocolo, então toda
+# mensagem vai para o stderr.
+
+set -eu
+
+VERSION=0.1.0
+REPO=eduardoghi/senior-lsp
+
+here=$(cd "$(dirname "$0")" && pwd)
+local_build="$here/../../../target/release/senior-lsp"
+if [ -x "$local_build" ]; then
+    exec "$local_build" "$@"
+fi
+
+case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) target=x86_64-unknown-linux-musl ;;
+    *)
+        echo "senior-lsp: não há binário pronto para $(uname -s) $(uname -m)." \
+            "Compile com cargo build --release num clone do repositório." >&2
+        exit 1
+        ;;
+esac
+
+data=${CLAUDE_PLUGIN_DATA:-${XDG_CACHE_HOME:-$HOME/.cache}/senior-lsp}
+binary="$data/senior-lsp-$VERSION"
+if [ ! -x "$binary" ]; then
+    mkdir -p "$data"
+    url="https://github.com/$REPO/releases/download/v$VERSION/senior-lsp-$target"
+    tmp=$(mktemp "$data/download.XXXXXX")
+    trap 'rm -f "$tmp" "$tmp.sha256"' EXIT
+    fetch() {
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL -o "$2" "$1"
+        else
+            wget -q -O "$2" "$1"
+        fi
+    }
+    echo "senior-lsp: baixando $url" >&2
+    fetch "$url" "$tmp"
+    fetch "$url.sha256" "$tmp.sha256"
+    expected=$(cut -d ' ' -f 1 "$tmp.sha256")
+    actual=$(sha256sum "$tmp" | cut -d ' ' -f 1)
+    if [ "$expected" != "$actual" ]; then
+        echo "senior-lsp: SHA-256 do download não confere." >&2
+        exit 1
+    fi
+    chmod +x "$tmp"
+    mv "$tmp" "$binary"
+    # O exec abaixo troca o processo e o trap não roda, então a limpeza é aqui.
+    rm -f "$tmp.sha256"
+    trap - EXIT
+fi
+
+exec "$binary" "$@"

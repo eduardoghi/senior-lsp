@@ -4,7 +4,7 @@
         "extensionToLanguage": {
             ".txt": "lsp-senior"
         },
-        "startupTimeout": 10000,
+        "startupTimeout": 60000,
         "shutdownTimeout": 5000,
         "maxRestarts": 3
     }
