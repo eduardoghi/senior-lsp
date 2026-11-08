@@ -11,7 +11,8 @@ set -eu
 VERSION=0.1.0
 REPO=eduardoghi/senior-lsp
 
-here=$(cd "$(dirname "$0")" && pwd)
+# pwd -P resolve o caminho real, para achar o clone também quando o plugin é ligado por symlink.
+here=$(cd "$(dirname "$0")" && pwd -P)
 local_build="$here/../../../target/release/senior-lsp"
 if [ -x "$local_build" ]; then
     exec "$local_build" "$@"
