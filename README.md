@@ -1,8 +1,9 @@
 # senior-lsp
 
 Servidor de linguagem ([Language Server Protocol](https://microsoft.github.io/language-server-protocol/))
-para as regras LSP do ERP Senior, os arquivos `Rule.txt`. Ele aponta no editor os erros que o
-compilador do ERP daria, sem precisar compilar a regra no ERP, e ajuda a navegar em regras grandes.
+para as regras LSP do ERP Senior, como o gerenciador de artefatos exporta. Ele aponta no editor os
+erros que o compilador do ERP daria, sem precisar compilar a regra no ERP, e ajuda a navegar em
+regras grandes.
 
 O servidor oferece:
 
@@ -15,14 +16,23 @@ O servidor oferece:
   parâmetros na chamada
 - a lista de variáveis e funções do arquivo
 
-Só arquivos chamados `Rule.txt`, sem diferenciar maiúsculas, são analisados. Os nomes seguem as
-regras do compilador. Eles não diferenciam caixa, e um `definir` vale no arquivo inteiro,
-inclusive antes dele e dentro de funções.
+A exportação guarda o código de cada regra num arquivo `Rule.txt` ou `rule.txt`, e o servidor
+analisa só esses arquivos. A pasta diz onde a regra roda, e isso muda as funções do ERP que ela pode
+chamar:
 
-As funções do ERP dependem de onde a regra roda, e o servidor decide pela pasta da exportação do
-gerenciador de artefatos. Uma regra de tela SGI, na pasta `Formulários SGI`, ganha as funções de
-tela e as que a regra da raiz do formulário define. Numa regra de web service, na pasta
-`Web Services`, nome de função desconhecido não é acusado. Variáveis que o ERP fornece não têm
+| Pasta | Arquivo | Regra |
+|---|---|---|
+| `Regras` | `Rule.txt` | regra de identificador, com as funções comuns do ERP |
+| `Formulários SGI` | `rule.txt` | regra de tela SGI, que ganha as funções de tela e as definidas nas regras acima dela no formulário, como a da raiz |
+| `Web Services` | `Rule.txt` | regra de web service, em que nome de função desconhecido não é acusado |
+
+O servidor reconhece as pastas `Formulários SGI` e `Web Services`, e qualquer outro arquivo de regra
+conta como regra de identificador, então renomear a pasta `Regras` não muda nada. Os outros tipos
+de artefato não exportam arquivo de regra. Os modelos de relatório (`Modelos`) guardam as regras
+dentro de arquivos JSON e não são analisados.
+
+Os nomes seguem as regras do compilador. Eles não diferenciam caixa, e um `definir` vale no
+arquivo inteiro, inclusive antes dele e dentro de funções. Variáveis que o ERP fornece não têm
 `definir` e ficam sem verificação de tipo.
 
 ## Compilar
