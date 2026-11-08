@@ -25,6 +25,9 @@ const MAX_IDENT_CHARS: usize = 100;
 /// O compilador corta o número em 101 caracteres, contando o ponto, e o resto começa outro token.
 const MAX_NUMBER_CHARS: usize = 101;
 
+/// Consumir um caractere depois desta coluna dá `linha para o compilador é muito grande`.
+const MAX_LINE_COLUMN: usize = 254;
+
 /// O texto passa de `u32::MAX` bytes, o limite das posições.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextTooLarge;
@@ -44,6 +47,9 @@ pub enum LexErrorKind {
     MalformedChar,
     /// Número que o compilador recusa (`identificador mal-formado`), como `12abc` ou `1E4933`.
     MalformedNumber,
+    /// Linha em que o compilador consome algum caractere depois da coluna 254 (`linha para o
+    /// compilador é muito grande`). O erro cobre a linha inteira, sem a quebra.
+    LineTooLong,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +108,9 @@ pub fn lex(text: &str) -> Result<Tokens, TextTooLarge> {
         bytes: text.as_bytes(),
         pos: 0,
         no_trailing_space: false,
+        line_start: 0,
+        consumed_end: 0,
+        last_line_done: false,
         tokens: Tokens {
             kinds: Vec::new(),
             starts: Vec::new(),
@@ -110,6 +119,11 @@ pub fn lex(text: &str) -> Result<Tokens, TextTooLarge> {
     };
     while lexer.pos < text.len() {
         lexer.next_token();
+    }
+    if !lexer.last_line_done {
+        // Para ver o fim do arquivo o compilador ainda lê o espaço do fim da última linha.
+        let space = !lexer.no_trailing_space;
+        lexer.finish_line(text.len(), lexer.consumed_end, space);
     }
     lexer.tokens.starts.push(end);
     Ok(lexer.tokens)
@@ -124,6 +138,13 @@ struct Lexer<'a> {
     /// um espaço no fim de cada linha que carrega, menos nas que carrega dentro do comentário, e
     /// sem esse espaço um operador no fim da linha pode se juntar com a linha seguinte.
     no_trailing_space: bool,
+    /// Começo da linha atual.
+    line_start: usize,
+    /// Até onde o compilador já consumiu a linha atual. Fica para trás quando ele pula texto,
+    /// como o `*/` e o resto da linha depois do `\` de uma string.
+    consumed_end: usize,
+    /// A última linha terminou dentro de um comentário ou string e já foi conferida.
+    last_line_done: bool,
 }
 
 impl Lexer<'_> {
@@ -135,17 +156,12 @@ impl Lexer<'_> {
                 self.eat_while(|b| b == b' ' || b == b'\t');
                 Whitespace
             }
-            b'\n' => {
-                self.pos += 1;
-                self.no_trailing_space = false;
-                Newline
-            }
             // O compilador também quebra a linha em CR sozinho.
-            b'\r' => {
-                self.pos += 1;
-                if self.bytes.get(self.pos) == Some(&b'\n') {
-                    self.pos += 1;
-                }
+            b'\n' | b'\r' => {
+                let space = !self.no_trailing_space;
+                self.finish_line(start, self.consumed_end, space);
+                self.pos = self.after_newline(start).unwrap_or(self.bytes.len());
+                self.start_line(self.pos);
                 self.no_trailing_space = false;
                 Newline
             }
@@ -186,6 +202,56 @@ impl Lexer<'_> {
         };
         self.tokens.kinds.push(kind);
         self.tokens.starts.push(offset(start));
+        // O comentário de bloco já deixou `consumed_end` antes do `*/`, que o compilador pula.
+        if kind != BlockComment {
+            self.consumed_end = self.pos;
+        }
+    }
+
+    /// Confere o limite da linha que termina em `eol`. `consumed_end` é até onde o compilador
+    /// consumiu e `space` diz se ele consumiu também o espaço que acrescenta no fim da linha.
+    fn finish_line(&mut self, eol: usize, consumed_end: usize, space: bool) {
+        let line = &self.text[self.line_start..eol];
+        // O compilador conta em cp1252, um byte por caractere.
+        let last_column = if space {
+            line.chars().count() + 1
+        } else {
+            let end = consumed_end.clamp(self.line_start, eol);
+            self.text[self.line_start..end].chars().count()
+        };
+        if last_column > MAX_LINE_COLUMN {
+            let range = TextRange::new(offset(self.line_start), offset(eol));
+            // Em ordem de posição, antes dos outros erros da mesma linha.
+            let i = self
+                .tokens
+                .errors
+                .partition_point(|e| e.range.start() < range.start());
+            let error = LexError {
+                kind: LexErrorKind::LineTooLong,
+                range,
+            };
+            self.tokens.errors.insert(i, error);
+        }
+    }
+
+    fn start_line(&mut self, at: usize) {
+        self.line_start = at;
+        self.consumed_end = at;
+    }
+
+    /// Fecha a linha que termina em `eol` dentro de um `/* */`. O compilador não examina
+    /// o último caractere da linha. Com o espaço do fim, esse último é o espaço, e sem ele é o
+    /// último caractere visível.
+    fn finish_line_in_comment(&mut self, eol: usize) {
+        let consumed_end = if self.no_trailing_space {
+            self.text[self.line_start..eol]
+                .char_indices()
+                .last()
+                .map_or(self.line_start, |(i, _)| self.line_start + i)
+        } else {
+            eol
+        };
+        self.finish_line(eol, consumed_end, false);
     }
 
     /// Lê um identificador e devolve `Ident` ou o tipo da palavra reservada.
@@ -299,11 +365,12 @@ impl Lexer<'_> {
     }
 
     fn take_operator_char(&mut self, after: usize) {
-        // Se o operador atravessou a quebra, a linha nova veio com o espaço do fim.
-        if self.bytes[self.pos..after]
-            .iter()
-            .any(|&b| matches!(b, b'\n' | b'\r'))
-        {
+        if matches!(self.bytes[self.pos], b'\n' | b'\r') {
+            // O operador atravessou a quebra. A linha de cima foi consumida inteira, sem espaço,
+            // e a linha nova veio com o espaço do fim.
+            let eol = self.pos;
+            self.finish_line(eol, eol, false);
+            self.start_line(self.after_newline(eol).unwrap_or(self.bytes.len()));
             self.no_trailing_space = false;
         }
         self.pos = after;
@@ -384,18 +451,31 @@ impl Lexer<'_> {
             .windows(2)
             .position(|w| w == b"*/")
             .map(|i| from + i + 2);
+        let stop = end.unwrap_or(self.bytes.len());
+        let mut cursor = start;
+        while let Some(i) = self.bytes[cursor..stop]
+            .iter()
+            .position(|&b| matches!(b, b'\n' | b'\r'))
+        {
+            let eol = cursor + i;
+            self.finish_line_in_comment(eol);
+            let next = self.after_newline(eol).unwrap_or(stop);
+            self.start_line(next);
+            // As linhas carregadas dentro do comentário vêm sem o espaço do fim.
+            self.no_trailing_space = true;
+            cursor = next;
+        }
         match end {
-            Some(end) => self.pos = end,
+            Some(end) => {
+                self.pos = end;
+                self.consumed_end = end - 2;
+            }
             None => {
                 self.pos = self.bytes.len();
+                self.finish_line_in_comment(self.bytes.len());
+                self.last_line_done = true;
                 self.error_at(LexErrorKind::UnterminatedBlockComment, start, start + 2);
             }
-        }
-        if self.bytes[start..self.pos]
-            .iter()
-            .any(|&b| matches!(b, b'\n' | b'\r'))
-        {
-            self.no_trailing_space = true;
         }
         BlockComment
     }
@@ -419,13 +499,17 @@ impl Lexer<'_> {
                         self.pos += 2;
                         continue;
                     }
+                    // O compilador não consome a barra nem o resto da linha.
                     let eol = self.line_end(self.pos);
+                    self.finish_line(eol, self.pos, false);
                     let Some(next_line) = self.after_newline(eol) else {
                         self.pos = self.bytes.len();
+                        self.last_line_done = true;
                         return self.unterminated_string(start);
                     };
                     // A linha nova vem com o espaço do fim.
                     self.no_trailing_space = false;
+                    self.start_line(next_line);
                     self.pos = next_line;
                     // O primeiro caractere da linha nova entra no valor sem ser examinado, então
                     // um `"` ou `\` ali não fecha nem escapa. Linha vazia ou fim do arquivo
@@ -531,7 +615,7 @@ mod tests {
     use crate::SyntaxKind::String as Str;
     use crate::SyntaxKind::{EKw, GravarNlEolKw, SeKw, SenaoKw};
     use LexErrorKind::{
-        InvalidChar, MalformedChar, MalformedNumber, UnterminatedAtComment,
+        InvalidChar, LineTooLong, MalformedChar, MalformedNumber, UnterminatedAtComment,
         UnterminatedBlockComment, UnterminatedString,
     };
 
@@ -974,6 +1058,79 @@ mod tests {
         assert_eq!(erros("'"), [(MalformedChar, 0, 1)]);
         assert_eq!(kinds("'\nx"), [Char, Newline, Ident]);
         assert_eq!(erros("'a\nx"), [(MalformedChar, 0, 1)]);
+    }
+
+    /// Erros de limite de linha no texto, com o começo e o fim de cada um.
+    fn linhas_longas(text: &str) -> Vec<(u32, u32)> {
+        lex_ok(text)
+            .errors()
+            .iter()
+            .filter(|e| e.kind == LineTooLong)
+            .map(|e| (e.range.start().into(), e.range.end().into()))
+            .collect()
+    }
+
+    fn rep(c: &str, n: usize) -> std::string::String {
+        c.repeat(n)
+    }
+
+    #[test]
+    fn linha_normal_aceita_253() {
+        assert!(linhas_longas(&rep("a", 253)).is_empty());
+        assert_eq!(linhas_longas(&rep("a", 254)), [(0, 254)]);
+        assert_eq!(
+            linhas_longas(&format!("x\n{}\r\ny", rep("a", 254))),
+            [(2, 256)]
+        );
+        // Conta caracteres, não bytes.
+        assert!(linhas_longas(&rep("é", 253)).is_empty());
+        assert_eq!(linhas_longas(&rep("é", 254)), [(0, 508)]);
+    }
+
+    #[test]
+    fn linha_onde_o_comentario_abre_aceita_254() {
+        let ok = format!("/* {}\n*/", rep("c", 251));
+        assert!(linhas_longas(&ok).is_empty());
+        let longa = format!("/* {}\n*/", rep("c", 252));
+        assert_eq!(linhas_longas(&longa), [(0, 255)]);
+    }
+
+    #[test]
+    fn linha_do_meio_do_comentario_aceita_255() {
+        assert!(linhas_longas(&format!("/*\n{}\n*/", rep("c", 255))).is_empty());
+        assert_eq!(
+            linhas_longas(&format!("/*\n{}\n*/", rep("c", 256))),
+            [(3, 259)]
+        );
+    }
+
+    #[test]
+    fn linha_onde_o_comentario_fecha_nao_conta_o_fim_do_comentario() {
+        assert!(linhas_longas(&format!("/*\n{}*/", rep("c", 254))).is_empty());
+        assert_eq!(
+            linhas_longas(&format!("/*\n{}*/", rep("c", 255))),
+            [(3, 260)]
+        );
+        // Texto depois do */ é consumido, sem o espaço do fim.
+        assert!(linhas_longas(&format!("/*\n*/{}\nx", rep("a", 252))).is_empty());
+        assert_eq!(
+            linhas_longas(&format!("/*\n*/{}\nx", rep("a", 253))),
+            [(3, 258)]
+        );
+    }
+
+    #[test]
+    fn barra_de_continuacao_aceita_a_coluna_255() {
+        let ok = format!("\"{}\\\nx\"", rep("b", 253));
+        assert!(linhas_longas(&ok).is_empty());
+        let longa = format!("\"{}\\\nx\"", rep("b", 254));
+        assert_eq!(linhas_longas(&longa), [(0, 256)]);
+    }
+
+    #[test]
+    fn erro_de_linha_fica_em_ordem_com_os_outros() {
+        let texto = format!("#{}", rep(" ", 253));
+        assert_eq!(erros(&texto), [(LineTooLong, 0, 254), (InvalidChar, 0, 1)]);
     }
 
     #[test]
