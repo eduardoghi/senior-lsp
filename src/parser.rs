@@ -18,13 +18,49 @@ pub fn parse(text: &str) -> Result<Tree, TextTooLarge> {
     Ok(p.finish())
 }
 
+/// Maior aninhamento de comandos ou de expressões. Sem limite, um arquivo com milhares de `(`
+/// ou `{` seguidos estoura a pilha da recursão e derruba o servidor. O compilador também tem um
+/// limite (`O Comando é muito complexo`).
+const MAX_DEPTH: u32 = 256;
+
 pub(crate) struct Parser {
     b: Builder,
+    depth: u32,
+    /// Passou do limite de aninhamento. O resto do texto já foi consumido e nada mais é cobrado.
+    gave_up: bool,
 }
 
 impl Parser {
     pub(crate) fn new(b: Builder) -> Parser {
-        Parser { b }
+        Parser {
+            b,
+            depth: 0,
+            gave_up: false,
+        }
+    }
+
+    /// Entra num nível de aninhamento. Acima do limite, registra o erro, consome o resto do
+    /// texto num `ErrorNode` e devolve `false` para quem chamou não descer mais.
+    fn enter(&mut self) -> bool {
+        if self.gave_up {
+            return false;
+        }
+        if self.depth >= MAX_DEPTH {
+            self.error(ParseErrorKind::TooDeep);
+            self.gave_up = true;
+            self.b.start_node(ErrorNode);
+            while !self.at(Eof) {
+                self.bump();
+            }
+            self.b.finish_node();
+            return false;
+        }
+        self.depth += 1;
+        true
+    }
+
+    fn leave(&mut self) {
+        self.depth -= 1;
     }
 
     pub(crate) fn finish(self) -> Tree {
@@ -44,6 +80,9 @@ impl Parser {
     }
 
     fn error(&mut self, kind: ParseErrorKind) {
+        if self.gave_up {
+            return;
+        }
         let range = self.b.current_range();
         self.b.error(kind, range);
     }
@@ -62,6 +101,9 @@ impl Parser {
     /// Analisa um comando e garante que o parser avançou. Se nada foi consumido, o token atual
     /// não começa comando nenhum e é consumido num `ErrorNode`, para o laço nunca travar.
     fn statement_or_skip(&mut self) {
+        if !self.enter() {
+            return;
+        }
         let before = self.b.position();
         self.statement();
         if self.b.position() == before && !self.at(Eof) {
@@ -70,6 +112,7 @@ impl Parser {
             self.bump();
             self.b.finish_node();
         }
+        self.leave();
     }
 
     fn statement(&mut self) {
@@ -414,6 +457,11 @@ impl Parser {
     /// Sinal na frente do operando. O compilador recusa alguns, como `- -3` e `-(3)` depois de
     /// `*`, mas isso é com o validador.
     fn prefix(&mut self) {
+        // Toda expressão aninhada passa por aqui, inclusive a de dentro de parênteses e de
+        // argumentos, então o limite fica neste ponto.
+        if !self.enter() {
+            return;
+        }
         if matches!(self.current(), Plus | Minus) {
             self.b.start_node(PrefixExpr);
             self.bump();
@@ -422,6 +470,7 @@ impl Parser {
         } else {
             self.postfix();
         }
+        self.leave();
     }
 
     /// Operando seguido de chamada, índice ou campo, em qualquer combinação.
@@ -906,6 +955,30 @@ mod tests {
             regra(text),
             "(If a (Block (ErrorNode)) (ElseBranch (Assign x 2)))"
         );
+    }
+
+    #[test]
+    fn aninhamento_enorme_nao_estoura_a_pilha() {
+        for text in [
+            format!("x = {}", "(".repeat(100_000)),
+            "{".repeat(100_000),
+            format!("x = {}1;", "- ".repeat(100_000)),
+            "se (a) ".repeat(100_000),
+            format!("x = {};", "f(".repeat(100_000)),
+        ] {
+            let tree = parse(&text).unwrap();
+            check(&tree, &text);
+            let erros: Vec<_> = tree.errors().iter().map(|e| e.kind).collect();
+            assert!(erros.contains(&ParseErrorKind::TooDeep), "{}", &text[..20]);
+            // Depois de desistir, nenhum erro a mais por cada nível que ficou aberto.
+            assert!(erros.len() <= 2, "{} erros", erros.len());
+        }
+    }
+
+    #[test]
+    fn aninhamento_normal_nao_e_afetado() {
+        let text = format!("x = {}1{};", "(".repeat(100), ")".repeat(100));
+        assert!(erros_regra(&text).is_empty());
     }
 
     #[test]

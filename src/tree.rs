@@ -30,6 +30,8 @@ pub enum ParseErrorKind {
     ExpectedStatement,
     /// `fim` ou `}` sem bloco aberto.
     UnmatchedEnd,
+    /// Aninhamento acima do limite do parser. O resto do arquivo vira um `ErrorNode`.
+    TooDeep,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
