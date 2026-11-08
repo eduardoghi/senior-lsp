@@ -9,8 +9,8 @@ use lsp_types::notification::{
     Notification as _, PublishDiagnostics,
 };
 use lsp_types::request::{
-    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, Initialize, References,
-    Request as _, Shutdown,
+    Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest, Initialize,
+    References, Request as _, Shutdown,
 };
 use lsp_types::{
     ClientCapabilities, GeneralClientCapabilities, InitializeResult, PositionEncodingKind,
@@ -214,7 +214,7 @@ fn pedido_desconhecido_nao_derruba_o_servidor() {
     let (mut editor, _) = Editor::start(None);
     let params =
         json!({ "textDocument": { "uri": RULE }, "position": { "line": 0, "character": 0 } });
-    let response = editor.request(Completion::METHOD, params);
+    let response = editor.request(Formatting::METHOD, params);
     assert_eq!(
         response.response_result.unwrap_err().code,
         ErrorCode::MethodNotFound as i32
@@ -425,4 +425,43 @@ fn variavel_e_referencias_entre_regras_do_formulario_sgi() {
     assert_eq!(r.response_result.unwrap().as_array().unwrap().len(), 3);
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn completar_nomes() {
+    let text = "definir numero nTotal;\n\
+                definir funcao Soma(numero pValor);\n\
+                nT\n\
+                funcao Soma(numero pValor); {\n\
+                \x20 pV\n\
+                }\n\
+                @ nT dentro do comentario @\n\
+                cur.Ab";
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let mut complete = |line: u32, character: u32| -> Vec<std::string::String> {
+        let params = json!({ "textDocument": { "uri": RULE },
+                             "position": { "line": line, "character": character } });
+        let r = editor.request(Completion::METHOD, params);
+        r.response_result
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["label"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    // Variável do arquivo, sem diferença de caixa.
+    assert_eq!(complete(2, 2), ["nTotal"]);
+    // Parâmetro só dentro da função dele.
+    assert_eq!(complete(4, 4), ["pValor"]);
+    // Funções do ERP e palavras da linguagem.
+    let int = complete(2, 0);
+    assert!(int.contains(&"IntParaAlfa".to_owned()) && int.contains(&"Enquanto".to_owned()));
+    assert!(!int.contains(&"pValor".to_owned()));
+    // Nada dentro de comentário nem depois de ponto.
+    assert!(complete(6, 4).is_empty());
+    assert!(complete(7, 6).is_empty());
+    editor.stop();
 }

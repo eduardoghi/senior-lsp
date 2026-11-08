@@ -1,8 +1,8 @@
 //! Pedidos de navegação do editor: ir para a definição, referências, hover e a lista de símbolos.
 
 use lsp_types::{
-    DocumentSymbol, Hover, HoverContents, Location, MarkupContent, MarkupKind, Position, Range,
-    SymbolKind, Uri,
+    CompletionItem, CompletionItemKind, DocumentSymbol, Hover, HoverContents, Location,
+    MarkupContent, MarkupKind, Position, Range, SymbolKind, Uri,
 };
 use text_size::{TextRange, TextSize};
 
@@ -217,6 +217,98 @@ impl Context<'_> {
         })
     }
 
+    /// Nomes que cabem na posição, filtrados pelo começo já digitado, sem diferença de caixa.
+    /// Vêm primeiro as definições do arquivo, depois as das regras acima no formulário SGI, as
+    /// funções do ERP e as palavras da linguagem. Dentro de string, de comentário ou depois de um
+    /// ponto, que é campo de cursor ou de tabela, não há sugestão.
+    pub(crate) fn completion(&self, position: Position) -> Vec<CompletionItem> {
+        let offset = self.offset(position);
+        let text = &self.doc.text;
+        let tree = &self.doc.tree;
+        if inside_literal_or_comment(tree, offset) {
+            return Vec::new();
+        }
+        let before = &text[..usize::from(offset)];
+        let start = before
+            .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .map_or(0, |i| {
+                i + before[i..].chars().next().map_or(1, char::len_utf8)
+            });
+        if before[..start].trim_end().ends_with('.') {
+            return Vec::new();
+        }
+        let prefix = &before[start..];
+        let matches = |name: &str| {
+            name.len() >= prefix.len()
+                && name.is_char_boundary(prefix.len())
+                && name[..prefix.len()].eq_ignore_ascii_case(prefix)
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut items = Vec::new();
+        let mut add = |name: &str, kind, detail: String, rank: char| {
+            if matches(name) && seen.insert(name.to_uppercase()) {
+                items.push(CompletionItem {
+                    label: name.to_owned(),
+                    kind: Some(kind),
+                    detail: Some(detail),
+                    sort_text: Some(format!("{rank}{}", name.to_lowercase())),
+                    ..CompletionItem::default()
+                });
+            }
+        };
+
+        // Um parâmetro só vale dentro da `funcao` dele.
+        let function = enclosing_function_at(tree, offset);
+        for def in &self.doc.symbols.definitions {
+            let kind = match def.kind {
+                DefKind::Label => continue,
+                DefKind::Parameter(_) => {
+                    let owner = tree.parent(def.node).and_then(|l| tree.parent(l));
+                    if owner.is_none() || owner != function {
+                        continue;
+                    }
+                    CompletionItemKind::VARIABLE
+                }
+                DefKind::Function => CompletionItemKind::FUNCTION,
+                _ => CompletionItemKind::VARIABLE,
+            };
+            add(&text[def.name], kind, self.header(def.node), '0');
+        }
+        for def in self.doc.inherited.functions() {
+            add(
+                &def.text[def.name],
+                CompletionItemKind::FUNCTION,
+                def.decl.clone(),
+                '1',
+            );
+        }
+        for def in self.doc.inherited.variables() {
+            add(
+                &def.text[def.name],
+                CompletionItemKind::VARIABLE,
+                def.decl.clone(),
+                '1',
+            );
+        }
+        for builtin in builtins::all(self.doc.context) {
+            add(
+                builtin.name,
+                CompletionItemKind::FUNCTION,
+                builtin.decl.to_owned(),
+                '2',
+            );
+        }
+        for &word in KEYWORDS {
+            add(
+                word,
+                CompletionItemKind::KEYWORD,
+                "palavra da linguagem".to_owned(),
+                '3',
+            );
+        }
+        items
+    }
+
     /// Hover de uma chamada a função do ERP, como `IntParaAlfa`, ou de uma função ou variável de
     /// outra regra do formulário SGI.
     fn builtin_hover(&self, offset: TextSize) -> Option<Hover> {
@@ -308,6 +400,76 @@ impl Context<'_> {
         }
         top
     }
+}
+
+/// Palavras sugeridas pelo completar nomes, na grafia mais comum nas regras.
+const KEYWORDS: &[&str] = &[
+    "Definir",
+    "Funcao",
+    "Se",
+    "Senao",
+    "Enquanto",
+    "Para",
+    "Inicio",
+    "Fim",
+    "VaPara",
+    "Pare",
+    "Continue",
+    "Alfa",
+    "Numero",
+    "Data",
+    "Cursor",
+    "Lista",
+    "Tabela",
+    "Mensagem",
+    "Erro",
+    "Refaz",
+    "Retorna",
+    "ExecSql",
+    "ExecSqlEx",
+];
+
+/// Diz se `offset` cai no meio de uma string, de um apóstrofo ou de um comentário.
+fn inside_literal_or_comment(tree: &crate::Tree, offset: TextSize) -> bool {
+    let tokens = tree.tokens();
+    let (mut lo, mut hi) = (0, tokens.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if tokens.range(mid).end() < offset {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if lo >= tokens.len() {
+        return false;
+    }
+    let range = tokens.range(lo);
+    range.start() < offset
+        && offset < range.end()
+        && matches!(
+            tokens.kind(lo),
+            SyntaxKind::String
+                | SyntaxKind::Char
+                | SyntaxKind::AtComment
+                | SyntaxKind::BlockComment
+        )
+}
+
+/// `funcao` cujo trecho contém `offset`, a mais interna.
+fn enclosing_function_at(tree: &crate::Tree, offset: TextSize) -> Option<NodeId> {
+    let mut node = tree.root();
+    let mut found = None;
+    while let Some(child) = tree
+        .children(node)
+        .find(|&c| tree.text_range(c).contains_inclusive(offset))
+    {
+        if tree.kind(child) == SyntaxKind::FuncImpl {
+            found = Some(child);
+        }
+        node = child;
+    }
+    found
 }
 
 /// Nome que contém `offset`, fora de campo depois de ponto, e se ele é o nome chamado numa

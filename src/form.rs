@@ -45,6 +45,14 @@ impl Inherited {
         self.functions.get(&name.to_uppercase())
     }
 
+    pub fn functions(&self) -> impl Iterator<Item = &InheritedDef> {
+        self.functions.values()
+    }
+
+    pub fn variables(&self) -> impl Iterator<Item = &InheritedDef> {
+        self.variables.values()
+    }
+
     pub fn variable(&self, name: &str) -> Option<&InheritedDef> {
         self.variables.get(&name.to_uppercase())
     }

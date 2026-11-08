@@ -16,7 +16,8 @@ use lsp_types::notification::{
     Notification as LspNotification, PublishDiagnostics,
 };
 use lsp_types::request::{
-    DocumentSymbolRequest, GotoDefinition, HoverRequest, References, Request as LspRequest,
+    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, References,
+    Request as LspRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -47,6 +48,7 @@ pub fn run(connection: Connection) -> Result<()> {
             references_provider: Some(OneOf::Left(true)),
             hover_provider: Some(HoverProviderCapability::Simple(true)),
             document_symbol_provider: Some(OneOf::Left(true)),
+            completion_provider: Some(lsp_types::CompletionOptions::default()),
             ..ServerCapabilities::default()
         },
         server_info: Some(ServerInfo {
@@ -120,6 +122,15 @@ impl Server<'_> {
                 let at = params.text_document_position_params;
                 self.with(&at.text_document.uri, |c| {
                     serde_json::to_value(c.hover(at.position))
+                })
+            }
+            Completion::METHOD => {
+                let params: lsp_types::CompletionParams = serde_json::from_value(request.params)?;
+                let at = params.text_document_position;
+                self.with(&at.text_document.uri, |c| {
+                    serde_json::to_value(lsp_types::CompletionResponse::Array(
+                        c.completion(at.position),
+                    ))
                 })
             }
             DocumentSymbolRequest::METHOD => {

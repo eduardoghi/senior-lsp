@@ -80,6 +80,15 @@ static TABLE: LazyLock<Table> = LazyLock::new(|| {
     table
 });
 
+/// Todas as funções do ERP do contexto, sem ordem definida.
+pub fn all(context: Context) -> impl Iterator<Item = &'static Builtin> {
+    TABLE
+        .index
+        .values()
+        .filter(move |&&(_, sgi)| !sgi || context == Context::Sgi)
+        .map(|&(i, _)| &TABLE.builtins[i])
+}
+
 /// Função do ERP com esse nome no contexto, sem diferença de caixa.
 pub fn lookup(name: &str, context: Context) -> Option<&'static Builtin> {
     let &(i, sgi) = TABLE.index.get(&name.to_uppercase())?;
