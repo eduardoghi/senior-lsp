@@ -311,3 +311,51 @@ fn pedido_em_documento_fechado_responde_null() {
     assert!(r.response_result.unwrap().is_null());
     editor.stop();
 }
+
+#[test]
+fn funcao_de_outra_regra_do_formulario_sgi() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-sgi-{}", std::process::id()));
+    let form = base.join("Formulários SGI/interface/F1");
+    let action = form.join("actions/A1");
+    std::fs::create_dir_all(&action).unwrap();
+    let root_rule = form.join("rule.txt");
+    std::fs::write(
+        &root_rule,
+        "definir funcao Atualiza(numero p);\nx = 1;\nfuncao Atualiza(numero p); { }",
+    )
+    .unwrap();
+    let action_rule = action.join("rule.txt");
+    let uri = crate::form::uri_from_path(&action_rule);
+
+    let (mut editor, _) = Editor::start(None);
+    editor.open(&uri, 1, "Atualiza(1);\nAtualiza(\"a\");\nOutra();");
+    let codes: Vec<_> = editor
+        .diagnostics()
+        .diagnostics
+        .into_iter()
+        .map(|d| d.code.unwrap())
+        .collect();
+    let code = |c: &str| lsp_types::NumberOrString::String(c.to_owned());
+    // Tipo errado na função herdada e nome que não existe em lugar nenhum.
+    assert_eq!(codes, [code("SEN047"), code("SEN052")]);
+
+    let at = json!({ "textDocument": { "uri": uri }, "position": { "line": 0, "character": 2 } });
+    let r = editor.request(GotoDefinition::METHOD, at.clone());
+    let locations = r.response_result.unwrap();
+    assert_eq!(
+        locations[0]["uri"],
+        crate::form::uri_from_path(&root_rule).as_str()
+    );
+    assert_eq!(locations[0]["range"]["start"]["line"], 2);
+
+    let r = editor.request(HoverRequest::METHOD, at);
+    let hover = r.response_result.unwrap();
+    let value = hover["contents"]["value"].as_str().unwrap();
+    assert!(
+        value.contains("definir funcao Atualiza(numero p);"),
+        "{value}"
+    );
+    assert!(value.contains("linha 3"), "{value}");
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}

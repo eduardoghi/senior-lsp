@@ -6,12 +6,11 @@
 //! nenhum aparece nas regras que compilam. Um tipo novo sem essa conferência começa desligado em
 //! [`describe_parse`].
 
-use std::collections::HashSet;
-
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 use text_size::TextRange;
 
 use crate::builtins::Context;
+use crate::form::Inherited;
 use crate::line_index::{ColumnEncoding, LineIndex};
 use crate::symbols::Symbols;
 use crate::validate::{Check, CheckKind, validate};
@@ -22,7 +21,7 @@ pub(crate) fn diagnostics(
     tree: &Tree,
     symbols: &Symbols,
     context: Context,
-    inherited: &HashSet<String>,
+    inherited: &Inherited,
     index: &LineIndex,
     encoding: ColumnEncoding,
 ) -> Vec<Diagnostic> {
@@ -144,9 +143,9 @@ fn describe_parse(kind: ParseErrorKind) -> Option<(&'static str, String)> {
 }
 
 fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, String) {
-    let name = match (check.name, check.label) {
+    let name = match (check.name, &check.label) {
         (Some(node), _) => &text[tree.text_range(node)],
-        (None, Some(label)) => label,
+        (None, Some(label)) => label.as_str(),
         (None, None) => "",
     };
     match check.kind {
@@ -287,7 +286,7 @@ mod tests {
             &tree,
             &Symbols::build(&tree, text),
             Context::Rule,
-            &HashSet::new(),
+            &Inherited::default(),
             &LineIndex::new(text),
             encoding,
         )
@@ -345,7 +344,7 @@ mod tests {
             &tree,
             &Symbols::build(&tree, text),
             Context::Rule,
-            &HashSet::new(),
+            &Inherited::default(),
             &LineIndex::new(text),
             ColumnEncoding::Utf16,
         );
@@ -379,7 +378,7 @@ mod tests {
             &tree,
             &Symbols::build(&tree, text),
             Context::Rule,
-            &HashSet::new(),
+            &Inherited::default(),
             &LineIndex::new(text),
             ColumnEncoding::Utf16,
         );

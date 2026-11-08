@@ -43,13 +43,37 @@ impl Context<'_> {
     }
 
     pub(crate) fn definition(&self, position: Position) -> Vec<Location> {
+        let offset = self.offset(position);
         let symbols = &self.doc.symbols;
-        symbols
-            .at(self.offset(position))
-            .unwrap_or_default()
+        let Some(targets) = symbols.at(offset) else {
+            return self.inherited_definition(offset).into_iter().collect();
+        };
+        targets
             .into_iter()
             .map(|i| self.location(symbols.definitions[i].name))
             .collect()
+    }
+
+    /// Lugar de uma função chamada aqui e definida em outra regra do formulário SGI.
+    fn inherited_definition(&self, offset: TextSize) -> Option<Location> {
+        let callee = callee_at(&self.doc.tree, offset)?;
+        let name = &self.doc.text[self.doc.tree.text_range(callee)];
+        let function = self.doc.inherited.get(name)?;
+        let uri = crate::form::uri_from_path(&function.path).parse().ok()?;
+        Some(Location::new(
+            uri,
+            self.range_in(&function.text, function.name),
+        ))
+    }
+
+    /// Trecho de outro texto em linha e coluna, na codificação negociada.
+    fn range_in(&self, text: &str, range: TextRange) -> Range {
+        let index = crate::line_index::LineIndex::new(text);
+        let p = |offset| {
+            let lc = index.line_col(text, offset, self.encoding);
+            Position::new(lc.line, lc.col)
+        };
+        Range::new(p(range.start()), p(range.end()))
     }
 
     /// Usos do símbolo na posição, em ordem de texto, e as definições dele quando
@@ -128,16 +152,28 @@ impl Context<'_> {
         })
     }
 
-    /// Hover de uma chamada a função do ERP, como `IntParaAlfa`.
+    /// Hover de uma chamada a função do ERP, como `IntParaAlfa`, ou a função de outra regra do
+    /// formulário SGI.
     fn builtin_hover(&self, offset: TextSize) -> Option<Hover> {
         let tree = &self.doc.tree;
         let callee = callee_at(tree, offset)?;
         let range = tree.text_range(callee);
-        let builtin = builtins::lookup(&self.doc.text[range], self.doc.context)?;
+        let name = &self.doc.text[range];
+        let value = if let Some(builtin) = builtins::lookup(name, self.doc.context) {
+            format!("```lsp\n{}\n```\nFunção do ERP", builtin.decl)
+        } else {
+            let function = self.doc.inherited.get(name)?;
+            let line = self.range_in(&function.text, function.name).start.line + 1;
+            format!(
+                "```lsp\n{}\n```\nFunção definida em {}, linha {line}",
+                function.decl,
+                function.path.display()
+            )
+        };
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: format!("```lsp\n{}\n```\nFunção do ERP", builtin.decl),
+                value,
             }),
             range: Some(self.range(range)),
         })

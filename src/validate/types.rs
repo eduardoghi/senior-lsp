@@ -15,6 +15,7 @@
 
 use crate::SyntaxKind::*;
 use crate::builtins::{self, Context};
+use crate::form::Inherited;
 use crate::symbols::{DefKind, Symbols, VarType};
 use crate::{NodeId, Tree};
 
@@ -32,6 +33,7 @@ pub(super) fn check(
     symbols: &Symbols,
     text: &str,
     context: Context,
+    inherited: &Inherited,
     node: NodeId,
     checks: &mut Vec<Check>,
 ) {
@@ -71,7 +73,7 @@ pub(super) fn check(
                 });
             }
         }
-        CallExpr => call(tree, symbols, text, context, node, checks),
+        CallExpr => call(tree, symbols, text, context, inherited, node, checks),
         _ => {}
     }
 }
@@ -151,6 +153,7 @@ fn call(
     symbols: &Symbols,
     text: &str,
     context: Context,
+    inherited: &Inherited,
     node: NodeId,
     checks: &mut Vec<Check>,
 ) {
@@ -162,8 +165,11 @@ fn call(
         return;
     }
     let Some(reference) = symbols.reference_at(tree.text_range(callee)) else {
-        if let Some(builtin) = builtins::lookup(&text[tree.text_range(callee)], context) {
-            builtin_call(tree, symbols, builtin, callee, args, checks);
+        let name = &text[tree.text_range(callee)];
+        if let Some(builtin) = builtins::lookup(name, context) {
+            external_call(tree, symbols, &builtin.params, true, callee, args, checks);
+        } else if let Some(function) = inherited.get(name) {
+            external_call(tree, symbols, &function.params, false, callee, args, checks);
         }
         return;
     };
@@ -215,18 +221,20 @@ fn concatenation(tree: &Tree, symbols: &Symbols, node: NodeId) -> Option<usize> 
         .then_some(op)
 }
 
-/// Chamada de função do ERP, contra a declaração que o compilador registra.
-fn builtin_call(
+/// Chamada de função de fora do arquivo, do ERP ou de outra regra do formulário SGI. Constante em
+/// parâmetro `end` só é acusada nas do ERP, as únicas em que isso foi conferido.
+fn external_call(
     tree: &Tree,
     symbols: &Symbols,
-    builtin: &'static builtins::Builtin,
+    params: &[builtins::Param],
+    is_builtin: bool,
     callee: NodeId,
     args: NodeId,
     checks: &mut Vec<Check>,
 ) {
     let args: Vec<NodeId> = tree.children(args).collect();
-    if args.len() != builtin.params.len() {
-        let kind = if args.len() > builtin.params.len() {
+    if args.len() != params.len() {
+        let kind = if args.len() > params.len() {
             CheckKind::TooManyArguments
         } else {
             CheckKind::TooFewArguments
@@ -234,19 +242,21 @@ fn builtin_call(
         push(tree, checks, kind, callee, None);
         return;
     }
-    for (&arg, param) in args.iter().zip(&builtin.params) {
+    for (&arg, param) in args.iter().zip(params) {
         let kind = match (param.ty, leaf_type(tree, symbols, arg)) {
             (VarType::Numero | VarType::Data, Ty::Alfa) => CheckKind::AlfaArgument,
             (VarType::Alfa, Ty::Num) => CheckKind::NumberArgument,
             // O parâmetro `end` devolve o valor, então o compilador exige uma variável.
-            _ if param.by_ref && tree.kind(arg) == Literal => CheckKind::ConstantInEndParameter,
+            _ if is_builtin && param.by_ref && tree.kind(arg) == Literal => {
+                CheckKind::ConstantInEndParameter
+            }
             _ => continue,
         };
         checks.push(Check {
             kind,
             range: tree.text_range(arg),
             name: None,
-            label: Some(param.name.as_str()),
+            label: Some(param.name.clone()),
         });
         return;
     }

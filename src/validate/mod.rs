@@ -4,12 +4,11 @@
 //! dependem de onde uma construção aparece e os avisos de código que compila mas faz outra coisa
 //! do que parece. Cada verificação foi conferida no compilador.
 
-use std::collections::HashSet;
-
 use text_size::TextRange;
 
 use crate::SyntaxKind::{self, *};
 use crate::builtins::{self, Context};
+use crate::form::Inherited;
 use crate::symbols::{DefKind, Symbols, VarType};
 
 mod types;
@@ -79,29 +78,29 @@ impl CheckKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
     pub kind: CheckKind,
     pub range: TextRange,
     /// Nome citado na mensagem, como a função ou o parâmetro.
     pub name: Option<NodeId>,
     /// Nome citado que não está no arquivo, como o parâmetro de uma função do ERP.
-    pub label: Option<&'static str>,
+    pub label: Option<std::string::String>,
 }
 
-/// `inherited` são os nomes de função, em maiúsculas, definidos em outras regras que valem
-/// para esta, como a regra da raiz de um formulário SGI.
+/// `inherited` são as funções definidas em outras regras que valem para esta, como a regra da
+/// raiz de um formulário SGI.
 pub fn validate(
     tree: &Tree,
     symbols: &Symbols,
     text: &str,
     context: Context,
-    inherited: &HashSet<std::string::String>,
+    inherited: &Inherited,
 ) -> Vec<Check> {
     let mut checks = Vec::new();
     let mut stack = vec![tree.root()];
     while let Some(node) = stack.pop() {
-        types::check(tree, symbols, text, context, node, &mut checks);
+        types::check(tree, symbols, text, context, inherited, node, &mut checks);
         match tree.kind(node) {
             BinaryExpr => binary(tree, node, &mut checks),
             Assign => assignment(tree, node, &mut checks),
@@ -208,7 +207,7 @@ fn unknown_function(
     symbols: &Symbols,
     text: &str,
     context: Context,
-    inherited: &HashSet<std::string::String>,
+    inherited: &Inherited,
     node: NodeId,
     checks: &mut Vec<Check>,
 ) {
@@ -234,7 +233,7 @@ fn unknown_function(
     if is_ident
         && symbols.reference_at(range).is_none()
         && builtins::lookup(&text[range], context).is_none()
-        && !inherited.contains(&text[range].to_uppercase())
+        && !inherited.contains(&text[range])
     {
         checks.push(Check {
             kind: CheckKind::UnknownFunction,
@@ -352,7 +351,7 @@ mod tests {
             &Symbols::build(&tree, text),
             text,
             Context::Rule,
-            &HashSet::new(),
+            &Inherited::default(),
         )
         .into_iter()
         .map(|c| (c.kind, &text[c.range]))
@@ -447,7 +446,11 @@ mod tests {
     fn funcao_desconhecida_por_contexto() {
         let run = |text: &str, context, inherited: &[&str]| -> Vec<CheckKind> {
             let tree = crate::parse(text).unwrap();
-            let inherited = inherited.iter().map(|s| s.to_uppercase()).collect();
+            let rules = inherited.iter().map(|name| {
+                let path = std::path::PathBuf::from("/f/rule.txt");
+                (path, format!("definir funcao {name}();"))
+            });
+            let inherited = Inherited::from_rules(rules);
             validate(
                 &tree,
                 &Symbols::build(&tree, text),
@@ -468,6 +471,30 @@ mod tests {
         // Função definida no arquivo, método de cursor e Mensagem não são nome desconhecido.
         let text = "definir funcao f(); definir cursor c;\nf(); c.AbrirCursor(); Mensagem(Erro, \"x\");\nfuncao f(); { }";
         assert!(run(text, Context::Rule, &[]).is_empty());
+    }
+
+    #[test]
+    fn parametros_de_funcao_herdada() {
+        let rules = [(
+            std::path::PathBuf::from("/f/rule.txt"),
+            "definir funcao CallWs(numero p, alfa end r);".to_owned(),
+        )];
+        let inherited = Inherited::from_rules(rules);
+        let text = "definir alfa a;\nCallWs(1, a); CallWs(\"x\", a); CallWs(1); CallWs(1, \"y\");";
+        let tree = crate::parse(text).unwrap();
+        let symbols = Symbols::build(&tree, text);
+        let kinds: Vec<_> = validate(&tree, &symbols, text, Context::Sgi, &inherited)
+            .into_iter()
+            .map(|c| (c.kind, c.label))
+            .collect();
+        // Constante no `end` só é acusada nas funções do ERP, onde foi conferida.
+        assert_eq!(
+            kinds,
+            [
+                (AlfaArgument, Some("p".to_owned())),
+                (TooFewArguments, None),
+            ]
+        );
     }
 
     #[test]
