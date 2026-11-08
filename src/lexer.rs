@@ -28,6 +28,17 @@ const MAX_NUMBER_CHARS: usize = 101;
 /// Consumir um caractere depois desta coluna dá `linha para o compilador é muito grande`.
 const MAX_LINE_COLUMN: usize = 254;
 
+/// Bytes ASCII que continuam um nome ou número, que são letras, dígitos, `_` e `'`.
+const NAME_BYTES: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut b = 0;
+    while b < 128 {
+        table[b] = (b as u8).is_ascii_alphanumeric() || b == b'_' as usize || b == b'\'' as usize;
+        b += 1;
+    }
+    table
+};
+
 /// O texto passa de `u32::MAX` bytes, o limite das posições.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextTooLarge;
@@ -265,20 +276,23 @@ impl Lexer<'_> {
     fn ident(&mut self, start: usize) -> SyntaxKind {
         let first_error = self.tokens.errors.len();
         let mut chars = 0;
-        while let Some(&b) = self.bytes.get(self.pos) {
-            if b.is_ascii_alphanumeric() || b == b'_' || b == b'\'' {
-                self.pos += 1;
-            } else if b.is_ascii() {
+        loop {
+            let run = self.bytes[self.pos..]
+                .iter()
+                .take_while(|&&b| NAME_BYTES[b as usize])
+                .count();
+            self.pos += run;
+            chars += run;
+            if self.bytes.get(self.pos).is_none_or(u8::is_ascii) {
                 break;
-            } else {
-                let ch = self.char_at(self.pos);
-                if !ch.is_alphabetic() {
-                    break;
-                }
-                let ch_start = self.pos;
-                self.pos += ch.len_utf8();
-                self.error(LexErrorKind::InvalidChar, ch_start);
             }
+            let ch = self.char_at(self.pos);
+            if !ch.is_alphabetic() {
+                break;
+            }
+            let ch_start = self.pos;
+            self.pos += ch.len_utf8();
+            self.error(LexErrorKind::InvalidChar, ch_start);
             chars += 1;
         }
 
@@ -314,7 +328,7 @@ impl Lexer<'_> {
                 }
                 decimal = true;
                 self.pos += 1;
-            } else if b.is_ascii_alphanumeric() || b == b'_' || b == b'\'' {
+            } else if NAME_BYTES[b as usize] {
                 self.pos += 1;
             } else if b.is_ascii() {
                 break;
