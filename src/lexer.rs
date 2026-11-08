@@ -15,7 +15,7 @@ use crate::SyntaxKind::{
     LBrace, LBracket, LParen, Lt, LtEq, Minus, MinusMinus, Neq, Newline, Number, Plus, PlusPlus,
     RBrace, RBracket, RParen, RelRun, Semicolon, Slash, Star, Whitespace,
 };
-use crate::delphi_float;
+use crate::{delphi_float, scan};
 
 /// Tamanho máximo de um identificador no compilador (`identificador muito extenso`).
 ///
@@ -437,10 +437,7 @@ impl Lexer<'_> {
     fn at_comment(&mut self, start: usize) -> SyntaxKind {
         self.reject_if_glued(start);
         let rest = &self.bytes[start + 1..];
-        let end = rest
-            .iter()
-            .position(|&b| matches!(b, b'@' | b'\n' | b'\r'))
-            .map_or(self.bytes.len(), |i| start + 1 + i);
+        let end = scan::find_any(rest, *b"@\n\r").map_or(self.bytes.len(), |i| start + 1 + i);
         if self.bytes.get(end) == Some(&b'@') {
             self.pos = end + 1;
         } else {
@@ -454,16 +451,10 @@ impl Lexer<'_> {
     /// já fecha, como no compilador.
     fn block_comment(&mut self, start: usize) -> SyntaxKind {
         let from = start + 1;
-        let end = self.bytes[from..]
-            .windows(2)
-            .position(|w| w == b"*/")
-            .map(|i| from + i + 2);
+        let end = self.find_comment_end(from);
         let stop = end.unwrap_or(self.bytes.len());
         let mut cursor = start;
-        while let Some(i) = self.bytes[cursor..stop]
-            .iter()
-            .position(|&b| matches!(b, b'\n' | b'\r'))
-        {
+        while let Some(i) = scan::find_any(&self.bytes[cursor..stop], *b"\n\r") {
             let eol = cursor + i;
             self.finish_line_in_comment(eol);
             let next = self.after_newline(eol).unwrap_or(stop);
@@ -529,9 +520,7 @@ impl Lexer<'_> {
                 // Pula direto até o próximo byte que importa. Os bytes de um caractere
                 // acentuado em UTF-8 nunca são iguais a esses, então não precisa decodificar.
                 _ => {
-                    self.pos += self.bytes[self.pos..]
-                        .iter()
-                        .position(|&b| matches!(b, b'"' | b'\\' | b'\n' | b'\r'))
+                    self.pos += scan::find_any(&self.bytes[self.pos..], *b"\"\\\n\r")
                         .unwrap_or(self.bytes.len() - self.pos);
                 }
             }
@@ -557,10 +546,19 @@ impl Lexer<'_> {
 
     /// Posição da quebra de linha a partir de `pos`, ou o fim do texto.
     fn line_end(&self, pos: usize) -> usize {
-        self.bytes[pos..]
-            .iter()
-            .position(|&b| matches!(b, b'\n' | b'\r'))
-            .map_or(self.bytes.len(), |i| pos + i)
+        scan::find_any(&self.bytes[pos..], *b"\n\r").map_or(self.bytes.len(), |i| pos + i)
+    }
+
+    /// Fim do `*/` procurando a partir de `from`, ou `None` se o comentário não fecha.
+    fn find_comment_end(&self, from: usize) -> Option<usize> {
+        let mut at = from;
+        loop {
+            let star = at + scan::find_any(&self.bytes[at..], *b"*")?;
+            if self.bytes.get(star + 1) == Some(&b'/') {
+                return Some(star + 2);
+            }
+            at = star + 1;
+        }
     }
 
     /// Começo da linha seguinte à quebra em `eol`, ou `None` se `eol` é o fim do texto.

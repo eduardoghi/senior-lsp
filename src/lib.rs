@@ -3,6 +3,7 @@
 pub mod cp1252;
 mod delphi_float;
 mod lexer;
+mod scan;
 mod syntax_kind;
 
 pub use lexer::{LexError, LexErrorKind, TextTooLarge, Tokens, lex};
