@@ -1,0 +1,13 @@
+{
+    "name": "senior-lsp",
+    "owner": {
+        "name": "Eduardo Hillesheim"
+    },
+    "plugins": [
+        {
+            "name": "senior-lsp",
+            "source": "./plugin/claude-code",
+            "description": "Servidor de linguagem para as regras LSP do ERP Senior (arquivos Rule.txt)"
+        }
+    ]
+}
