@@ -111,6 +111,15 @@ pub enum SyntaxKind {
 
     /// Fim do arquivo. Só o parser usa, o lexer nunca emite.
     Eof,
+
+    // Nós da árvore. Os da gramática entram junto com o parser.
+    /// Raiz, que cobre todos os tokens.
+    SourceFile,
+    /// Trecho que o parser não entendeu.
+    ErrorNode,
+    BinaryExpr,
+    ParenExpr,
+    NameRef,
 }
 
 use SyntaxKind::*;
@@ -183,6 +192,11 @@ pub const KEYWORDS: &[(&str, SyntaxKind)] = &[
 ];
 
 impl SyntaxKind {
+    /// Espaço, quebra de linha e comentário, que o compilador descarta.
+    pub fn is_trivia(self) -> bool {
+        matches!(self, Whitespace | Newline | AtComment | BlockComment)
+    }
+
     pub fn is_keyword(self) -> bool {
         (InicioKw as u8..=GravarNlEolKw as u8).contains(&(self as u8))
     }
