@@ -190,11 +190,50 @@ impl SyntaxKind {
     /// Devolve o tipo da palavra reservada, sem diferenciar maiúsculas, ou `None` se o nome não for
     /// reservado. Recebe o identificador inteiro, então `E075PRO` não casa com `E`.
     pub fn keyword(ident: &str) -> Option<SyntaxKind> {
-        KEYWORDS
+        let len = ident.len();
+        if len > MAX_KEYWORD_LEN {
+            return None;
+        }
+        let (words, starts) = &KEYWORDS_BY_LEN;
+        words[starts[len]..starts[len + 1]]
             .iter()
             .find(|(text, _)| text.eq_ignore_ascii_case(ident))
             .map(|&(_, kind)| kind)
     }
+}
+
+/// Tamanho da maior palavra reservada, `FINALIZARTRANSACAO`.
+const MAX_KEYWORD_LEN: usize = 18;
+
+/// `KEYWORDS` em ordem de tamanho, e onde começa cada tamanho. As palavras de tamanho `n` vão de
+/// `starts[n]` a `starts[n + 1]`, então a busca só compara as do mesmo tamanho do nome.
+const KEYWORDS_BY_LEN: (
+    [(&str, SyntaxKind); KEYWORDS.len()],
+    [usize; MAX_KEYWORD_LEN + 2],
+) = keywords_by_len();
+
+const fn keywords_by_len() -> (
+    [(&'static str, SyntaxKind); KEYWORDS.len()],
+    [usize; MAX_KEYWORD_LEN + 2],
+) {
+    let mut words = [("", Ident); KEYWORDS.len()];
+    let mut starts = [0; MAX_KEYWORD_LEN + 2];
+    let mut n = 0;
+    let mut len = 0;
+    while len <= MAX_KEYWORD_LEN {
+        starts[len] = n;
+        let mut i = 0;
+        while i < KEYWORDS.len() {
+            if KEYWORDS[i].0.len() == len {
+                words[n] = KEYWORDS[i];
+                n += 1;
+            }
+            i += 1;
+        }
+        len += 1;
+    }
+    starts[MAX_KEYWORD_LEN + 1] = n;
+    (words, starts)
 }
 
 #[cfg(test)]
@@ -222,6 +261,20 @@ mod tests {
     fn tabela_segue_a_ordem_do_enum() {
         for (i, (_, kind)) in KEYWORDS.iter().enumerate() {
             assert_eq!(*kind as u8, InicioKw as u8 + i as u8);
+        }
+    }
+
+    #[test]
+    fn indice_por_tamanho_cobre_todas_as_palavras() {
+        let (words, starts) = &KEYWORDS_BY_LEN;
+        assert_eq!(starts[MAX_KEYWORD_LEN + 1], KEYWORDS.len());
+        assert_eq!(
+            KEYWORDS.iter().map(|(t, _)| t.len()).max(),
+            Some(MAX_KEYWORD_LEN)
+        );
+        for &(text, kind) in KEYWORDS {
+            assert!(words.contains(&(text, kind)), "{text}");
+            assert_eq!(SyntaxKind::keyword(text), Some(kind), "{text}");
         }
     }
 
