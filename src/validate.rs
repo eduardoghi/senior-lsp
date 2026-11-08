@@ -7,6 +7,7 @@
 use text_size::TextRange;
 
 use crate::SyntaxKind::{self, *};
+use crate::symbols::Symbols;
 use crate::{Element, NodeId, Tree};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +22,8 @@ pub enum CheckKind {
     CodeAfterFunctionBlock,
     /// `funcao` dentro de um bloco de outra função que ficou aberto.
     FunctionInsideBlock,
+    /// Parâmetro usado fora da sua função. Compila, mas na execução o valor é lixo.
+    ForeignParameter,
 }
 
 impl CheckKind {
@@ -41,7 +44,7 @@ pub struct Check {
     pub function: Option<NodeId>,
 }
 
-pub fn validate(tree: &Tree) -> Vec<Check> {
+pub fn validate(tree: &Tree, symbols: &Symbols) -> Vec<Check> {
     let mut checks = Vec::new();
     let mut stack = vec![tree.root()];
     while let Some(node) = stack.pop() {
@@ -56,6 +59,18 @@ pub fn validate(tree: &Tree) -> Vec<Check> {
         // Em ordem de texto, para os diagnósticos saírem na ordem do arquivo.
         stack[first..].reverse();
     }
+    checks.extend(
+        symbols
+            .references
+            .iter()
+            .filter(|r| r.foreign)
+            .map(|r| Check {
+                kind: CheckKind::ForeignParameter,
+                range: r.range,
+                function: None,
+            }),
+    );
+    checks.sort_by_key(|c| c.range.start());
     checks
 }
 
@@ -168,7 +183,7 @@ mod tests {
     fn checks(text: &str) -> Vec<(CheckKind, &str)> {
         let tree = crate::parse(text).unwrap();
         assert!(tree.errors().is_empty(), "{text}");
-        validate(&tree)
+        validate(&tree, &Symbols::build(&tree, text))
             .into_iter()
             .map(|c| (c.kind, &text[c.range]))
             .collect()
@@ -219,5 +234,12 @@ mod tests {
         let text = "definir funcao a(); definir funcao b();\n\
                     funcao a(); { x = 1;\nfuncao b(); { y = 2; }\n}";
         assert_eq!(checks(text), [(FunctionInsideBlock, "b")]);
+    }
+
+    #[test]
+    fn parametro_fora_da_funcao() {
+        let text = "definir funcao f(numero p);\ndefinir funcao g();\n\
+                    funcao f(numero p); { }\nfuncao g(); { r = p; }";
+        assert_eq!(checks(text), [(ForeignParameter, "p")]);
     }
 }

@@ -10,6 +10,7 @@ use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range}
 use text_size::TextRange;
 
 use crate::line_index::{ColumnEncoding, LineIndex};
+use crate::symbols::Symbols;
 use crate::validate::{Check, CheckKind, validate};
 use crate::{LexErrorKind, ParseErrorKind, SyntaxKind, Tree};
 
@@ -31,7 +32,8 @@ pub(crate) fn diagnostics(
     let errors = lex
         .chain(parse)
         .map(|(range, described)| (range, described, DiagnosticSeverity::ERROR));
-    let checks = validate(tree).into_iter().map(|c| {
+    let symbols = Symbols::build(tree, text);
+    let checks = validate(tree, &symbols).into_iter().map(|c| {
         let severity = if c.kind.is_error() {
             DiagnosticSeverity::ERROR
         } else {
@@ -160,6 +162,12 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                 "Este comando faz parte da função {function}. O corpo de uma função vai até a \
                  próxima funcao ou o fim do arquivo, não só até o fim do bloco."
             ),
+        ),
+        CheckKind::ForeignParameter => (
+            "SEN063",
+            "Parâmetro de outra função. Compila, mas o parâmetro só existe durante a chamada \
+             da função dele, e aqui o valor lido é lixo."
+                .to_owned(),
         ),
         CheckKind::FunctionInsideBlock => (
             "SEN062",

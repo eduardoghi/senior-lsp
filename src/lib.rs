@@ -7,6 +7,7 @@ pub mod line_index;
 mod parser;
 mod scan;
 pub mod server;
+pub mod symbols;
 mod syntax_kind;
 mod tree;
 pub mod validate;
