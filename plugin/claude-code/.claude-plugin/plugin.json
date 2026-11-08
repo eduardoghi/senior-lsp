@@ -1,0 +1,5 @@
+{
+    "name": "senior-lsp",
+    "version": "0.1.0",
+    "description": "Servidor de linguagem para as regras LSP do ERP Senior (arquivos Rule.txt)"
+}

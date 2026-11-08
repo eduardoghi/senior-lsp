@@ -1,0 +1,11 @@
+{
+    "senior-lsp": {
+        "command": "${CLAUDE_PLUGIN_ROOT}/server/senior-lsp",
+        "extensionToLanguage": {
+            ".txt": "lsp-senior"
+        },
+        "startupTimeout": 10000,
+        "shutdownTimeout": 5000,
+        "maxRestarts": 3
+    }
+}

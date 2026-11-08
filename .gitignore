@@ -1,1 +1,3 @@
 /target
+# Executável do plugin, gerado pelo build.
+/plugin/claude-code/server/
