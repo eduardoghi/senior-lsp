@@ -25,6 +25,21 @@ pub(crate) fn diagnostics(
     index: &LineIndex,
     encoding: ColumnEncoding,
 ) -> Vec<Diagnostic> {
+    diagnostics_with(text, tree, symbols, context, inherited, &|range| {
+        to_lsp(text, index, encoding, range)
+    })
+}
+
+/// Diagnósticos com a conversão de posição dada, para regras cujo texto não é o arquivo, como as
+/// de dentro de um modelo de relatório.
+pub(crate) fn diagnostics_with(
+    text: &str,
+    tree: &Tree,
+    symbols: &Symbols,
+    context: Context,
+    inherited: &Inherited,
+    to_range: &dyn Fn(TextRange) -> Range,
+) -> Vec<Diagnostic> {
     let lex = tree
         .tokens()
         .errors()
@@ -50,7 +65,7 @@ pub(crate) fn diagnostics(
     errors
         .chain(checks)
         .map(|(range, (code, message), severity)| Diagnostic {
-            range: to_lsp(text, index, encoding, range),
+            range: to_range(range),
             severity: Some(severity),
             code: Some(NumberOrString::String(code.to_owned())),
             source: Some("senior-lsp".to_owned()),

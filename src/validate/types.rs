@@ -162,8 +162,13 @@ fn call(tree: &Tree, scope: &Scope, context: Context, node: NodeId, checks: &mut
     if tree.kind(callee) != NameRef {
         return;
     }
+    let name = &scope.text[tree.text_range(callee)];
+    // Num modelo de relatório, uma função definida em mais de uma regra deixa em dúvida qual
+    // assinatura vale, então a chamada não é conferida.
+    if context == Context::Report && scope.inherited.get(name).is_some_and(|d| d.rules > 1) {
+        return;
+    }
     let Some(reference) = scope.symbols.reference_at(tree.text_range(callee)) else {
-        let name = &scope.text[tree.text_range(callee)];
         if let Some(builtin) = builtins::lookup(name, context) {
             external_call(tree, scope, &builtin.params, callee, args, checks);
         } else if let Some(function) = scope.inherited.get(name) {
@@ -178,6 +183,15 @@ fn call(tree: &Tree, scope: &Scope, context: Context, node: NodeId, checks: &mut
             .map(|&t| &scope.symbols.definitions[t])
     };
     if !defs().all(|d| d.kind == DefKind::Function) {
+        return;
+    }
+    // Com `definir funcao` e `funcao` em número diferente de parâmetros, não se sabe contra qual
+    // o compilador confere, então a chamada fica sem conferência.
+    let counts: Vec<usize> = defs()
+        .filter_map(|d| tree.children(d.node).find(|&c| tree.kind(c) == ParamList))
+        .map(|list| tree.children(list).count())
+        .collect();
+    if counts.windows(2).any(|w| w[0] != w[1]) {
         return;
     }
     let def = defs()
@@ -417,6 +431,13 @@ mod tests {
         assert_eq!(checks(&caso("f(aTxt);")), [(AlfaArgument, "aTxt")]);
         assert_eq!(checks(&caso("f(1, 2);")), [(TooManyArguments, "f")]);
         assert_eq!(checks(&caso("f();")), [(TooFewArguments, "f")]);
+    }
+
+    #[test]
+    fn declaracao_e_implementacao_diferentes_ficam_sem_conferencia() {
+        let text =
+            "definir funcao f(numero a);\nf(1, 2, 3);\nfuncao f(numero a, numero b, numero c); { }";
+        assert!(checks(text).is_empty());
     }
 
     #[test]

@@ -29,6 +29,12 @@ pub struct InheritedDef {
     pub decl: String,
     /// Parâmetros, nas funções.
     pub params: Vec<Param>,
+    /// Quantas regras definem a função. Num modelo de relatório, mais de uma deixa em dúvida qual
+    /// assinatura vale.
+    pub rules: usize,
+    /// Regra de modelo de relatório de onde a definição veio, para levar a posição ao JSON.
+    /// `None` quando `text` é o próprio arquivo.
+    pub embedded: Option<Arc<crate::report::Embedded>>,
 }
 
 /// Funções e variáveis das regras acima, pelo nome em maiúsculas. A regra mais próxima vence.
@@ -63,9 +69,34 @@ impl Inherited {
 
     /// Junta as funções das regras dadas, da mais próxima para a mais distante.
     pub fn from_rules(rules: impl IntoIterator<Item = (PathBuf, String)>) -> Inherited {
+        let rules = rules
+            .into_iter()
+            .map(|(path, text)| (path, Arc::from(text), None));
+        Inherited::collect(rules, false)
+    }
+
+    /// Junta as definições das regras de um modelo de relatório, que se enxergam umas às outras
+    /// sem ordem. Um nome definido com tipos diferentes em duas regras fica sem tipo, para não
+    /// dar erro de tipo com o tipo errado.
+    pub fn from_model(
+        rules: impl IntoIterator<Item = (PathBuf, Arc<crate::report::Embedded>)>,
+    ) -> Inherited {
+        let rules = rules.into_iter().map(|(path, embedded)| {
+            let text: Arc<str> = Arc::from(embedded.rule.text.as_str());
+            (path, text, Some(embedded))
+        });
+        Inherited::collect(rules, true)
+    }
+
+    fn collect(
+        rules: impl Iterator<Item = (PathBuf, Arc<str>, Option<Arc<crate::report::Embedded>>)>,
+        unordered: bool,
+    ) -> Inherited {
         let mut inherited = Inherited::default();
-        for (path, text) in rules {
-            let text: Arc<str> = text.into();
+        // Pares de função e regra já contados em `rules`.
+        let mut counted: std::collections::HashSet<(String, (PathBuf, usize))> =
+            std::collections::HashSet::new();
+        for (path, text, embedded) in rules {
             let Ok(tree) = crate::parse(&text) else {
                 continue;
             };
@@ -74,26 +105,42 @@ impl Inherited {
                 let key = text[def.name].to_uppercase();
                 if def.kind != DefKind::Function {
                     let is_value = !matches!(def.kind, DefKind::Parameter(_) | DefKind::Label);
-                    if is_value && !inherited.variables.contains_key(&key) {
-                        let var = InheritedDef {
-                            kind: def.kind,
-                            path: path.clone(),
-                            text: text.clone(),
-                            name: def.name,
-                            decl: header(&tree, &text, def.node),
-                            params: Vec::new(),
-                        };
-                        inherited.variables.insert(key, var);
+                    if !is_value {
+                        continue;
                     }
+                    if let Some(existing) = inherited.variables.get_mut(&key) {
+                        if unordered && existing.kind != def.kind {
+                            existing.kind = DefKind::Variable(None);
+                        }
+                        continue;
+                    }
+                    let var = InheritedDef {
+                        kind: def.kind,
+                        path: path.clone(),
+                        text: text.clone(),
+                        name: def.name,
+                        decl: header(&tree, &text, def.node),
+                        params: Vec::new(),
+                        rules: 1,
+                        embedded: embedded.clone(),
+                    };
+                    inherited.variables.insert(key, var);
                     continue;
                 }
                 let is_decl = tree.kind(def.node) == SyntaxKind::FuncDecl;
+                // Primeira vez que esta regra define esta função.
+                let new_rule = counted.insert((key.clone(), rule_key(&path, &text)));
                 let entry = inherited.functions.entry(key);
                 // Na mesma regra, o `definir funcao` dá os parâmetros e a `funcao` dá o lugar.
                 let existing = match entry {
                     std::collections::hash_map::Entry::Occupied(e) => {
                         let f = e.into_mut();
-                        if f.path != path {
+                        let same_rule = f.path == path && Arc::ptr_eq(&f.text, &text);
+                        if !same_rule {
+                            // Conta a regra uma vez só, mesmo com `definir funcao` e `funcao`.
+                            if new_rule {
+                                f.rules += 1;
+                            }
                             continue;
                         }
                         f
@@ -105,6 +152,8 @@ impl Inherited {
                         name: def.name,
                         decl: String::new(),
                         params: Vec::new(),
+                        rules: 1,
+                        embedded: embedded.clone(),
                     }),
                 };
                 if is_decl || existing.decl.is_empty() {
@@ -236,6 +285,11 @@ pub fn uri_from_path(path: &Path) -> String {
         }
     }
     uri
+}
+
+/// Identifica uma regra pelo arquivo e pelo endereço do texto dela.
+fn rule_key(path: &Path, text: &Arc<str>) -> (PathBuf, usize) {
+    (path.to_path_buf(), Arc::as_ptr(text).cast::<u8>() as usize)
 }
 
 /// Primeira linha da definição, sem o `{` que abre o corpo.

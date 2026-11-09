@@ -20,6 +20,16 @@ pub(crate) struct Context<'a> {
     pub(crate) doc: &'a Document,
     pub(crate) uri: &'a Uri,
     pub(crate) encoding: ColumnEncoding,
+    /// Regra de dentro de um JSON de modelo de relatório. As posições do editor são do JSON e
+    /// passam pelo mapa da regra nos dois sentidos.
+    pub(crate) embedding: Option<Embedding<'a>>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Embedding<'a> {
+    pub(crate) rule: &'a crate::report::EmbeddedRule,
+    pub(crate) json: &'a str,
+    pub(crate) index: &'a crate::line_index::LineIndex,
 }
 
 impl Context<'_> {
@@ -28,18 +38,37 @@ impl Context<'_> {
             line: position.line,
             col: position.character,
         };
-        self.doc.index.offset(&self.doc.text, lc, self.encoding)
+        match self.embedding {
+            Some(e) => {
+                let json = e.index.offset(e.json, lc, self.encoding);
+                e.rule.from_json(json).unwrap_or_default()
+            }
+            None => self.doc.index.offset(&self.doc.text, lc, self.encoding),
+        }
     }
 
     fn range(&self, range: TextRange) -> Range {
+        let (text, index, range) = match self.embedding {
+            Some(e) => (e.json, e.index, e.rule.range_to_json(range)),
+            None => (self.doc.text.as_str(), &self.doc.index, range),
+        };
         let p = |offset| {
-            let lc = self
-                .doc
-                .index
-                .line_col(&self.doc.text, offset, self.encoding);
+            let lc = index.line_col(text, offset, self.encoding);
             Position::new(lc.line, lc.col)
         };
         Range::new(p(range.start()), p(range.end()))
+    }
+
+    /// Lugar de uma definição de outra regra, no arquivo dela. Uma regra de modelo de relatório
+    /// leva a posição ao JSON pelo mapa dela.
+    fn def_location(&self, def: &InheritedDef, range: TextRange) -> Option<Location> {
+        match &def.embedded {
+            Some(e) => {
+                let json_range = e.rule.range_to_json(range);
+                self.location_in(&def.path, &e.json, json_range)
+            }
+            None => self.location_in(&def.path, &def.text, range),
+        }
     }
 
     fn location(&self, range: TextRange) -> Location {
@@ -61,7 +90,7 @@ impl Context<'_> {
     /// Lugar de uma função ou variável usada aqui e definida em outra regra do formulário SGI.
     fn inherited_definition(&self, offset: TextSize) -> Option<Location> {
         let (_, def) = self.inherited_at(offset)?;
-        self.location_in(&def.path, &def.text, def.name)
+        self.def_location(def, def.name)
     }
 
     /// Nome na posição que vem de uma regra acima no formulário, com o trecho dele aqui.
@@ -112,12 +141,19 @@ impl Context<'_> {
         let name = &self.doc.text[range];
         let mut out = Vec::new();
         if include_declaration {
-            out.extend(self.location_in(&def.path, &def.text, def.name));
+            out.extend(self.def_location(def, def.name));
         }
         for r in crate::form::uses(&def.text, name, true) {
-            out.extend(self.location_in(&def.path, &def.text, r));
+            out.extend(self.def_location(def, r));
         }
-        out.extend(self.uses_below(&def.path, name));
+        if def.embedded.is_some() {
+            // Num modelo de relatório, ficam os usos desta regra. As outras regras do modelo não
+            // entram ainda.
+            let here = crate::form::uses(&self.doc.text, name, false);
+            out.extend(here.into_iter().map(|r| self.location(r)));
+        } else {
+            out.extend(self.uses_below(&def.path, name));
+        }
         out
     }
 
@@ -220,6 +256,11 @@ impl Context<'_> {
     /// Trecho do nome que pode ser renomeado na posição. `None` quando ali não há nome definido
     /// no arquivo nem numa regra acima no formulário, como uma função do ERP.
     pub(crate) fn prepare_rename(&self, position: Position) -> Option<Range> {
+        // Num modelo de relatório, um nome costuma ser usado em várias regras, e renomear só esta
+        // quebraria o modelo.
+        if self.embedding.is_some() {
+            return None;
+        }
         let offset = self.offset(position);
         let symbols = &self.doc.symbols;
         let local = symbols
@@ -400,7 +441,9 @@ impl Context<'_> {
             )
         } else {
             let (range, def) = self.inherited_at(offset)?;
-            let line = self.range_in(&def.text, def.name).start.line + 1;
+            let line = self
+                .def_location(def, def.name)
+                .map_or(0, |l| l.range.start.line + 1);
             let value = format!(
                 "```lsp\n{}\n```\n{} em {}, linha {line}",
                 def.decl,

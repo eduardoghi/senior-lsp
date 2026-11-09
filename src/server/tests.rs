@@ -528,3 +528,70 @@ fn renomear() {
     assert!(r.response_result.unwrap().is_null());
     editor.stop();
 }
+
+#[test]
+fn regras_de_modelo_de_relatorio() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-modelo-{}", std::process::id()));
+    let model = base.join("Modelos/M1.GER");
+    std::fs::create_dir_all(&model).unwrap();
+    let functions = r#"{ "function_rule": { "rule": { "prop_name": "SFunctionRule", "lines": [
+  "Definir Funcao Soma(Numero p);",
+  "Funcao Soma(Numero p); { }"
+] } } }"#;
+    std::fs::write(model.join("Base_Structure.json"), functions).unwrap();
+    let header = r#"{ "children": [ { "rule": { "prop_name": "SOnPrint", "lines": [
+  "Definir Alfa aTxt;",
+  "Soma(\"x\");",
+  "AlteraControle(\"Campo\", \"Descrição\", \"Folha\");",
+  "Inexistente(1);"
+] } } ] }"#;
+    let header_path = model.join("Cabecalho.json");
+    std::fs::write(&header_path, header).unwrap();
+    let uri = crate::form::uri_from_path(&header_path);
+
+    let (mut editor, _) = Editor::start(None);
+    editor.open(&uri, 1, header);
+    let d = editor.diagnostics();
+    let found: Vec<_> = d
+        .diagnostics
+        .iter()
+        .map(|d| {
+            let lsp_types::NumberOrString::String(code) = d.code.clone().unwrap() else {
+                unreachable!()
+            };
+            (code, d.range.start.line, d.range.start.character)
+        })
+        .collect();
+    // O tipo errado na função do modelo e o nome desconhecido, nas linhas do JSON. A função de
+    // relatório `AlteraControle` não dá erro.
+    assert_eq!(
+        found,
+        [("SEN047".to_owned(), 2, 8), ("SEN052".to_owned(), 4, 3)]
+    );
+
+    let at = |line: u32, character: u32| json!({ "textDocument": { "uri": uri }, "position": { "line": line, "character": character } });
+    let r = editor.request(HoverRequest::METHOD, at(3, 5));
+    let hover = r.response_result.unwrap();
+    assert!(
+        hover["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("AlteraControle")
+    );
+
+    let r = editor.request(GotoDefinition::METHOD, at(2, 4));
+    let locations = r.response_result.unwrap();
+    assert_eq!(
+        locations[0]["uri"],
+        crate::form::uri_from_path(&model.join("Base_Structure.json")).as_str()
+    );
+    assert_eq!(locations[0]["range"]["start"]["line"], 2);
+
+    // Fora de regra, no JSON em si, não há resposta, e renomear fica desligado.
+    let r = editor.request(HoverRequest::METHOD, at(0, 2));
+    assert!(r.response_result.unwrap().is_null());
+    let r = editor.request(PrepareRenameRequest::METHOD, at(1, 12));
+    assert!(r.response_result.unwrap().is_null());
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}

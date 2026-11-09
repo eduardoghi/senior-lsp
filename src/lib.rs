@@ -7,6 +7,7 @@ pub mod form;
 mod lexer;
 pub mod line_index;
 mod parser;
+pub mod report;
 mod scan;
 pub mod server;
 pub mod symbols;

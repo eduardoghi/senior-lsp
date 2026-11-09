@@ -19,20 +19,21 @@ O servidor oferece:
   linguagem
 - renomear num editor, trocando só o símbolo certo, nos outros arquivos do formulário SGI inclusive
 
-A exportação guarda o código de cada regra num arquivo `Rule.txt` ou `rule.txt`, e o servidor
-analisa só esses arquivos. A pasta diz onde a regra roda, e isso muda as funções do ERP que ela pode
-chamar:
+A exportação guarda o código de cada regra num arquivo `Rule.txt` ou `rule.txt`, menos nos modelos
+de relatório, em que as regras ficam dentro dos JSON de cada modelo. A pasta diz onde a regra roda,
+e isso muda as funções do ERP que ela pode chamar:
 
 | Pasta | Arquivo | Regra |
 |---|---|---|
 | `Regras` | `Rule.txt` | regra de identificador, com as funções comuns do ERP |
 | `Formulários SGI` | `rule.txt` | regra de tela SGI, que ganha as funções de tela e as funções e variáveis definidas nas regras acima dela no formulário, como a da raiz |
 | `Web Services` | `Rule.txt` | regra de web service, com as mesmas funções da regra de identificador |
+| `Modelos` | os `.json` de cada modelo | regra de relatório, que ganha as funções de relatório e as funções e variáveis definidas nas outras regras do modelo |
 
-O servidor só precisa reconhecer a pasta `Formulários SGI`. Qualquer outro arquivo de regra conta
-como regra de identificador, então renomear a pasta `Regras` não muda nada. Os outros tipos
-de artefato não exportam arquivo de regra. Os modelos de relatório (`Modelos`) guardam as regras
-dentro de arquivos JSON e não são analisados.
+O servidor reconhece as pastas `Formulários SGI` e `Modelos`. Qualquer outro arquivo de regra conta
+como regra de identificador, então renomear a pasta `Regras` não muda nada. Os outros tipos de
+artefato não exportam regra. Num modelo de relatório, renomear fica desligado e as referências não
+atravessam as regras do modelo, porque um nome costuma ser usado em várias delas.
 
 Os nomes seguem as regras do compilador. Eles não diferenciam caixa, e um `definir` vale no
 arquivo inteiro, inclusive antes dele e dentro de funções. Variáveis que o ERP fornece não têm

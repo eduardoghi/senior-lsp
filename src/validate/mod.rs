@@ -234,6 +234,7 @@ fn unknown_function(
     if is_ident
         && symbols.reference_at(range).is_none()
         && builtins::lookup(&text[range], context).is_none()
+        && builtins::converted(&text[range]).is_none()
         && !inherited.contains(&text[range])
     {
         checks.push(Check {

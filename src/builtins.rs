@@ -1,12 +1,9 @@
 //! Funções que o ERP já traz, como `IntParaAlfa`, com as declarações que o compilador usa para
 //! conferir as chamadas.
 //!
-//! Todo compilador recebe o grupo de regra, e a tela SGI acrescenta as funções dela. Um nome
-//! fora desses grupos e sem `definir funcao` no arquivo não compila. Os arquivos têm uma
+//! Todo compilador recebe o grupo de regra, e a tela SGI e o relatório acrescentam as funções
+//! deles. Um nome fora desses grupos e sem `definir funcao` no arquivo não compila. Os arquivos têm uma
 //! declaração por linha, na ordem em que o compilador registra, e vale a primeira de cada nome.
-//!
-//! As declarações são lidas aqui, e não pelo parser da linguagem, porque algumas usam palavras
-//! reservadas como nome de parâmetro (`Numero Data`, `Numero End Fim`).
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -21,17 +18,24 @@ pub enum Context {
     Rule,
     /// Regra de tela SGI, na pasta `Formulários SGI`.
     Sgi,
+    /// Regra de modelo de relatório, nos JSON da pasta `Modelos`.
+    Report,
 }
 
 impl Context {
     /// Contexto pelo caminho do arquivo, em forma de URI (`file:///...`).
     pub fn from_uri(uri: &str) -> Context {
         let path = percent_decode(uri);
-        if path
-            .split('/')
+        let mut segments = path.split('/');
+        if segments
+            .clone()
             .any(|s| s.eq_ignore_ascii_case("Formulários SGI"))
         {
             Context::Sgi
+        } else if segments.any(|s| s.eq_ignore_ascii_case("Modelos"))
+            && path.to_ascii_lowercase().ends_with(".json")
+        {
+            Context::Report
         } else {
             Context::Rule
         }
@@ -55,8 +59,9 @@ pub struct Builtin {
 
 struct Table {
     builtins: Vec<Builtin>,
-    /// Nome em maiúsculas para o índice em `builtins` e se a função é só de tela SGI.
-    index: HashMap<String, (usize, bool)>,
+    /// Nome em maiúsculas para o índice em `builtins` e o contexto em que ela existe, ou `None`
+    /// quando existe em todos.
+    index: HashMap<String, (usize, Option<Context>)>,
 }
 
 static TABLE: LazyLock<Table> = LazyLock::new(|| {
@@ -64,15 +69,19 @@ static TABLE: LazyLock<Table> = LazyLock::new(|| {
         builtins: Vec::new(),
         index: HashMap::new(),
     };
-    for (source, sgi) in [
-        (include_str!("builtins/regra.txt"), false),
-        (include_str!("builtins/sgi.txt"), true),
+    for (source, only) in [
+        (include_str!("builtins/regra.txt"), None),
+        (include_str!("builtins/sgi.txt"), Some(Context::Sgi)),
+        (
+            include_str!("builtins/relatorio.txt"),
+            Some(Context::Report),
+        ),
     ] {
         for line in source.lines().filter(|l| !l.trim().is_empty()) {
             let builtin = parse_decl(line).expect("declaração embutida fora do formato");
             let key = builtin.name.to_uppercase();
             if !table.index.contains_key(&key) {
-                table.index.insert(key, (table.builtins.len(), sgi));
+                table.index.insert(key, (table.builtins.len(), only));
                 table.builtins.push(builtin);
             }
         }
@@ -85,14 +94,30 @@ pub fn all(context: Context) -> impl Iterator<Item = &'static Builtin> {
     TABLE
         .index
         .values()
-        .filter(move |&&(_, sgi)| !sgi || context == Context::Sgi)
+        .filter(move |&&(_, only)| only.is_none_or(|c| c == context))
         .map(|&(i, _)| &TABLE.builtins[i])
 }
 
 /// Função do ERP com esse nome no contexto, sem diferença de caixa.
 pub fn lookup(name: &str, context: Context) -> Option<&'static Builtin> {
-    let &(i, sgi) = TABLE.index.get(&name.to_uppercase())?;
-    (!sgi || context == Context::Sgi).then(|| &TABLE.builtins[i])
+    let &(i, only) = TABLE.index.get(&name.to_uppercase())?;
+    only.is_none_or(|c| c == context)
+        .then(|| &TABLE.builtins[i])
+}
+
+/// Nomes antigos que o ERP troca pelos atuais antes de compilar uma regra de versão anterior,
+/// como `ConverteParaMaiusculo2` por `ConverteParaMaiusculo`. Como a troca pode mexer nos
+/// parâmetros, a chamada a um deles não é conferida, só deixa de ser nome desconhecido.
+pub fn converted(name: &str) -> Option<&'static str> {
+    const NAMES: [(&str, &str); 3] = [
+        ("ConverteParaMaiusculo2", "ConverteParaMaiusculo"),
+        ("ConverteParaMinusculo2", "ConverteParaMinusculo"),
+        ("EnviarEMail2", "EnviarEMail"),
+    ];
+    NAMES
+        .iter()
+        .find(|(old, _)| old.eq_ignore_ascii_case(name))
+        .map(|&(_, new)| new)
 }
 
 /// Lê `Funcao Nome(Tipo [End] nome, ...);`. Comentários `/* */` no meio são ignorados.
@@ -173,7 +198,7 @@ mod tests {
 
     #[test]
     fn le_todas_as_declaracoes() {
-        assert_eq!(TABLE.builtins.len(), 899);
+        assert_eq!(TABLE.builtins.len(), 899 + 257);
         let f = lookup("intparaalfa", Context::Rule).unwrap();
         assert_eq!(f.name, "IntParaAlfa");
         assert_eq!(
@@ -208,6 +233,15 @@ mod tests {
         assert!(lookup("AbrirTelaSGI", Context::Sgi).is_some());
         assert!(lookup("IntParaAlfa", Context::Sgi).is_some());
         assert!(lookup("InsClauSQLWhere", Context::Sgi).is_none());
+        assert!(lookup("InsClauSQLWhere", Context::Report).is_some());
+        assert!(lookup("AlteraControle", Context::Report).is_some());
+        assert!(lookup("AlteraControle", Context::Rule).is_none());
+        assert!(lookup("AbrirTelaSGI", Context::Report).is_none());
+        assert!(lookup("IntParaAlfa", Context::Report).is_some());
+        assert_eq!(
+            converted("converteparamaiusculo2"),
+            Some("ConverteParaMaiusculo")
+        );
     }
 
     #[test]
@@ -225,6 +259,10 @@ mod tests {
         assert_eq!(
             ctx("file:///c/Web%20Services/interno/X/Rule.txt"),
             Context::Rule
+        );
+        assert_eq!(
+            ctx("file:///c/Modelos/CCCC001.GER/Cabecalho.json"),
+            Context::Report
         );
     }
 }

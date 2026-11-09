@@ -28,7 +28,7 @@ use lsp_types::{
 };
 
 use crate::line_index::ColumnEncoding;
-use documents::{Documents, is_rule};
+use documents::{Documents, is_report, is_rule};
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -109,7 +109,7 @@ impl Server<'_> {
             GotoDefinition::METHOD => {
                 let params: GotoDefinitionParams = serde_json::from_value(request.params)?;
                 let at = params.text_document_position_params;
-                self.with(&at.text_document.uri, |c| {
+                self.with(&at.text_document.uri, Some(at.position), |c| {
                     serde_json::to_value(GotoDefinitionResponse::Array(c.definition(at.position)))
                 })
             }
@@ -117,21 +117,21 @@ impl Server<'_> {
                 let params: ReferenceParams = serde_json::from_value(request.params)?;
                 let at = params.text_document_position;
                 let declaration = params.context.include_declaration;
-                self.with(&at.text_document.uri, |c| {
+                self.with(&at.text_document.uri, Some(at.position), |c| {
                     serde_json::to_value(c.references(at.position, declaration))
                 })
             }
             HoverRequest::METHOD => {
                 let params: HoverParams = serde_json::from_value(request.params)?;
                 let at = params.text_document_position_params;
-                self.with(&at.text_document.uri, |c| {
+                self.with(&at.text_document.uri, Some(at.position), |c| {
                     serde_json::to_value(c.hover(at.position))
                 })
             }
             Completion::METHOD => {
                 let params: lsp_types::CompletionParams = serde_json::from_value(request.params)?;
                 let at = params.text_document_position;
-                self.with(&at.text_document.uri, |c| {
+                self.with(&at.text_document.uri, Some(at.position), |c| {
                     serde_json::to_value(lsp_types::CompletionResponse::Array(
                         c.completion(at.position),
                     ))
@@ -140,7 +140,7 @@ impl Server<'_> {
             PrepareRenameRequest::METHOD => {
                 let params: lsp_types::TextDocumentPositionParams =
                     serde_json::from_value(request.params)?;
-                self.with(&params.text_document.uri, |c| {
+                self.with(&params.text_document.uri, Some(params.position), |c| {
                     let range = c.prepare_rename(params.position);
                     serde_json::to_value(range.map(lsp_types::PrepareRenameResponse::Range))
                 })
@@ -149,7 +149,7 @@ impl Server<'_> {
                 let params: lsp_types::RenameParams = serde_json::from_value(request.params)?;
                 let at = params.text_document_position;
                 let mut failure = None;
-                let result = self.with(&at.text_document.uri, |c| {
+                let result = self.with(&at.text_document.uri, Some(at.position), |c| {
                     match c.rename(at.position, &params.new_name) {
                         Ok(edit) => serde_json::to_value(edit),
                         Err(message) => {
@@ -168,9 +168,25 @@ impl Server<'_> {
             }
             DocumentSymbolRequest::METHOD => {
                 let params: DocumentSymbolParams = serde_json::from_value(request.params)?;
-                self.with(&params.text_document.uri, |c| {
-                    serde_json::to_value(DocumentSymbolResponse::Nested(c.document_symbols()))
-                })
+                let uri = &params.text_document.uri;
+                match self.documents.report(uri) {
+                    // Num JSON de modelo, os símbolos de todas as regras dele.
+                    Some(report) => {
+                        let symbols: Vec<_> = report
+                            .rules
+                            .iter()
+                            .flat_map(|rule| {
+                                self.report_context(uri, report, rule).document_symbols()
+                            })
+                            .collect();
+                        Ok(serde_json::to_value(DocumentSymbolResponse::Nested(
+                            symbols,
+                        ))?)
+                    }
+                    None => self.with(uri, None, |c| {
+                        serde_json::to_value(DocumentSymbolResponse::Nested(c.document_symbols()))
+                    }),
+                }
             }
             method => {
                 let response = Response::new_err(
@@ -188,21 +204,53 @@ impl Server<'_> {
     }
 
     /// Resposta de um pedido sobre o documento, ou `null` se ele não está aberto, como uma regra
-    /// que o servidor não analisa.
+    /// que o servidor não analisa. Num JSON de modelo de relatório, a posição escolhe a regra, e
+    /// fora de regra a resposta é `null`.
     fn with(
         &self,
         uri: &Uri,
+        position: Option<lsp_types::Position>,
         f: impl FnOnce(&navigation::Context) -> serde_json::Result<serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let Some(doc) = self.documents.get(uri) else {
+        if let Some(doc) = self.documents.get(uri) {
+            let context = navigation::Context {
+                doc,
+                uri,
+                encoding: self.encoding,
+                embedding: None,
+            };
+            return Ok(f(&context)?);
+        }
+        let (Some(report), Some(position)) = (self.documents.report(uri), position) else {
             return Ok(serde_json::Value::Null);
         };
-        let context = navigation::Context {
-            doc,
+        let lc = crate::line_index::LineCol {
+            line: position.line,
+            col: position.character,
+        };
+        let offset = report.index.offset(&report.json, lc, self.encoding);
+        match report.rule_at(offset) {
+            Some(rule) => Ok(f(&self.report_context(uri, report, rule))?),
+            None => Ok(serde_json::Value::Null),
+        }
+    }
+
+    fn report_context<'a>(
+        &self,
+        uri: &'a Uri,
+        report: &'a documents::ReportDocument,
+        rule: &'a documents::ReportRule,
+    ) -> navigation::Context<'a> {
+        navigation::Context {
+            doc: &rule.doc,
             uri,
             encoding: self.encoding,
-        };
-        Ok(f(&context)?)
+            embedding: Some(navigation::Embedding {
+                rule: &rule.embedded.rule,
+                json: &report.json,
+                index: &report.index,
+            }),
+        }
     }
 
     fn notification(&mut self, notification: Notification) -> Result<()> {
@@ -214,28 +262,36 @@ impl Server<'_> {
                 if is_rule(&doc.uri) {
                     self.documents.set(doc.uri.clone(), doc.text, doc.version)?;
                     self.publish(&doc.uri)?;
+                } else if is_report(&doc.uri) {
+                    self.documents
+                        .set_report(doc.uri.clone(), doc.text, doc.version)?;
+                    self.publish(&doc.uri)?;
                 }
             }
             DidChangeTextDocument::METHOD => {
                 let params: DidChangeTextDocumentParams =
                     serde_json::from_value(notification.params)?;
                 let uri = params.text_document.uri;
-                if !is_rule(&uri) {
+                let version = params.text_document.version;
+                // Com a sincronização completa, a última mudança traz o texto inteiro.
+                let Some(change) = params.content_changes.into_iter().last() else {
+                    return Ok(());
+                };
+                if is_rule(&uri) {
+                    self.documents.set(uri.clone(), change.text, version)?;
+                } else if is_report(&uri) {
+                    self.documents
+                        .set_report(uri.clone(), change.text, version)?;
+                } else {
                     return Ok(());
                 }
-                // Com a sincronização completa, a última mudança traz o texto inteiro.
-                if let Some(change) = params.content_changes.into_iter().last() {
-                    self.documents
-                        .set(uri.clone(), change.text, params.text_document.version)?;
-                    self.publish(&uri)?;
-                }
+                self.publish(&uri)?;
             }
             DidCloseTextDocument::METHOD => {
                 let params: DidCloseTextDocumentParams =
                     serde_json::from_value(notification.params)?;
                 let uri = params.text_document.uri;
-                if self.documents.get(&uri).is_some() {
-                    self.documents.remove(&uri);
+                if self.documents.remove(&uri) {
                     // Sem isso, os erros do documento fechado continuam no editor.
                     self.send_diagnostics(uri, Vec::new(), None)?;
                 }
@@ -246,6 +302,29 @@ impl Server<'_> {
     }
 
     fn publish(&self, uri: &Uri) -> Result<()> {
+        if let Some(report) = self.documents.report(uri) {
+            let mut all = Vec::new();
+            for rule in &report.rules {
+                let to_range = |range: text_size::TextRange| {
+                    let json_range = rule.embedded.rule.range_to_json(range);
+                    let p = |offset| {
+                        let lc = report.index.line_col(&report.json, offset, self.encoding);
+                        lsp_types::Position::new(lc.line, lc.col)
+                    };
+                    lsp_types::Range::new(p(json_range.start()), p(json_range.end()))
+                };
+                let doc = &rule.doc;
+                all.extend(diagnostics::diagnostics_with(
+                    &doc.text,
+                    &doc.tree,
+                    &doc.symbols,
+                    doc.context,
+                    &doc.inherited,
+                    &to_range,
+                ));
+            }
+            return self.send_diagnostics(uri.clone(), all, Some(report.version));
+        }
         let Some(doc) = self.documents.get(uri) else {
             return Ok(());
         };
