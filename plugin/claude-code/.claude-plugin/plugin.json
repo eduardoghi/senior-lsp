@@ -1,6 +1,6 @@
 {
     "name": "senior-lsp",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "Servidor de linguagem para as regras LSP do ERP Senior (arquivos Rule.txt)",
     "userConfig": {
         "tbs_producao": {
