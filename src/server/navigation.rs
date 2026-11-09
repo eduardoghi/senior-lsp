@@ -93,7 +93,7 @@ impl Context<'_> {
         self.def_location(def, def.name)
     }
 
-    /// Nome na posição que vem de uma regra acima no formulário, com o trecho dele aqui.
+    /// Nome na posição que vem de uma regra anterior do formulário, com o trecho dele aqui.
     fn inherited_at(&self, offset: TextSize) -> Option<(TextRange, &InheritedDef)> {
         let (node, is_callee) = name_at(&self.doc.tree, offset)?;
         let range = self.doc.tree.text_range(node);
@@ -111,12 +111,12 @@ impl Context<'_> {
         Some(Location::new(uri, self.range_in(text, range)))
     }
 
-    /// Usos de `name` nas regras abaixo de `rule` no formulário que não o definem de novo. A
+    /// Usos de `name` nas regras que vêm depois de `rule` no formulário que não o definem de novo. A
     /// regra aberta no editor usa o texto do editor, e as outras são lidas do disco.
-    fn uses_below(&self, rule: &Path, name: &str) -> Vec<Location> {
+    fn uses_after(&self, rule: &Path, name: &str) -> Vec<Location> {
         let current = crate::form::path_from_uri(self.uri.as_str());
         let mut out = Vec::new();
-        for path in crate::form::descendant_rules(rule) {
+        for path in crate::form::following_rules(rule) {
             if current.as_deref() == Some(path.as_path()) {
                 let ranges = crate::form::uses(&self.doc.text, name, false);
                 out.extend(ranges.into_iter().map(|r| self.location(r)));
@@ -132,8 +132,8 @@ impl Context<'_> {
         out
     }
 
-    /// Referências de um nome usado aqui e definido numa regra acima. Inclui a definição, os usos
-    /// na regra dela e os usos nas regras abaixo dela, esta inclusive.
+    /// Referências de um nome usado aqui e definido numa regra anterior. Inclui a definição, os usos
+    /// na regra dela e os usos nas regras seguintes, esta inclusive.
     fn inherited_references(&self, offset: TextSize, include_declaration: bool) -> Vec<Location> {
         let Some((range, def)) = self.inherited_at(offset) else {
             return Vec::new();
@@ -146,7 +146,7 @@ impl Context<'_> {
         for r in crate::form::uses(&def.text, name, true) {
             out.extend(self.def_location(def, r));
         }
-        out.extend(self.uses_below(&def.path, name));
+        out.extend(self.uses_after(&def.path, name));
         out
     }
 
@@ -316,12 +316,12 @@ impl Context<'_> {
         }
         ranges.sort_by_key(|r| r.start());
         let mut out: Vec<Location> = ranges.into_iter().map(|r| self.location(r)).collect();
-        // Função ou variável deste arquivo num formulário SGI também é usada nas regras abaixo.
+        // Função ou variável deste arquivo num formulário SGI também é usada nas regras seguintes.
         let first = &symbols.definitions[targets[0]];
         let global = !matches!(first.kind, DefKind::Parameter(_) | DefKind::Label);
         if global && self.doc.context == builtins::Context::Sgi {
             if let Some(path) = crate::form::path_from_uri(self.uri.as_str()) {
-                out.extend(self.uses_below(&path, &self.doc.text[first.name]));
+                out.extend(self.uses_after(&path, &self.doc.text[first.name]));
             }
         }
         out
@@ -370,7 +370,7 @@ impl Context<'_> {
     }
 
     /// Trecho do nome que pode ser renomeado na posição. `None` quando ali não há nome definido
-    /// no arquivo nem numa regra acima no formulário, como uma função do ERP.
+    /// no arquivo nem numa regra anterior do formulário, como uma função do ERP.
     pub(crate) fn prepare_rename(&self, position: Position) -> Option<Range> {
         let offset = self.offset(position);
         // Renomear uma entrada do relatório mudaria o cadastro dela no modelo, mesmo quando uma
@@ -470,7 +470,7 @@ impl Context<'_> {
     }
 
     /// Nomes que cabem na posição, filtrados pelo começo já digitado, sem diferença de caixa.
-    /// Vêm primeiro as definições do arquivo, depois as das regras acima no formulário SGI, as
+    /// Vêm primeiro as definições do arquivo, depois as das regras anteriores do formulário SGI, as
     /// funções do ERP e as palavras da linguagem. Dentro de string, de comentário ou depois de um
     /// ponto, que é campo de cursor ou de tabela, não há sugestão.
     pub(crate) fn completion(&self, position: Position) -> Vec<CompletionItem> {
@@ -582,6 +582,7 @@ impl Context<'_> {
                 .map_or(0, |l| l.range.start.line + 1);
             let what = match def.entry {
                 Some(crate::report::EntryKind::Entrance) => "Entrada do relatório".to_owned(),
+                Some(crate::report::EntryKind::Field) => "Campo da tela".to_owned(),
                 Some(crate::report::EntryKind::Control(c)) => {
                     format!("Controle de {} do relatório", c.label())
                 }

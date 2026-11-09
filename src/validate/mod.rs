@@ -102,6 +102,7 @@ pub fn validate(
         symbols,
         text,
         inherited,
+        context,
     };
     let mut stack = vec![tree.root()];
     while let Some(node) = stack.pop() {

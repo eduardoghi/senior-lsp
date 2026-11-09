@@ -38,6 +38,9 @@ pub struct Entry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
     Entrance,
+    /// Campo de tela SGI, da interface ou de uma tabela, lido do `definition.json` da pasta
+    /// `fields`.
+    Field,
     /// Controle pela classe, como `TSFormula`.
     Control(Control),
 }
@@ -339,6 +342,9 @@ impl Scanner<'_> {
         let mut size = None;
         let mut class = None;
         let mut control_name: Option<JsonString> = None;
+        let mut simple = None;
+        let mut field_kind = None;
+        let mut information = String::new();
         loop {
             match self.peek() {
                 Some(b'}') | None => {
@@ -363,6 +369,13 @@ impl Scanner<'_> {
                         class = Control::from_class(&self.string().value);
                     } else if key == "name" && self.peek() == Some(b'"') {
                         control_name = Some(self.string());
+                    } else if key == "isSimpleField" {
+                        simple = Some(self.peek() == Some(b't'));
+                        self.value(rules, None);
+                    } else if key == "kind" {
+                        field_kind = self.integer(rules);
+                    } else if key == "information" && self.peek() == Some(b'"') {
+                        information = self.string().value;
                     } else if key == "type_var" {
                         type_var = self.integer(rules);
                     } else if key == "size" {
@@ -391,6 +404,26 @@ impl Scanner<'_> {
                 kind: EntryKind::Entrance,
                 ty,
                 description,
+                name_range: TextRange::new(TextSize::new(name.start), TextSize::new(name.end)),
+            });
+        } else if let Some(name) = control_name.take_if(|_| simple.is_some()) {
+            let simple = simple == Some(true);
+            use crate::symbols::VarType;
+            // `kind` numera 2 booleano, 3 número, 4 a 10 data em unidades diferentes, 11 alfa e 12
+            // blob. Campo de busca (`isSimpleField` falso) não traz tipo, porque mostra um campo de
+            // outra tabela.
+            let ty = match field_kind {
+                _ if !simple => None,
+                Some(3) => Some(VarType::Numero),
+                Some(4..=10) => Some(VarType::Data),
+                Some(11) => Some(VarType::Alfa),
+                _ => None,
+            };
+            self.entries.push(Entry {
+                name: name.value,
+                kind: EntryKind::Field,
+                ty,
+                description: information,
                 name_range: TextRange::new(TextSize::new(name.start), TextSize::new(name.end)),
             });
         } else if let (Some(control), Some(name)) = (class, control_name) {

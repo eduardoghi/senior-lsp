@@ -26,7 +26,7 @@ e isso muda as funções do ERP que ela pode chamar:
 | Pasta | Arquivo | Regra |
 |---|---|---|
 | `Regras` | `Rule.txt` | regra de identificador, com as funções comuns do ERP |
-| `Formulários SGI` | `rule.txt` | regra de tela SGI, que ganha as funções de tela e as funções e variáveis definidas nas regras acima dela no formulário, como a da raiz |
+| `Formulários SGI` | `rule.txt` | regra de tela SGI, que ganha as funções de tela, os campos da tela e as funções e variáveis definidas nas regras que vêm antes dela |
 | `Web Services` | `Rule.txt` | regra de web service, com as mesmas funções da regra de identificador |
 | `Modelos` | os `.json` de cada modelo | regra de relatório, que ganha as funções de relatório, as entradas e os controles do modelo e as funções e variáveis definidas nas outras regras dele |
 
@@ -40,9 +40,20 @@ o nome sem `definir`. Memorando e código de barras imprimem a variável de mesm
 define. O nome das entradas e desses controles não se renomeia pela regra, porque vem do cadastro
 do modelo.
 
+Numa tela SGI, o ERP compila todas as regras da interface juntas. Primeiro vem a regra da
+interface, depois as ações da interface e, para cada tabela, a regra dela seguida das ações dela. O que uma regra define vale
+nas seguintes. Tabelas e ações da interface vão em ordem alfabética, como a importação do
+gerenciador grava, e as ações de cada tabela na ordem do `definition.json` dela. Os campos da tela
+valem em todas as regras. Campo da interface fica com o nome do cadastro, campo de tabela com a
+tabela na frente (`E160CTR_CodEmp`) e também com `_old` no fim, e `CodOpe`, `MsgErro`, `MsgAviso`
+e `TelOpe` existem em toda tela.
+
 Os nomes seguem as regras do compilador. Eles não diferenciam caixa, e um `definir` vale no
-arquivo inteiro, inclusive antes dele e dentro de funções. Variáveis que o ERP fornece não têm
-`definir` e ficam sem verificação de tipo.
+arquivo inteiro, inclusive antes dele e dentro de funções. O compilador cria como número o nome
+sem `definir`, depois de procurar nas variáveis do sistema, como `DatSis` e `NomUsu`, que valem em
+toda regra com o tipo delas. Na tela SGI e no relatório o servidor também trata o nome desconhecido
+como número. Na regra de identificador ele fica sem verificação de tipo, porque cada identificador
+traz variáveis próprias que o servidor não conhece.
 
 ## Compilar
 

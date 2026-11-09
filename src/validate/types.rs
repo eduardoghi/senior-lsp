@@ -1,6 +1,6 @@
 //! Erros de tipo entre alfa e número, pela tabela de símbolos.
 //!
-//! O tipo de um nome sai do `definir` dele, no arquivo ou numa regra acima no formulário SGI. Nome
+//! O tipo de um nome sai do `definir` dele, no arquivo ou numa regra anterior do formulário SGI. Nome
 //! sem `definir` tem tipo desconhecido e nunca gera erro. O compilador cria esse nome como número,
 //! mas antes pergunta ao ERP, que responde com variáveis próprias de cada lugar, como as `VS` do
 //! identificador, os campos da tabela na tela SGI e o `ValStr` do relatório, e essa lista o servidor
@@ -32,11 +32,12 @@ enum Ty {
 }
 
 /// O que o validador de tipos consulta para saber o tipo de um nome. É a tabela do arquivo e, para
-/// nome sem `definir` aqui, as variáveis das regras acima no formulário SGI.
+/// nome sem `definir` aqui, as variáveis das regras anteriores do formulário SGI.
 pub(super) struct Scope<'a> {
     pub(super) symbols: &'a Symbols,
     pub(super) text: &'a str,
     pub(super) inherited: &'a Inherited,
+    pub(super) context: Context,
 }
 
 pub(super) fn check(
@@ -308,10 +309,24 @@ fn leaf_type(tree: &Tree, scope: &Scope, node: NodeId) -> Ty {
 fn name_type(tree: &Tree, scope: &Scope, node: NodeId) -> Ty {
     let range = tree.text_range(node);
     let Some(reference) = scope.symbols.reference_at(range) else {
+        // `ValStr` e `ValRet` são palavras reservadas, alfa e número para o compilador.
+        match tree.tokens().kind(tree.token_range(node).start) {
+            ValStrKw => return Ty::Alfa,
+            ValRetKw => return Ty::Num,
+            _ => {}
+        }
         return match scope.inherited.variable(&scope.text[range]).map(|v| v.kind) {
             Some(DefKind::Variable(Some(VarType::Alfa))) => Ty::Alfa,
             Some(DefKind::Variable(Some(_))) => Ty::Num,
-            _ => Ty::Unknown,
+            Some(_) => Ty::Unknown,
+            None => match builtins::system_variable(&scope.text[range], scope.context) {
+                Some(VarType::Alfa) => Ty::Alfa,
+                Some(_) => Ty::Num,
+                // Na regra de identificador o ERP acrescenta variáveis próprias de cada
+                // identificador, que o servidor não conhece.
+                None if scope.context == Context::Rule => Ty::Unknown,
+                None => Ty::Num,
+            },
         };
     };
     let mut ty = Ty::Unknown;

@@ -1,9 +1,9 @@
 //! Regras do mesmo formulário SGI.
 //!
-//! Numa tela SGI, a regra da raiz do formulário define funções que as regras das ações e das
-//! tabelas chamam. A exportação guarda o formulário como pastas, cada regra num `rule.txt`, então
-//! as regras acima de um arquivo são as das pastas acima dele, até a raiz do formulário, que fica
-//! dois níveis abaixo da pasta `Formulários SGI` (`Formulários SGI/interface/<formulário>`).
+//! O ERP compila todas as regras de uma interface SGI num programa só, numa ordem fixa (veja
+//! [`form_rules`]), e o que uma regra define vale nas seguintes. A exportação guarda o formulário
+//! como pastas, cada regra num `rule.txt`, com a raiz dois níveis abaixo da pasta
+//! `Formulários SGI` (`Formulários SGI/interface/<formulário>`).
 
 use std::collections::HashMap;
 use std::fs;
@@ -39,7 +39,7 @@ pub struct InheritedDef {
     pub embedded: Option<Arc<crate::report::Embedded>>,
 }
 
-/// Funções e variáveis das regras acima, pelo nome em maiúsculas. A regra mais próxima vence.
+/// Funções e variáveis de outras regras, pelo nome em maiúsculas. A regra mais próxima vence.
 /// Variáveis aqui são tudo que um `definir` cria fora de função, como variável, cursor, lista,
 /// tabela e web service.
 #[derive(Debug, Clone, Default)]
@@ -103,10 +103,21 @@ impl Inherited {
         let order = |e: &crate::report::Entry| match e.kind {
             crate::report::EntryKind::Entrance => 0,
             crate::report::EntryKind::Control(crate::report::Control::Descricao) => 1,
-            crate::report::EntryKind::Control(_) => 2,
+            crate::report::EntryKind::Control(_) | crate::report::EntryKind::Field => 2,
         };
         let mut entries: Vec<_> = model.entries.iter().collect();
         entries.sort_by_key(|(_, _, e)| order(e));
+        inherited.add_entries(entries.into_iter().map(|(p, j, e)| (p, j, e)));
+        inherited
+    }
+
+    /// Acrescenta nomes cadastrados fora das regras, como entradas de relatório e campos de tela,
+    /// que só valem quando nenhuma regra definiu o nome.
+    fn add_entries<'a>(
+        &mut self,
+        entries: impl Iterator<Item = (&'a PathBuf, &'a Arc<str>, &'a crate::report::Entry)>,
+    ) {
+        let inherited = self;
         for (path, json, entry) in entries {
             let key = entry.name.to_uppercase();
             inherited.entries.insert(key.clone());
@@ -128,6 +139,9 @@ impl Inherited {
                         format!("{ty} {}  @ {} @", entry.name, entry.description)
                     }
                     crate::report::EntryKind::Control(_) => format!("{ty} {}", entry.name),
+                    crate::report::EntryKind::Field => {
+                        format!("{ty} {}  @ {} @", entry.name, entry.description)
+                    }
                 },
                 params: Vec::new(),
                 rules: 1,
@@ -136,7 +150,6 @@ impl Inherited {
             };
             inherited.variables.insert(key, def);
         }
-        inherited
     }
 
     fn collect(
@@ -222,65 +235,162 @@ impl Inherited {
     }
 }
 
-/// Funções definidas nas regras das pastas acima de `rule` dentro do mesmo formulário. Vazio fora
-/// de um formulário SGI. Regra que não pode ser lida fica de fora.
+/// Funções e variáveis que valem para `rule` num formulário SGI, as das regras que vêm antes dela
+/// na ordem de compilação e os campos da tela. Vazio fora de um formulário SGI. Regra que não pode
+/// ser lida fica de fora.
 pub fn inherited_functions(rule: &Path) -> Inherited {
-    let Some(root) = form_root(rule) else {
+    let Some(root) = form_dir(rule) else {
         return Inherited::default();
     };
-    let mut rules = Vec::new();
-    let mut dir = rule.parent();
-    while let Some(d) = dir.and_then(Path::parent) {
-        if !d.starts_with(&root) {
-            break;
-        }
-        let path = d.join(rule_file(d));
-        if let Some(text) = fs::read(&path).ok().and_then(|b| crate::cp1252::decode(&b)) {
-            rules.push((path, text));
-        }
-        dir = Some(d);
-    }
-    Inherited::from_rules(rules)
+    let order = form_rules(&root);
+    let before = position(&order, rule).map_or(&order[..0], |i| &order[..i]);
+    // A regra mais próxima vem primeiro, e `from_rules` dá preferência a ela.
+    let rules = before.iter().rev().filter_map(|path| {
+        let text = fs::read(path)
+            .ok()
+            .and_then(|b| crate::cp1252::decode(&b))?;
+        Some((path.clone(), text))
+    });
+    let mut inherited = Inherited::from_rules(rules.collect::<Vec<_>>());
+    let fields = form_fields(&root);
+    inherited.add_entries(fields.iter().map(|(p, j, e)| (p, j, e)));
+    inherited
 }
 
-/// Regras abaixo de `rule` no formulário, os `rule.txt` das subpastas da pasta dele, em ordem.
-/// Vazio se `rule` não está num formulário SGI.
-pub fn descendant_rules(rule: &Path) -> Vec<PathBuf> {
+/// Regras do formulário na ordem em que o ERP compila. O ERP junta todas as regras da interface
+/// num programa só, e uma variável definida numa regra vale nas seguintes. A ordem é a regra da
+/// interface, as ações da interface e, para cada tabela, a regra dela e as ações dela. Tabelas e
+/// ações da interface vão em ordem alfabética, como a importação do gerenciador de artefatos
+/// grava, e as ações da tabela na ordem da lista `actions` do `definition.json` dela.
+pub fn form_rules(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if !in_form(rule) {
-        return out;
+    // A pasta entra mesmo sem o arquivo, porque a regra pode estar só no editor, ainda sem salvar.
+    let mut push = |dir: &Path| out.push(dir.join(rule_file(dir)));
+    push(root);
+    for action in subdirs(&root.join("actions")) {
+        push(&action);
     }
-    let Some(dir) = rule.parent() else {
-        return out;
-    };
-    let mut pending = vec![dir.to_path_buf()];
-    while let Some(d) = pending.pop() {
-        for entry in fs::read_dir(&d).into_iter().flatten().flatten() {
-            let path = entry.path();
-            // `file_type` não segue link simbólico. Seguir um link para uma pasta acima faria a
-            // busca rodar sem fim.
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_dir() {
-                pending.push(path);
-            } else if kind.is_file()
-                && path != rule
-                && path
-                    .file_name()
-                    .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("rule.txt"))
-            {
-                out.push(path);
-            }
+    for table in subdirs(&root.join("tables")) {
+        push(&table);
+        let listed = fs::read(table.join("definition.json"))
+            .ok()
+            .and_then(|b| {
+                std::string::String::from_utf8(b.clone())
+                    .ok()
+                    .or_else(|| crate::cp1252::decode(&b))
+            })
+            .unwrap_or_default()
+            .to_lowercase();
+        let actions_at = listed.find("\"actions\"").unwrap_or(listed.len());
+        let mut actions = subdirs(&table.join("actions"));
+        actions.sort_by_key(|a| {
+            let name = a
+                .file_name()
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            let at = listed[actions_at..]
+                .find(&format!("\"{name}\""))
+                .unwrap_or(usize::MAX);
+            (at, name)
+        });
+        for action in actions {
+            push(&action);
         }
     }
-    out.sort();
+    out
+}
+
+/// Regras que vêm depois de `rule` na ordem de compilação do formulário. Vazio se `rule` não está
+/// num formulário SGI.
+pub fn following_rules(rule: &Path) -> Vec<PathBuf> {
+    let Some(root) = form_dir(rule) else {
+        return Vec::new();
+    };
+    let order = form_rules(&root);
+    match position(&order, rule) {
+        Some(i) => order[i + 1..].to_vec(),
+        None => Vec::new(),
+    }
+}
+
+/// Posição de `rule` na ordem, pela pasta, porque o nome do arquivo pode variar de caixa.
+fn position(order: &[PathBuf], rule: &Path) -> Option<usize> {
+    let dir = rule.parent()?;
+    order.iter().position(|p| p.parent() == Some(dir))
+}
+
+/// Subpastas, sem seguir link simbólico, em ordem alfabética sem diferença de caixa.
+fn subdirs(dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<_> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect();
+    out.sort_by_key(|p| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    });
+    out
+}
+
+/// Campos da tela, que valem como variáveis em todas as regras do formulário. Os da interface
+/// ficam com o nome do cadastro, e os de cada tabela com o nome da tabela na frente
+/// (`E160CTR_CodEmp`) e também com `_old` no fim, como o ERP monta. Os campos que o SGI acrescenta sozinho, como `CodOpe`,
+/// não estão na exportação e ficam em `builtins`.
+fn form_fields(root: &Path) -> Vec<(PathBuf, Arc<str>, crate::report::Entry)> {
+    let read = |path: &Path| -> Option<Arc<str>> {
+        let bytes = fs::read(path).ok()?;
+        match std::string::String::from_utf8(bytes) {
+            Ok(t) => Some(t.into()),
+            Err(e) => crate::cp1252::decode(e.as_bytes()).map(Into::into),
+        }
+    };
+    let mut out = Vec::new();
+    let mut add = |path: PathBuf, prefix: &str| {
+        let Some(json) = read(&path) else {
+            return;
+        };
+        for mut entry in crate::report::scan(&json).1 {
+            if entry.kind != crate::report::EntryKind::Field {
+                continue;
+            }
+            if prefix.is_empty() {
+                out.push((path.clone(), json.clone(), entry));
+                continue;
+            }
+            // O campo da tabela vem também com o valor anterior, em `TABELA_CAMPO_old`.
+            entry.name = format!("{prefix}_{}", entry.name);
+            let mut old = entry.clone();
+            old.name.push_str("_old");
+            out.push((path.clone(), json.clone(), entry));
+            out.push((path.clone(), json.clone(), old));
+        }
+    };
+    add(root.join("fields").join("definition.json"), "");
+    let mut tables: Vec<_> = fs::read_dir(root.join("tables"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect();
+    tables.sort();
+    for table in tables {
+        let name = table
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        add(table.join("fields").join("definition.json"), &name);
+    }
     out
 }
 
 /// Usos de `name` no texto de uma regra, fora de campo depois de ponto. Com `own`, só os que
 /// apontam para uma definição do próprio texto. Sem `own`, só os que não apontam para nada dele,
-/// que vêm de uma regra acima.
+/// que vêm de outra regra.
 pub fn uses(text: &str, name: &str, own: bool) -> Vec<TextRange> {
     let Ok(tree) = crate::parse(text) else {
         return Vec::new();
@@ -306,19 +416,6 @@ pub fn uses(text: &str, name: &str, own: bool) -> Vec<TextRange> {
     }
     out.sort_by_key(|r| r.start());
     out
-}
-
-/// Diz se o caminho está dentro de um formulário SGI, a raiz dele inclusive.
-fn in_form(rule: &Path) -> bool {
-    let parts: Vec<_> = rule.components().collect();
-    parts
-        .iter()
-        .position(|c| {
-            c.as_os_str()
-                .to_string_lossy()
-                .eq_ignore_ascii_case("Formulários SGI")
-        })
-        .is_some_and(|i| parts.len() >= i + 4)
 }
 
 /// Caminho local de uma URI `file://`. `None` para outro esquema.
@@ -393,16 +490,17 @@ fn params(tree: &Tree, text: &str, function: NodeId) -> Vec<Param> {
     out
 }
 
-/// Pasta do formulário, dois níveis abaixo de `Formulários SGI`.
-fn form_root(rule: &Path) -> Option<PathBuf> {
+/// Pasta do formulário, dois níveis abaixo de `Formulários SGI`, para um arquivo dentro dela em
+/// qualquer nível.
+fn form_dir(rule: &Path) -> Option<PathBuf> {
     let parts: Vec<_> = rule.components().collect();
     let i = parts.iter().position(|c| {
         c.as_os_str()
             .to_string_lossy()
             .eq_ignore_ascii_case("Formulários SGI")
     })?;
-    // Precisa ter pelo menos o tipo, o formulário e uma pasta dentro dele antes do arquivo.
-    if parts.len() < i + 5 {
+    // Precisa ter pelo menos o tipo e o formulário antes do arquivo.
+    if parts.len() < i + 4 {
         return None;
     }
     Some(parts[..i + 3].iter().collect())
@@ -424,26 +522,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn junta_as_funcoes_das_pastas_acima() {
+    fn junta_as_funcoes_das_regras_anteriores() {
         let base = std::env::temp_dir().join(format!("senior-lsp-form-{}", std::process::id()));
         let form = base.join("Formulários SGI/interface/F1");
-        let action = form.join("actions/A1");
-        fs::create_dir_all(&action).unwrap();
+        fs::create_dir_all(form.join("actions/A1")).unwrap();
+        fs::create_dir_all(form.join("tables/T1")).unwrap();
         fs::write(
             form.join("rule.txt"),
             "definir funcao Global(numero p, alfa end r);\nfuncao Global(numero p, alfa end r); { }",
         )
         .unwrap();
         fs::write(
-            form.join("actions/rule.txt"),
-            "definir funcao DoMeio();\ndefinir numero nMeio;",
+            form.join("actions/A1/rule.txt"),
+            "definir funcao DaAcao();\ndefinir numero nAcao;",
         )
         .unwrap();
-        fs::write(action.join("rule.txt"), "definir funcao Propria();").unwrap();
-        let inherited = inherited_functions(&action.join("rule.txt"));
-        assert!(inherited.contains("global") && inherited.contains("DOMEIO"));
+        fs::write(
+            form.join("tables/T1/rule.txt"),
+            "definir funcao DaTabela();",
+        )
+        .unwrap();
+        let inherited = inherited_functions(&form.join("tables/T1/rule.txt"));
+        assert!(inherited.contains("global") && inherited.contains("DAACAO"));
         // A própria regra não entra, porque o editor manda o texto dela.
-        assert!(!inherited.contains("Propria"));
+        assert!(!inherited.contains("DaTabela"));
+        // A regra da tabela vem depois da ação da interface, então não vale nela.
+        assert!(!inherited_functions(&form.join("actions/A1/rule.txt")).contains("DaTabela"));
 
         let global = inherited.get("Global").unwrap();
         assert_eq!(global.path, form.join("rule.txt"));
@@ -458,9 +562,9 @@ mod tests {
         assert_eq!(global.params.len(), 2);
         assert!(global.params[1].by_ref);
         assert!(inherited.variable("Global").is_none());
-        let var = inherited.variable("NMEIO").unwrap();
+        let var = inherited.variable("NACAO").unwrap();
         assert_eq!(var.kind, DefKind::Variable(Some(VarType::Numero)));
-        assert_eq!(var.decl, "definir numero nMeio;");
+        assert_eq!(var.decl, "definir numero nAcao;");
 
         // Fora de formulário SGI não há regras herdadas.
         assert!(!inherited_functions(&base.join("regras/R1/Rule.txt")).contains("Global"));
@@ -468,32 +572,93 @@ mod tests {
     }
 
     #[test]
-    fn regras_abaixo_e_usos() {
+    fn campos_da_tela() {
+        let base = std::env::temp_dir().join(format!("senior-lsp-campos-{}", std::process::id()));
+        let form = base.join("Formulários SGI/interface/F1");
+        fs::create_dir_all(form.join("fields")).unwrap();
+        fs::create_dir_all(form.join("tables/E070EMP/fields")).unwrap();
+        fs::write(
+            form.join("fields/definition.json"),
+            r#"[{"isSimpleField": true, "name": "vDatSis", "kind": 6}]"#,
+        )
+        .unwrap();
+        fs::write(
+            form.join("tables/E070EMP/fields/definition.json"),
+            r#"[{"isSimpleField": true, "name": "NomEmp", "kind": 11},
+                {"isSimpleField": false, "name": "LBusca", "resultField": "X"}]"#,
+        )
+        .unwrap();
+        fs::write(form.join("rule.txt"), "").unwrap();
+        let inherited = inherited_functions(&form.join("rule.txt"));
+        let kind = |name: &str| inherited.variable(name).map(|v| v.kind);
+        assert_eq!(
+            kind("vdatsis"),
+            Some(DefKind::Variable(Some(VarType::Data)))
+        );
+        assert_eq!(
+            kind("E070EMP_NomEmp"),
+            Some(DefKind::Variable(Some(VarType::Alfa)))
+        );
+        assert_eq!(
+            kind("E070EMP_NomEmp_old"),
+            Some(DefKind::Variable(Some(VarType::Alfa)))
+        );
+        // Campo de busca pega o tipo do campo de outra tabela, que a exportação não traz.
+        assert_eq!(kind("E070EMP_LBusca"), Some(DefKind::Variable(None)));
+        assert!(kind("vDatSis_old").is_none());
+        assert!(inherited.is_entry("E070EMP_NomEmp"));
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn ordem_das_regras_e_usos() {
         let base = std::env::temp_dir().join(format!("senior-lsp-desc-{}", std::process::id()));
         let form = base.join("Formulários SGI/interface/F1");
-        fs::create_dir_all(form.join("actions/A1")).unwrap();
-        fs::create_dir_all(form.join("tables/T1/actions/A2")).unwrap();
+        for dir in [
+            "actions/A1",
+            "tables/T2",
+            "tables/T1/actions/A",
+            "tables/T1/actions/B",
+        ] {
+            fs::create_dir_all(form.join(dir)).unwrap();
+        }
         for p in [
             "rule.txt",
             "actions/A1/rule.txt",
-            "tables/T1/actions/A2/rule.txt",
+            "tables/T1/rule.txt",
+            "tables/T1/actions/A/rule.txt",
+            "tables/T1/actions/B/rule.txt",
+            "tables/T2/Rule.txt",
         ] {
             fs::write(form.join(p), "").unwrap();
         }
-        let below = descendant_rules(&form.join("rule.txt"));
+        // As ações da tabela seguem a lista do `definition.json`, não a ordem alfabética.
+        fs::write(
+            form.join("tables/T1/definition.json"),
+            r#"{"name": "T1", "actions": [{"name": "B"}, {"name": "A"}]}"#,
+        )
+        .unwrap();
         assert_eq!(
-            below,
+            form_rules(&form),
             [
+                form.join("rule.txt"),
                 form.join("actions/A1/rule.txt"),
-                form.join("tables/T1/actions/A2/rule.txt")
+                form.join("tables/T1/rule.txt"),
+                form.join("tables/T1/actions/B/rule.txt"),
+                form.join("tables/T1/actions/A/rule.txt"),
+                form.join("tables/T2/Rule.txt"),
             ]
         );
-        assert!(descendant_rules(&base.join("regras/R/Rule.txt")).is_empty());
-        // Link para uma pasta acima não faz a busca rodar sem fim.
+        assert_eq!(
+            following_rules(&form.join("tables/T1/actions/A/rule.txt")),
+            [form.join("tables/T2/Rule.txt")]
+        );
+        assert!(following_rules(&base.join("regras/R/Rule.txt")).is_empty());
+        // Link simbólico não entra na lista.
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink(&form, form.join("actions/A1/volta")).unwrap();
-            assert_eq!(descendant_rules(&form.join("rule.txt")).len(), 2);
+            std::os::unix::fs::symlink(&form, form.join("actions/volta")).unwrap();
+            assert_eq!(form_rules(&form).len(), 6);
         }
         fs::remove_dir_all(&base).unwrap();
 

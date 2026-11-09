@@ -90,6 +90,37 @@ static TABLE: LazyLock<Table> = LazyLock::new(|| {
 });
 
 /// Todas as funções do ERP do contexto, sem ordem definida.
+/// Variáveis do sistema, como `DatSis` e `NomUsu`, pelo nome em maiúsculas. O ERP registra todas
+/// juntas quando cria o ambiente das regras, sem depender de onde a regra roda. O arquivo traz uma
+/// por linha como `definir`, com o tipo que o compilador recebe.
+static SYSTEM_VARIABLES: LazyLock<HashMap<String, VarType>> = LazyLock::new(|| {
+    include_str!("builtins/variaveis.txt")
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.trim_end_matches(';').split_whitespace().skip(1);
+            let ty = match words.next()? {
+                "Alfa" => VarType::Alfa,
+                "Numero" => VarType::Numero,
+                "Data" => VarType::Data,
+                _ => return None,
+            };
+            Some((words.next()?.to_uppercase(), ty))
+        })
+        .collect()
+});
+
+/// Campos que o SGI acrescenta a toda tela, todos alfa. Eles não aparecem na exportação.
+const SGI_FIELDS: [&str; 4] = ["CODOPE", "MSGERRO", "MSGAVISO", "TELOPE"];
+
+/// Tipo da variável do sistema com esse nome, incluindo os campos que a tela SGI sempre tem.
+pub fn system_variable(name: &str, context: Context) -> Option<VarType> {
+    let upper = name.to_uppercase();
+    if context == Context::Sgi && SGI_FIELDS.contains(&upper.as_str()) {
+        return Some(VarType::Alfa);
+    }
+    SYSTEM_VARIABLES.get(&upper).copied()
+}
+
 pub fn all(context: Context) -> impl Iterator<Item = &'static Builtin> {
     TABLE
         .index
