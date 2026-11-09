@@ -202,7 +202,7 @@ impl<'a> Parser<'a> {
         let kind = match self.current() {
             AlfaKw | NumeroKw | DataKw => {
                 self.bump();
-                self.name();
+                self.variable_name();
                 self.optional_size();
                 VarDef
             }
@@ -275,6 +275,17 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Nome de variável ou de parâmetro. O compilador aceita qualquer token depois do tipo, então
+    /// palavra reservada também vale, como em `Definir Alfa ValStr;` dos relatórios e nos
+    /// parâmetros `Numero Data` das funções do ERP.
+    fn variable_name(&mut self) {
+        if self.at(Ident) || self.current().is_keyword() {
+            self.leaf(Name);
+        } else {
+            self.error(ParseErrorKind::Expected(Ident));
+        }
+    }
+
     /// `[N]` depois do nome. O compilador pede um número, mas qualquer expressão entra na árvore.
     fn optional_size(&mut self) {
         if self.at(LBracket) {
@@ -284,20 +295,27 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `{ tipo nome [ [N] ]; ... }` de `definir tabela`.
+    /// `{ tipo nome [ [N] ]; ... }` de `definir tabela`. O compilador lê `inicio` e `fim` como `{`
+    /// e `}`, e os relatórios usam as duas formas.
     fn table_fields(&mut self) {
-        if !self.expect(LBrace) {
+        if matches!(self.current(), InicioKw) {
+            self.bump();
+        } else if !self.expect(LBrace) {
             return;
         }
         while matches!(self.current(), AlfaKw | NumeroKw | DataKw) {
             self.b.start_node(VarDef);
             self.bump();
-            self.name();
+            self.variable_name();
             self.optional_size();
             self.expect(Semicolon);
             self.b.finish_node();
         }
-        self.expect(RBrace);
+        if matches!(self.current(), FimKw) {
+            self.bump();
+        } else {
+            self.expect(RBrace);
+        }
     }
 
     /// `Interno.com.x.Servico`. Palavra reservada depois de ponto vale como parte do nome.
@@ -324,6 +342,10 @@ impl<'a> Parser<'a> {
                 self.param();
                 if self.at(Comma) {
                     self.bump();
+                    // O laço do compilador para no `)`, inclusive logo depois de uma vírgula.
+                    if self.at(RParen) {
+                        break;
+                    }
                     continue;
                 }
                 break;
@@ -343,7 +365,7 @@ impl<'a> Parser<'a> {
         if self.at(EndKw) {
             self.bump();
         }
-        self.name();
+        self.variable_name();
         self.optional_size();
         self.b.finish_node();
     }
@@ -1407,6 +1429,17 @@ mod tests {
         }
         // As outras chamadas continuam aceitando expressão.
         assert!(erros_regra("f(\"a\" + aTxt, 1 * 2); x = f(\"a\" + aTxt);").is_empty());
+    }
+
+    #[test]
+    fn nome_reservado_e_tabela_com_inicio_e_fim() {
+        assert_eq!(regra("Definir Alfa ValStr;"), "(VarDef ValStr)");
+        assert_eq!(
+            regra("Definir tabela Mes[12] = inicio alfa xMes; fim;"),
+            "(TableDef Mes 12 (VarDef xMes))"
+        );
+        assert!(erros_regra("definir funcao f(numero Data, numero end Fim);").is_empty());
+        assert!(erros_regra("definir funcao f(numero a, numero b,);").is_empty());
     }
 
     #[test]
