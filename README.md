@@ -150,11 +150,11 @@ plugin, perguntadas na instalação e alteradas depois pelo `/config` ou pelo
 `tbs_teste` nas opções de inicialização do servidor, ou nas variáveis `SENIOR_LSP_TBS_PRODUCAO` e
 `SENIOR_LSP_TBS_TESTE`. Cada arquivo é lido na primeira consulta e de novo só quando muda.
 
-O executável também imprime o dicionário em texto, uma linha por tabela e uma por campo, separadas
-por tabulação:
+O executável também imprime as tabelas e os campos em texto, uma linha por tabela e uma por
+campo, separadas por tabulação:
 
 ```sh
-senior-lsp tbs sapiens.tbs > dicionario.txt
+senior-lsp tbs sapiens.tbs > tabelas.txt
 ```
 
 ```text
@@ -164,13 +164,43 @@ E070EMP.NomEmp	alfa 100	Nome da empresa
 E070EMP.EstLef	alfa 1 LSimNao	Indicativo se lança os movimentos de estoque no plano financeiro
 ```
 
-Campo de enumeração sai com o tipo dos valores e o nome da enumeração. O texto não traz índices,
-relacionamentos nem gatilhos. Com dois arquivos, o executável lista as diferenças do primeiro para
-o segundo, com `-` para o que só existe no primeiro, `+` para o que só existe no segundo e `~` para
-campo com tipo diferente:
+Campo de enumeração sai com o tipo dos valores e o nome da enumeração. Com `--pasta`, o dicionário
+inteiro vai para arquivos de texto numa pasta vazia ou que ainda não existe, para versionar:
+
+```sh
+senior-lsp tbs sapiens.tbs --pasta dicionario
+```
+
+| Arquivo | Uma linha por |
+| --- | --- |
+| `tabelas.txt` | tabela e campo, como no exemplo acima |
+| `enumeracoes.txt` | enumeração (tipo dos valores) e valor (descrição) |
+| `indices.txt` | chave primária, colunas únicas e índice, com o tipo e os campos |
+| `relacionamentos.txt` | relacionamento, com a tabela e os campos de origem e de destino |
+| `check-constraints.txt` | check constraint, com a condição |
+| `ligacoes.txt` | campo com busca, com a tabela ou view, os campos e o campo mostrado |
+| `views.txt` | view e campo da view |
+
+O código fica em `triggers/TABELA.TRIGGER.banco.sql`, `stored-procedures/NOME.banco.sql` e
+`views/NOME.sql`. Os nomes seguem os do CBDS. O banco vem da versão do código no dicionário, como `senior` para a genérica e
+`oracle` para a do Oracle. A primeira coluna dos arquivos `.txt` identifica o item.
+
+Com dois arquivos `.tbs`, o executável lista as diferenças do primeiro para o segundo, agrupadas por
+arquivo. A linha começa com `-` para o que só existe no primeiro, `+` para o que só existe no segundo
+e `~` para o item que mudou, com o valor de antes e o de depois. Do código sai só o caminho do arquivo
+que mudou:
 
 ```sh
 senior-lsp tbs producao.tbs teste.tbs
+```
+
+```text
+tabelas.txt
+~ E070EMP.CodEmp	numero 4	Código da empresa -> numero 5	Código da empresa
++ USU_TNOVA	Nova
+
+código
++ stored-procedures/CLEARREPLICATION.oracle.sql
 ```
 
 ## Licença

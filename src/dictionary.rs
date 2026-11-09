@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::tbs::{Dictionary, Field};
+use crate::tbs::{Dictionary, Field, Table};
 
 const RECHECK: Duration = Duration::from_secs(5);
 
@@ -22,6 +22,8 @@ pub struct Dictionaries {
 
 /// Campo achado num dicionário.
 pub struct Found<'a> {
+    pub dictionary: &'a Dictionary,
+    pub table: &'a Table,
     pub field: &'a Field,
     /// O campo existe no dicionário de teste e não no de produção, como uma customização ainda
     /// não promovida.
@@ -34,16 +36,28 @@ impl Dictionaries {
     }
 
     /// Campo pelo dicionário de produção, ou pelo de teste quando produção não tem.
-    pub fn field(&self, table: &str, field: &str) -> Option<Found<'_>> {
-        if let Some(found) = self.production.as_ref().and_then(|d| d.field(table, field)) {
+    pub fn field<'a>(&'a self, table: &str, field: &str) -> Option<Found<'a>> {
+        let find = |d: &'a Arc<Dictionary>| {
+            let t = d.table(table)?;
+            let f = t
+                .fields
+                .iter()
+                .find(|f| f.name.eq_ignore_ascii_case(field))?;
+            Some((d.as_ref(), t, f))
+        };
+        if let Some((dictionary, table, field)) = self.production.as_ref().and_then(find) {
             return Some(Found {
-                field: found,
+                dictionary,
+                table,
+                field,
                 only_in_test: false,
             });
         }
-        let found = self.test.as_ref()?.field(table, field)?;
+        let (dictionary, table, field) = self.test.as_ref().and_then(find)?;
         Some(Found {
-            field: found,
+            dictionary,
+            table,
+            field,
             only_in_test: self.production.is_some(),
         })
     }

@@ -424,12 +424,13 @@ mod tests {
                 enumeration: None,
                 base: None,
             },
-            description: std::string::String::new(),
+            ..Field::default()
         };
         let table = |fields| Table {
             name: "E070EMP".to_owned(),
             description: std::string::String::new(),
             fields,
+            ..Table::default()
         };
         let prod = vec![
             field("CodEmp", FieldKind::Number),
@@ -440,9 +441,11 @@ mod tests {
         crate::dictionary::Dictionaries {
             production: Some(std::sync::Arc::new(Dictionary {
                 tables: vec![table(prod)],
+                ..Dictionary::default()
             })),
             test: Some(std::sync::Arc::new(Dictionary {
                 tables: vec![table(test)],
+                ..Dictionary::default()
             })),
         }
     }

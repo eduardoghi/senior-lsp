@@ -699,11 +699,15 @@ mod tests {
                     enumeration: None,
                     base: None,
                 },
-                description: std::string::String::new(),
+                ..Field::default()
             }],
+            ..Table::default()
         };
         let dictionaries = crate::dictionary::Dictionaries {
-            production: Some(Arc::new(Dictionary { tables: vec![tns] })),
+            production: Some(Arc::new(Dictionary {
+                tables: vec![tns],
+                ..Dictionary::default()
+            })),
             test: None,
         };
         let fields = form_fields(&form, &dictionaries);

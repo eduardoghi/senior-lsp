@@ -584,10 +584,14 @@ impl Context<'_> {
         } else {
             "Campo do dicionário de dados"
         };
-        let value = format!(
+        let mut value = format!(
             "```lsp\n{} {}\n```\n{}\n\n{origin}",
             found.field.ty, &self.doc.text[range], found.field.description
         );
+        for line in field_links(&found) {
+            value.push_str("\n\n");
+            value.push_str(&line);
+        }
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -804,6 +808,153 @@ fn name_at(tree: &crate::Tree, offset: TextSize) -> Option<(NodeId, bool)> {
     }
 }
 
+/// Valores, máscara, chave primária, índices, verificações, relacionamentos e gatilhos do campo, uma
+/// linha de hover para cada.
+fn field_links(found: &crate::dictionary::Found) -> Vec<String> {
+    const MAX_INCOMING: usize = 5;
+    const MAX_VALUES: usize = 12;
+    let (dictionary, table, field) = (found.dictionary, found.table, found.field);
+    let names = |positions: &[usize]| {
+        positions
+            .iter()
+            .filter_map(|&i| table.fields.get(i).map(|f| f.name.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut out = Vec::new();
+    let enumeration = field
+        .ty
+        .enumeration
+        .as_ref()
+        .and_then(|name| dictionary.enumerations.get(&name.to_uppercase()));
+    if let Some(e) = enumeration {
+        let shown: Vec<_> = e
+            .values
+            .iter()
+            .take(MAX_VALUES)
+            .map(|(value, description)| format!("{value} = {description}"))
+            .collect();
+        if !shown.is_empty() {
+            let more = e.values.len().saturating_sub(MAX_VALUES);
+            let more = if more > 0 {
+                format!(" e mais {more}")
+            } else {
+                String::new()
+            };
+            out.push(format!("Valores {}{more}", shown.join(", ")));
+        }
+    }
+    let mut format_parts = Vec::new();
+    if !field.mask.trim().is_empty() {
+        format_parts.push(format!("Máscara {}", field.mask.trim()));
+    }
+    if !field.initial.trim().is_empty() {
+        format_parts.push(format!("valor inicial {}", field.initial.trim()));
+    }
+    if !format_parts.is_empty() {
+        out.push(format_parts.join(", "));
+    }
+    let position = table.fields.iter().position(|f| std::ptr::eq(f, field));
+    if let Some(i) = position {
+        if table.primary_key.contains(&i) {
+            out.push(format!(
+                "Faz parte da chave primária ({})",
+                names(&table.primary_key)
+            ));
+        }
+        let keys: Vec<_> = table
+            .uniques
+            .iter()
+            .chain(&table.indexes)
+            .filter(|k| k.fields.contains(&i))
+            .map(|k| {
+                let unique = if k.unique { ", único" } else { "" };
+                format!("{} ({}{unique})", k.name, names(&k.fields))
+            })
+            .collect();
+        if !keys.is_empty() {
+            out.push(format!("Índices {}", keys.join("; ")));
+        }
+    }
+    let same = |a: &str| a.eq_ignore_ascii_case(&field.name);
+    for check in &table.checks {
+        let cites = check
+            .condition
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(same);
+        if cites {
+            out.push(format!(
+                "Check constraint {} ({})",
+                check.name,
+                check.condition.trim()
+            ));
+        }
+    }
+    for relation in dictionary.relations_of(table) {
+        if relation.from_table != table.name {
+            continue;
+        }
+        if let Some(j) = relation.from_fields.iter().position(|f| same(f)) {
+            let target = relation.to_fields.get(j).map_or("", String::as_str);
+            out.push(format!(
+                "Aponta para {}.{target} ({})",
+                relation.to_table, relation.name
+            ));
+        }
+    }
+    if let Some(link) = &field.link {
+        let kind = if dictionary
+            .views
+            .iter()
+            .any(|v| v.name.eq_ignore_ascii_case(&link.target))
+        {
+            "na view "
+        } else {
+            "em "
+        };
+        let mut line = format!(
+            "Busca {kind}{} por {}",
+            link.target,
+            link.target_fields.join(", ")
+        );
+        let same_names = link.from_fields.len() == link.target_fields.len()
+            && link
+                .from_fields
+                .iter()
+                .zip(&link.target_fields)
+                .all(|(a, b)| a.eq_ignore_ascii_case(b));
+        if !same_names {
+            line.push_str(&format!(" (com {})", link.from_fields.join(", ")));
+        }
+        if let Some(result) = &link.result {
+            line.push_str(&format!(", mostra {result}"));
+        }
+        out.push(line);
+    }
+    let incoming: Vec<_> = dictionary
+        .relations_of(table)
+        .filter(|r| r.to_table == table.name)
+        .filter_map(|r| {
+            let j = r.to_fields.iter().position(|f| same(f))?;
+            Some(format!("{}.{}", r.from_table, r.from_fields.get(j)?))
+        })
+        .collect();
+    if !incoming.is_empty() {
+        let shown = incoming[..incoming.len().min(MAX_INCOMING)].join(", ");
+        let more = if incoming.len() > MAX_INCOMING {
+            format!(" e mais {}", incoming.len() - MAX_INCOMING)
+        } else {
+            String::new()
+        };
+        out.push(format!("Referenciado por {shown}{more}"));
+    }
+    if !table.triggers.is_empty() {
+        let names: Vec<_> = table.triggers.iter().map(|t| t.name.as_str()).collect();
+        out.push(format!("Triggers da tabela {}", names.join(", ")));
+    }
+    out
+}
+
 /// `FieldExpr` mais interno que contém `offset`, com a base e o campo como nomes simples.
 fn field_expr_at(tree: &crate::Tree, offset: TextSize) -> Option<NodeId> {
     let mut node = tree.root();
@@ -870,5 +1021,178 @@ fn describe(kind: DefKind) -> &'static str {
         DefKind::WebService => "Web service definido",
         DefKind::Function => "Função definida",
         DefKind::Label => "Rótulo",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tbs::{
+        Check, Dictionary, Enumeration, Field, FieldKind, FieldType, Key, Link, Relation, Table,
+        Trigger, View,
+    };
+
+    fn field(name: &str) -> Field {
+        Field {
+            name: name.to_owned(),
+            ty: FieldType {
+                kind: FieldKind::Number,
+                size: 4,
+                decimals: 0,
+                enumeration: None,
+                base: None,
+            },
+            ..Field::default()
+        }
+    }
+
+    #[test]
+    fn hover_mostra_chave_indices_e_relacionamentos() {
+        let relation = |from: &str, to: &str| Relation {
+            name: format!("IR_{from}"),
+            from_table: from.to_owned(),
+            from_fields: vec!["CodEmp".to_owned()],
+            to_table: to.to_owned(),
+            to_fields: vec!["CodEmp".to_owned()],
+        };
+        let mut relations = vec![relation("E070FIL", "E070EMP")];
+        relations.extend((1..=6).map(|i| relation(&format!("E1{i:02}XXX"), "E070FIL")));
+        let filial = Table {
+            name: "E070FIL".to_owned(),
+            fields: vec![field("CodEmp"), field("CodFil")],
+            primary_key: vec![0, 1],
+            indexes: vec![Key {
+                name: "E070FILIndice1".to_owned(),
+                fields: vec![0],
+                unique: false,
+            }],
+            relations: (0..relations.len()).collect(),
+            ..Table::default()
+        };
+        let dictionary = Dictionary {
+            tables: vec![filial],
+            relations,
+            ..Dictionary::default()
+        };
+        assert_eq!(
+            super::field_links(&crate::dictionary::Found {
+                dictionary: &dictionary,
+                table: &dictionary.tables[0],
+                field: &dictionary.tables[0].fields[0],
+                only_in_test: false,
+            })
+            .len(),
+            4
+        );
+        // Enumeração, máscara, verificação e gatilho numa tabela à parte.
+        let mut situacao = field("SitFil");
+        situacao.ty.enumeration = Some("LSitFil".to_owned());
+        situacao.mask = "U".to_owned();
+        situacao.initial = "A".to_owned();
+        let outra = Table {
+            name: "E070OUT".to_owned(),
+            fields: vec![situacao],
+            checks: vec![Check {
+                name: "CK_SITFIL".to_owned(),
+                condition: "SitFil IN ('A','I')".to_owned(),
+            }],
+            triggers: vec![Trigger {
+                name: "T070OUT".to_owned(),
+                code: Vec::new(),
+            }],
+            ..Table::default()
+        };
+        let mut enumerations = std::collections::HashMap::new();
+        enumerations.insert(
+            "LSITFIL".to_owned(),
+            Enumeration {
+                name: "LSitFil".to_owned(),
+                base: FieldType::default(),
+                values: vec![
+                    ("A".to_owned(), "Ativa".to_owned()),
+                    ("I".to_owned(), "Inativa".to_owned()),
+                ],
+            },
+        );
+        let extra = Dictionary {
+            tables: vec![outra],
+            enumerations,
+            ..Dictionary::default()
+        };
+        assert_eq!(
+            super::field_links(&crate::dictionary::Found {
+                dictionary: &extra,
+                table: &extra.tables[0],
+                field: &extra.tables[0].fields[0],
+                only_in_test: false,
+            }),
+            [
+                "Valores A = Ativa, I = Inativa",
+                "Máscara U, valor inicial A",
+                "Check constraint CK_SITFIL (SitFil IN ('A','I'))",
+                "Triggers da tabela T070OUT",
+            ]
+        );
+        let table = &dictionary.tables[0];
+        let found = crate::dictionary::Found {
+            dictionary: &dictionary,
+            table,
+            field: &table.fields[0],
+            only_in_test: false,
+        };
+        assert_eq!(
+            super::field_links(&found),
+            [
+                "Faz parte da chave primária (CodEmp, CodFil)",
+                "Índices E070FILIndice1 (CodEmp)",
+                "Aponta para E070EMP.CodEmp (IR_E070FIL)",
+                "Referenciado por E101XXX.CodEmp, E102XXX.CodEmp, E103XXX.CodEmp, \
+                 E104XXX.CodEmp, E105XXX.CodEmp e mais 1",
+            ]
+        );
+    }
+
+    #[test]
+    fn hover_mostra_a_busca_do_campo() {
+        let link = |from: &[&str], target: &str, to: &[&str], result: Option<&str>| Link {
+            from_fields: from.iter().map(|s| s.to_string()).collect(),
+            target: target.to_owned(),
+            target_fields: to.iter().map(|s| s.to_string()).collect(),
+            result: result.map(str::to_owned),
+        };
+        let mut familia = field("CodFam");
+        familia.link = Some(link(
+            &["CodEmp", "CodFam"],
+            "E012FAM",
+            &["CodEmp", "CodFam"],
+            Some("DesFam"),
+        ));
+        let mut fornecedor = field("ForPad");
+        fornecedor.link = Some(link(&["ForPad"], "VW_FOR", &["CodFor"], None));
+        let dictionary = Dictionary {
+            tables: vec![Table {
+                name: "E075PRO".to_owned(),
+                fields: vec![familia, fornecedor],
+                ..Table::default()
+            }],
+            views: vec![View {
+                name: "VW_FOR".to_owned(),
+                ..View::default()
+            }],
+            ..Dictionary::default()
+        };
+        let table = &dictionary.tables[0];
+        let lines = |i: usize| {
+            super::field_links(&crate::dictionary::Found {
+                dictionary: &dictionary,
+                table,
+                field: &table.fields[i],
+                only_in_test: false,
+            })
+        };
+        assert_eq!(
+            lines(0),
+            ["Busca em E012FAM por CodEmp, CodFam, mostra DesFam"]
+        );
+        assert_eq!(lines(1), ["Busca na view VW_FOR por CodFor (com ForPad)"]);
     }
 }

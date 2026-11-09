@@ -14,6 +14,7 @@ pub mod server;
 pub mod symbols;
 mod syntax_kind;
 pub mod tbs;
+pub mod tbs_text;
 mod tree;
 pub mod validate;
 
