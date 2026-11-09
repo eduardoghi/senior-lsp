@@ -244,6 +244,14 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
              nome como variável (falta \"=\")."
                 .to_owned(),
         ),
+        CheckKind::OnlyInTest => (
+            "SEN065",
+            format!(
+                "O campo {} só existe no dicionário de teste. A regra compila na base de teste e \
+                 não em produção.",
+                &text[check.range]
+            ),
+        ),
         CheckKind::LowercaseChar => (
             "SEN064",
             "O compilador lê o apóstrofo em maiúscula, então esta letra vale como maiúscula, \

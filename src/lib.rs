@@ -3,6 +3,7 @@
 pub mod builtins;
 pub mod cp1252;
 mod delphi_float;
+pub mod dictionary;
 pub mod form;
 mod lexer;
 pub mod line_index;
@@ -12,6 +13,7 @@ mod scan;
 pub mod server;
 pub mod symbols;
 mod syntax_kind;
+pub mod tbs;
 mod tree;
 pub mod validate;
 

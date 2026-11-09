@@ -7,6 +7,10 @@
         },
         "startupTimeout": 60000,
         "shutdownTimeout": 5000,
-        "maxRestarts": 3
+        "maxRestarts": 3,
+        "env": {
+            "SENIOR_LSP_TBS_PRODUCAO": "${user_config.tbs_producao}",
+            "SENIOR_LSP_TBS_TESTE": "${user_config.tbs_teste}"
+        }
     }
 }

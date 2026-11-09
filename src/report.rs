@@ -33,6 +33,9 @@ pub struct Entry {
     /// Posição do nome no JSON, o conteúdo entre as aspas de `sytem_varName` ou do `name` do
     /// controle.
     pub name_range: TextRange,
+    /// No campo de busca da tela SGI, a ligação (`link`) e o campo da tabela de destino que ele
+    /// mostra (`resultField`).
+    pub lookup: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,6 +348,8 @@ impl Scanner<'_> {
         let mut simple = None;
         let mut field_kind = None;
         let mut information = String::new();
+        let mut link = None;
+        let mut result_field = None;
         loop {
             match self.peek() {
                 Some(b'}') | None => {
@@ -376,6 +381,10 @@ impl Scanner<'_> {
                         field_kind = self.integer(rules);
                     } else if key == "information" && self.peek() == Some(b'"') {
                         information = self.string().value;
+                    } else if key == "link" && self.peek() == Some(b'"') {
+                        link = Some(self.string().value);
+                    } else if key == "resultField" && self.peek() == Some(b'"') {
+                        result_field = Some(self.string().value);
                     } else if key == "type_var" {
                         type_var = self.integer(rules);
                     } else if key == "size" {
@@ -405,6 +414,7 @@ impl Scanner<'_> {
                 ty,
                 description,
                 name_range: TextRange::new(TextSize::new(name.start), TextSize::new(name.end)),
+                lookup: None,
             });
         } else if let Some(name) = control_name.take_if(|_| simple.is_some()) {
             let simple = simple == Some(true);
@@ -425,6 +435,7 @@ impl Scanner<'_> {
                 ty,
                 description: information,
                 name_range: TextRange::new(TextSize::new(name.start), TextSize::new(name.end)),
+                lookup: link.zip(result_field).filter(|_| !simple),
             });
         } else if let (Some(control), Some(name)) = (class, control_name) {
             self.entries.push(Entry {
@@ -433,6 +444,7 @@ impl Scanner<'_> {
                 ty: control.ty(),
                 description: String::new(),
                 name_range: TextRange::new(TextSize::new(name.start), TextSize::new(name.end)),
+                lookup: None,
             });
         }
     }

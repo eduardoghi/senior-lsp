@@ -21,6 +21,7 @@ use crate::builtins::{self, Context};
 use crate::form::Inherited;
 use crate::symbols::{DefKind, Symbols, VarType};
 use crate::{NodeId, Tree};
+use text_size::TextRange;
 
 use super::{Check, CheckKind, operator_token};
 
@@ -126,7 +127,7 @@ fn alfa_rhs(tree: &Tree, scope: &Scope, node: NodeId, checks: &mut Vec<Check>) -
             let first = tree.token_range(node).start;
             push(CheckKind::AlfaAndNumber, tree.tokens().range(first))
         }
-        Literal | NameRef if leaf_type(tree, scope, node) == Ty::Num => {
+        Literal | NameRef | FieldExpr if leaf_type(tree, scope, node) == Ty::Num => {
             push(CheckKind::AlfaAndNumber, tree.text_range(node))
         }
         _ => false,
@@ -148,7 +149,7 @@ fn numeric_rhs(tree: &Tree, scope: &Scope, node: NodeId, checks: &mut Vec<Check>
                     .children(node)
                     .any(|c| numeric_rhs(tree, scope, c, checks))
         }
-        Literal | NameRef if leaf_type(tree, scope, node) == Ty::Alfa => {
+        Literal | NameRef | FieldExpr if leaf_type(tree, scope, node) == Ty::Alfa => {
             push(tree, checks, CheckKind::NumberAndAlfa, node, None);
             true
         }
@@ -301,8 +302,47 @@ fn leaf_type(tree: &Tree, scope: &Scope, node: NodeId) -> Ty {
             _ => Ty::Unknown,
         },
         NameRef => name_type(tree, scope, node),
+        FieldExpr => match table_field(tree, scope, node) {
+            Some((found, _)) => match found.field.ty.var_type() {
+                Some(VarType::Alfa) => Ty::Alfa,
+                Some(_) => Ty::Num,
+                None => Ty::Unknown,
+            },
+            None => Ty::Unknown,
+        },
         _ => Ty::Unknown,
     }
+}
+
+/// Campo de tabela do dicionário em `TABELA.Campo`, com o trecho do nome da tabela. A base não
+/// pode ser uma variável, como cursor, lista ou tabela definidos na regra, porque aí o campo vem
+/// do SQL ou da definição dela.
+pub(super) fn table_field<'a>(
+    tree: &Tree,
+    scope: &Scope<'a>,
+    node: NodeId,
+) -> Option<(crate::dictionary::Found<'a>, TextRange)> {
+    let inherited: &'a Inherited = scope.inherited;
+    if inherited.dictionaries.is_empty() {
+        return None;
+    }
+    let mut children = tree.children(node);
+    let (base, field) = (children.next()?, children.next()?);
+    if tree.kind(base) != NameRef || tree.kind(field) != NameRef {
+        return None;
+    }
+    let range = tree.text_range(base);
+    if scope.symbols.reference_at(range).is_some() {
+        return None;
+    }
+    let table = &scope.text[range];
+    if inherited.variable(table).is_some() {
+        return None;
+    }
+    let found = inherited
+        .dictionaries
+        .field(table, &scope.text[tree.text_range(field)])?;
+    Some((found, range))
 }
 
 /// Tipo de um nome, quando todas as definições que ele alcança concordam.
@@ -369,6 +409,78 @@ mod tests {
 
     fn com_defs(text: &str) -> std::string::String {
         format!("{DEFS}{text}")
+    }
+
+    /// Dicionário com `E070EMP.CodEmp` número e `E070EMP.NomEmp` alfa, e `E070EMP.USU_Nova` só
+    /// no de teste.
+    fn dicionarios() -> crate::dictionary::Dictionaries {
+        use crate::tbs::{Dictionary, Field, FieldKind, FieldType, Table};
+        let field = |name: &str, kind| Field {
+            name: name.to_owned(),
+            ty: FieldType {
+                kind,
+                size: 4,
+                decimals: 0,
+                enumeration: None,
+                base: None,
+            },
+            description: std::string::String::new(),
+        };
+        let table = |fields| Table {
+            name: "E070EMP".to_owned(),
+            description: std::string::String::new(),
+            fields,
+        };
+        let prod = vec![
+            field("CodEmp", FieldKind::Number),
+            field("NomEmp", FieldKind::Text),
+        ];
+        let mut test = prod.clone();
+        test.push(field("USU_Nova", FieldKind::Text));
+        crate::dictionary::Dictionaries {
+            production: Some(std::sync::Arc::new(Dictionary {
+                tables: vec![table(prod)],
+            })),
+            test: Some(std::sync::Arc::new(Dictionary {
+                tables: vec![table(test)],
+            })),
+        }
+    }
+
+    fn checks_com_dicionario(text: &str) -> Vec<(CheckKind, &str)> {
+        let tree = crate::parse(text).unwrap();
+        let symbols = crate::symbols::Symbols::build(&tree, text);
+        let mut inherited = crate::form::Inherited::default();
+        inherited.dictionaries = dicionarios();
+        crate::validate::validate(
+            &tree,
+            &symbols,
+            text,
+            crate::builtins::Context::Report,
+            &inherited,
+        )
+        .into_iter()
+        .map(|c| (c.kind, &text[c.range]))
+        .collect()
+    }
+
+    #[test]
+    fn campo_de_tabela_pelo_dicionario() {
+        let ok = com_defs("aTxt = e070emp.NOMEMP; n = E070EMP.CodEmp + 1;");
+        assert!(checks_com_dicionario(&ok).is_empty());
+        let erro = com_defs("aTxt = E070EMP.CodEmp;");
+        assert_eq!(
+            checks_com_dicionario(&erro),
+            [(AlfaAndNumber, "E070EMP.CodEmp")]
+        );
+        // Cursor definido na regra tem os campos do SQL, não do dicionário.
+        let cursor = "definir alfa aTxt; definir cursor E070EMP;\naTxt = E070EMP.CodEmp;";
+        assert!(checks_com_dicionario(cursor).is_empty());
+        let teste = com_defs("aTxt = E070EMP.USU_Nova;");
+        assert_eq!(
+            checks_com_dicionario(&teste),
+            [(OnlyInTest, "E070EMP.USU_Nova")]
+        );
     }
 
     #[test]

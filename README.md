@@ -133,6 +133,45 @@ Cada diagnóstico tem um código fixo.
 | SEN062 | aviso | `funcao` com um bloco de outra função ainda aberto |
 | SEN063 | aviso | parâmetro usado fora da sua função, que lê lixo |
 | SEN064 | aviso | apóstrofo com letra minúscula, que o compilador lê em maiúscula |
+| SEN065 | aviso | campo de tabela que só existe no dicionário de teste |
+
+## Dicionário de dados
+
+O ERP guarda as tabelas do banco, com o tipo e a descrição de cada campo, no arquivo `.tbs` (como
+o `sapiens.tbs` da pasta do ERP). Com ele configurado, o servidor confere o tipo de `TABELA.Campo`
+nas regras e dá tipo ao campo de busca da tela SGI, pela tabela de destino da ligação. O campo alfa
+de um caractere fica sem tipo, porque o compilador aceita ele como texto e como número.
+
+São dois caminhos, ambos opcionais, o `.tbs` de produção e o da base de teste. O tipo vem do de
+produção. Com os dois, o servidor avisa (SEN065) quando a regra usa um campo que só existe no de
+teste, que compila na base de teste e não em produção. No Claude Code, os caminhos são opções do
+plugin, perguntadas na instalação e alteradas depois pelo `/config` ou pelo
+`/plugin configure senior-lsp@<marketplace>`. Em outros editores, vão em `tbs_producao` e
+`tbs_teste` nas opções de inicialização do servidor, ou nas variáveis `SENIOR_LSP_TBS_PRODUCAO` e
+`SENIOR_LSP_TBS_TESTE`. Cada arquivo é lido na primeira consulta e de novo só quando muda.
+
+O executável também imprime o dicionário em texto, uma linha por tabela e uma por campo, separadas
+por tabulação:
+
+```sh
+senior-lsp tbs sapiens.tbs > dicionario.txt
+```
+
+```text
+E070EMP	Cadastros - Empresas
+E070EMP.CodEmp	numero 4	Código da empresa
+E070EMP.NomEmp	alfa 100	Nome da empresa
+E070EMP.EstLef	alfa 1 LSimNao	Indicativo se lança os movimentos de estoque no plano financeiro
+```
+
+Campo de enumeração sai com o tipo dos valores e o nome da enumeração. O texto não traz índices,
+relacionamentos nem gatilhos. Com dois arquivos, o executável lista as diferenças do primeiro para
+o segundo, com `-` para o que só existe no primeiro, `+` para o que só existe no segundo e `~` para
+campo com tipo diferente:
+
+```sh
+senior-lsp tbs producao.tbs teste.tbs
+```
 
 ## Licença
 

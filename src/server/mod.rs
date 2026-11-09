@@ -36,6 +36,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 pub fn run(connection: Connection) -> Result<()> {
     let (id, params) = connection.initialize_start()?;
     let params: InitializeParams = serde_json::from_value(params)?;
+    configure_dictionaries(&params);
     let encoding = negotiate_encoding(&params);
     let result = InitializeResult {
         capabilities: ServerCapabilities {
@@ -84,6 +85,30 @@ pub fn run(connection: Connection) -> Result<()> {
 
 /// UTF-8 se o editor anunciar, porque dispensa a conversão das colunas. Senão UTF-16, que é o
 /// padrão do protocolo.
+/// Caminhos do `.tbs` de produção e do de teste, pelas opções de inicialização do editor
+/// (`tbs_producao` e `tbs_teste`) ou pelas variáveis `SENIOR_LSP_TBS_PRODUCAO` e
+/// `SENIOR_LSP_TBS_TESTE`. As opções do editor valem primeiro.
+fn configure_dictionaries(params: &InitializeParams) {
+    let option = |key: &str, var: &str| {
+        let from_editor = params
+            .initialization_options
+            .as_ref()
+            .and_then(|o| o.get(key))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        from_editor
+            .or_else(|| std::env::var(var).ok())
+            .map(|v| v.trim().to_owned())
+            // Valor ainda com `${...}` é uma opção do plugin que ninguém preencheu.
+            .filter(|v| !v.is_empty() && !v.starts_with("${"))
+            .map(std::path::PathBuf::from)
+    };
+    crate::dictionary::configure(
+        option("tbs_producao", "SENIOR_LSP_TBS_PRODUCAO"),
+        option("tbs_teste", "SENIOR_LSP_TBS_TESTE"),
+    );
+}
+
 fn negotiate_encoding(params: &InitializeParams) -> ColumnEncoding {
     let offered = params
         .capabilities

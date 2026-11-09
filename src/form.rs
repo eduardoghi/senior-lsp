@@ -49,6 +49,8 @@ pub struct Inherited {
     /// Nomes das entradas e dos controles do relatório, em maiúsculas, mesmo os que uma regra
     /// também define.
     entries: std::collections::HashSet<String>,
+    /// Dicionários de dados configurados, para o tipo de `TABELA.Campo`.
+    pub dictionaries: crate::dictionary::Dictionaries,
 }
 
 impl Inherited {
@@ -252,8 +254,10 @@ pub fn inherited_functions(rule: &Path) -> Inherited {
         Some((path.clone(), text))
     });
     let mut inherited = Inherited::from_rules(rules.collect::<Vec<_>>());
-    let fields = form_fields(&root);
+    let dictionaries = crate::dictionary::current();
+    let fields = form_fields(&root, &dictionaries);
     inherited.add_entries(fields.iter().map(|(p, j, e)| (p, j, e)));
+    inherited.dictionaries = dictionaries;
     inherited
 }
 
@@ -340,22 +344,35 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
 /// ficam com o nome do cadastro, e os de cada tabela com o nome da tabela na frente
 /// (`E160CTR_CodEmp`) e também com `_old` no fim, como o ERP monta. Os campos que o SGI acrescenta sozinho, como `CodOpe`,
 /// não estão na exportação e ficam em `builtins`.
-fn form_fields(root: &Path) -> Vec<(PathBuf, Arc<str>, crate::report::Entry)> {
-    let read = |path: &Path| -> Option<Arc<str>> {
-        let bytes = fs::read(path).ok()?;
-        match std::string::String::from_utf8(bytes) {
-            Ok(t) => Some(t.into()),
-            Err(e) => crate::cp1252::decode(e.as_bytes()).map(Into::into),
-        }
+///
+/// O campo de busca mostra um campo de outra tabela, e o tipo dele vem do dicionário de dados,
+/// pela tabela de destino da ligação. Sem dicionário, ou com a ligação ou o campo fora dele, fica
+/// sem tipo.
+fn form_fields(
+    root: &Path,
+    dictionaries: &crate::dictionary::Dictionaries,
+) -> Vec<(PathBuf, Arc<str>, crate::report::Entry)> {
+    let links = if dictionaries.is_empty() {
+        HashMap::new()
+    } else {
+        read_json(&root.join("interfaces").join("definition.json"))
+            .map(|json| link_targets(&json))
+            .unwrap_or_default()
     };
     let mut out = Vec::new();
     let mut add = |path: PathBuf, prefix: &str| {
-        let Some(json) = read(&path) else {
+        let Some(json) = read_json(&path) else {
             return;
         };
         for mut entry in crate::report::scan(&json).1 {
             if entry.kind != crate::report::EntryKind::Field {
                 continue;
+            }
+            if let Some((link, field)) = &entry.lookup {
+                entry.ty = links
+                    .get(&link.to_uppercase())
+                    .and_then(|table| dictionaries.field(table, field))
+                    .and_then(|found| found.field.ty.var_type());
             }
             if prefix.is_empty() {
                 out.push((path.clone(), json.clone(), entry));
@@ -384,6 +401,46 @@ fn form_fields(root: &Path) -> Vec<(PathBuf, Arc<str>, crate::report::Entry)> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         add(table.join("fields").join("definition.json"), &name);
+    }
+    out
+}
+
+fn read_json(path: &Path) -> Option<Arc<str>> {
+    let bytes = fs::read(path).ok()?;
+    match std::string::String::from_utf8(bytes) {
+        Ok(t) => Some(t.into()),
+        Err(e) => crate::cp1252::decode(e.as_bytes()).map(Into::into),
+    }
+}
+
+/// Tabela de destino de cada ligação da interface, pelo nome da ligação em maiúsculas. Cada
+/// ligação é um objeto com `name` e `targetTable`, e os campos dela (`source` e `target`) não têm
+/// `name`, então o último `name` antes do `targetTable` é o da ligação.
+fn link_targets(json: &str) -> HashMap<std::string::String, std::string::String> {
+    let value = |at: usize| -> Option<&str> {
+        let rest = json[at..].trim_start().strip_prefix(':')?.trim_start();
+        let rest = rest.strip_prefix('"')?;
+        Some(&rest[..rest.find('"')?])
+    };
+    let mut out = HashMap::new();
+    let mut name = None;
+    let mut pos = 0;
+    while let Some(i) = json[pos..].find('"') {
+        let start = pos + i + 1;
+        let Some(len) = json[start..].find('"') else {
+            break;
+        };
+        let key = &json[start..start + len];
+        pos = start + len + 1;
+        match key {
+            "name" => name = value(pos),
+            "targetTable" => {
+                if let (Some(n), Some(t)) = (name.take(), value(pos)) {
+                    out.insert(n.to_uppercase(), t.to_owned());
+                }
+            }
+            _ => {}
+        }
     }
     out
 }
@@ -607,6 +664,62 @@ mod tests {
         assert_eq!(kind("E070EMP_LBusca"), Some(DefKind::Variable(None)));
         assert!(kind("vDatSis_old").is_none());
         assert!(inherited.is_entry("E070EMP_NomEmp"));
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn campo_de_busca_pelo_dicionario() {
+        let base = std::env::temp_dir().join(format!("senior-lsp-busca-{}", std::process::id()));
+        let form = base.join("Formulários SGI/interface/F1");
+        fs::create_dir_all(form.join("interfaces")).unwrap();
+        fs::create_dir_all(form.join("tables/E070EMP/fields")).unwrap();
+        fs::write(
+            form.join("interfaces/definition.json"),
+            r#"{"links": [{"name": "TNS_SAIDA", "sourceTable": "E070EMP", "targetTable": "E001TNS",
+                "fields": [{"source": "USU_TnsTeste", "target": "CodTns"}]}]}"#,
+        )
+        .unwrap();
+        fs::write(
+            form.join("tables/E070EMP/fields/definition.json"),
+            r#"[{"isSimpleField": false, "name": "LTnsSai", "link": "TNS_SAIDA",
+                 "relatedField": "USU_TnsTeste", "resultField": "DesTns"},
+                {"isSimpleField": false, "name": "LOutra", "link": "OUTRA", "resultField": "X"}]"#,
+        )
+        .unwrap();
+        use crate::tbs::{Dictionary, Field, FieldKind, FieldType, Table};
+        let tns = Table {
+            name: "E001TNS".to_owned(),
+            description: std::string::String::new(),
+            fields: vec![Field {
+                name: "DesTns".to_owned(),
+                ty: FieldType {
+                    kind: FieldKind::Text,
+                    size: 60,
+                    decimals: 0,
+                    enumeration: None,
+                    base: None,
+                },
+                description: std::string::String::new(),
+            }],
+        };
+        let dictionaries = crate::dictionary::Dictionaries {
+            production: Some(Arc::new(Dictionary { tables: vec![tns] })),
+            test: None,
+        };
+        let fields = form_fields(&form, &dictionaries);
+        let ty = |name: &str| {
+            fields
+                .iter()
+                .find(|(_, _, e)| e.name == name)
+                .map(|(_, _, e)| e.ty)
+        };
+        assert_eq!(ty("E070EMP_LTnsSai"), Some(Some(VarType::Alfa)));
+        assert_eq!(ty("E070EMP_LTnsSai_old"), Some(Some(VarType::Alfa)));
+        // Ligação que não existe fica sem tipo.
+        assert_eq!(ty("E070EMP_LOutra"), Some(None));
+        // Sem dicionário, o campo de busca fica sem tipo.
+        let sem = form_fields(&form, &crate::dictionary::Dictionaries::default());
+        assert!(sem.iter().all(|(_, _, e)| e.ty.is_none()));
         fs::remove_dir_all(&base).unwrap();
     }
 

@@ -53,6 +53,9 @@ pub enum CheckKind {
     UnknownFunction,
     TooManyArguments,
     TooFewArguments,
+    /// Campo de tabela que só existe no dicionário de teste. Compila na base de teste e não em
+    /// produção, como uma customização ainda não promovida.
+    OnlyInTest,
 }
 
 impl CheckKind {
@@ -90,6 +93,24 @@ pub struct Check {
 
 /// `inherited` são as funções definidas em outras regras que valem para esta, como a regra da
 /// raiz de um formulário SGI.
+/// Campo do dicionário de dados em `TABELA.Campo` (um `FieldExpr`), como o conferidor de tipos vê.
+pub(crate) fn dictionary_field<'a>(
+    tree: &Tree,
+    symbols: &'a Symbols,
+    text: &'a str,
+    context: Context,
+    inherited: &'a Inherited,
+    node: NodeId,
+) -> Option<crate::dictionary::Found<'a>> {
+    let scope = types::Scope {
+        symbols,
+        text,
+        inherited,
+        context,
+    };
+    types::table_field(tree, &scope, node).map(|(found, _)| found)
+}
+
 pub fn validate(
     tree: &Tree,
     symbols: &Symbols,
@@ -115,6 +136,18 @@ pub fn validate(
                 unknown_function(tree, symbols, text, context, inherited, node, &mut checks)
             }
             Literal => lowercase_char(tree, text, node, &mut checks),
+            FieldExpr => {
+                if let Some((found, _)) = types::table_field(tree, &scope, node) {
+                    if found.only_in_test {
+                        checks.push(Check {
+                            kind: CheckKind::OnlyInTest,
+                            range: tree.text_range(node),
+                            name: None,
+                            label: None,
+                        });
+                    }
+                }
+            }
             FuncImpl => function(tree, node, &mut checks),
             _ => {}
         }

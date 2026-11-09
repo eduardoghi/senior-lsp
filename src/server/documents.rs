@@ -63,10 +63,12 @@ impl Documents {
         let index = LineIndex::new(&text);
         let context = Context::from_uri(uri.as_str());
         // As regras de cima são lidas do disco a cada mudança. Um formulário tem poucas.
-        let inherited = Arc::new(match (context, crate::form::path_from_uri(uri.as_str())) {
+        let mut inherited = match (context, crate::form::path_from_uri(uri.as_str())) {
             (Context::Sgi, Some(path)) => crate::form::inherited_functions(&path),
             _ => Inherited::default(),
-        });
+        };
+        inherited.dictionaries = crate::dictionary::current();
+        let inherited = Arc::new(inherited);
         let doc = Document {
             text,
             version,
@@ -90,7 +92,9 @@ impl Documents {
     ) -> Result<(), TextTooLarge> {
         let path = crate::form::path_from_uri(uri.as_str()).unwrap_or_default();
         let model = crate::report::model(&path, &json);
-        let inherited = Arc::new(Inherited::from_model(&model));
+        let mut inherited = Inherited::from_model(&model);
+        inherited.dictionaries = crate::dictionary::current();
+        let inherited = Arc::new(inherited);
         let json: Arc<str> = json.into();
         let mut rules = Vec::new();
         for (rule_path, embedded) in model.rules {

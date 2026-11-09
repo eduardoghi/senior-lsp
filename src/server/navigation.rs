@@ -329,6 +329,9 @@ impl Context<'_> {
 
     pub(crate) fn hover(&self, position: Position) -> Option<Hover> {
         let offset = self.offset(position);
+        if let Some(hover) = self.dictionary_hover(offset) {
+            return Some(hover);
+        }
         let symbols = &self.doc.symbols;
         let Some(targets) = symbols.at(offset) else {
             return self.builtin_hover(offset);
@@ -563,6 +566,37 @@ impl Context<'_> {
 
     /// Hover de uma chamada a função do ERP, como `IntParaAlfa`, ou de uma função ou variável de
     /// outra regra do formulário SGI.
+    /// Campo de tabela do dicionário de dados, com o tipo e a descrição.
+    fn dictionary_hover(&self, offset: TextSize) -> Option<Hover> {
+        let tree = &self.doc.tree;
+        let node = field_expr_at(tree, offset)?;
+        let found = crate::validate::dictionary_field(
+            tree,
+            &self.doc.symbols,
+            &self.doc.text,
+            self.doc.context,
+            &self.doc.inherited,
+            node,
+        )?;
+        let range = tree.text_range(node);
+        let origin = if found.only_in_test {
+            "Campo que só existe no dicionário de teste"
+        } else {
+            "Campo do dicionário de dados"
+        };
+        let value = format!(
+            "```lsp\n{} {}\n```\n{}\n\n{origin}",
+            found.field.ty, &self.doc.text[range], found.field.description
+        );
+        Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
+            range: Some(self.range(range)),
+        })
+    }
+
     fn builtin_hover(&self, offset: TextSize) -> Option<Hover> {
         let tree = &self.doc.tree;
         let builtin = callee_at(tree, offset).and_then(|callee| {
@@ -768,6 +802,26 @@ fn name_at(tree: &crate::Tree, offset: TextSize) -> Option<(NodeId, bool)> {
         }
         node = child;
     }
+}
+
+/// `FieldExpr` mais interno que contém `offset`, com a base e o campo como nomes simples.
+fn field_expr_at(tree: &crate::Tree, offset: TextSize) -> Option<NodeId> {
+    let mut node = tree.root();
+    let mut found = None;
+    while let Some(child) = tree
+        .children(node)
+        .find(|&c| tree.text_range(c).contains_inclusive(offset))
+    {
+        if tree.kind(child) == SyntaxKind::FieldExpr
+            && tree
+                .children(child)
+                .all(|c| tree.kind(c) == SyntaxKind::NameRef)
+        {
+            found = Some(child);
+        }
+        node = child;
+    }
+    found
 }
 
 /// Nome chamado (`NameRef` que é o primeiro filho de um `CallExpr`) que contém `offset`.

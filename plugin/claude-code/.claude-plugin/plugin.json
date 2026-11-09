@@ -1,5 +1,19 @@
 {
     "name": "senior-lsp",
     "version": "0.2.0",
-    "description": "Servidor de linguagem para as regras LSP do ERP Senior (arquivos Rule.txt)"
+    "description": "Servidor de linguagem para as regras LSP do ERP Senior (arquivos Rule.txt)",
+    "userConfig": {
+        "tbs_producao": {
+            "type": "file",
+            "title": "Dicionário de produção",
+            "description": "Caminho do sapiens.tbs de produção, como o da pasta Sapiens do servidor do ERP. Dá o tipo dos campos de tabela nas regras. Pode ficar vazio.",
+            "default": ""
+        },
+        "tbs_teste": {
+            "type": "file",
+            "title": "Dicionário de teste",
+            "description": "Caminho do sapiens.tbs da base de teste. Com os dois configurados, o servidor avisa quando uma regra usa um campo que só existe no de teste. Pode ficar vazio.",
+            "default": ""
+        }
+    }
 }
