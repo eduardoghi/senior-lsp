@@ -89,11 +89,11 @@ impl Documents {
         version: i32,
     ) -> Result<(), TextTooLarge> {
         let path = crate::form::path_from_uri(uri.as_str()).unwrap_or_default();
-        let model = crate::report::model_rules(&path, &json);
-        let inherited = Arc::new(Inherited::from_model(model.iter().cloned()));
+        let model = crate::report::model(&path, &json);
+        let inherited = Arc::new(Inherited::from_model(&model));
         let json: Arc<str> = json.into();
         let mut rules = Vec::new();
-        for (rule_path, embedded) in model {
+        for (rule_path, embedded) in model.rules {
             if rule_path != path {
                 continue;
             }

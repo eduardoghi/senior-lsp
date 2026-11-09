@@ -28,12 +28,17 @@ e isso muda as funções do ERP que ela pode chamar:
 | `Regras` | `Rule.txt` | regra de identificador, com as funções comuns do ERP |
 | `Formulários SGI` | `rule.txt` | regra de tela SGI, que ganha as funções de tela e as funções e variáveis definidas nas regras acima dela no formulário, como a da raiz |
 | `Web Services` | `Rule.txt` | regra de web service, com as mesmas funções da regra de identificador |
-| `Modelos` | os `.json` de cada modelo | regra de relatório, que ganha as funções de relatório e as funções e variáveis definidas nas outras regras do modelo |
+| `Modelos` | os `.json` de cada modelo | regra de relatório, que ganha as funções de relatório, as entradas e os controles do modelo e as funções e variáveis definidas nas outras regras dele |
 
 O servidor reconhece as pastas `Formulários SGI` e `Modelos`. Qualquer outro arquivo de regra conta
 como regra de identificador, então renomear a pasta `Regras` não muda nada. Os outros tipos de
-artefato não exportam regra. Num modelo de relatório, renomear fica desligado e as referências não
-atravessam as regras do modelo, porque um nome costuma ser usado em várias delas.
+artefato não exportam regra. Num modelo de relatório, as referências e o renomear atravessam todas
+as regras e todos os JSON do modelo. Antes das regras, o ERP define as entradas, como `ECodFil`, com o
+tipo do cadastro, e as descrições como alfa. A alfa de um caractere vira número com o código do
+caractere. Os totais valem como números, e as fórmulas também, porque o compilador cria como número
+o nome sem `definir`. Memorando e código de barras imprimem a variável de mesmo nome que a regra
+define. O nome das entradas e desses controles não se renomeia pela regra, porque vem do cadastro
+do modelo.
 
 Os nomes seguem as regras do compilador. Eles não diferenciam caixa, e um `definir` vale no
 arquivo inteiro, inclusive antes dele e dentro de funções. Variáveis que o ERP fornece não têm

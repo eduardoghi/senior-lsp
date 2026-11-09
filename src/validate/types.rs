@@ -1,8 +1,11 @@
 //! Erros de tipo entre alfa e número, pela tabela de símbolos.
 //!
 //! O tipo de um nome sai do `definir` dele, no arquivo ou numa regra acima no formulário SGI. Nome
-//! sem `definir`, como as variáveis do ERP, tem tipo desconhecido e nunca gera erro. Data conta como número. Dentro da função, um
-//! parâmetro alfa, com ou sem `end`, também se comporta como número, e só na chamada ele é alfa.
+//! sem `definir` tem tipo desconhecido e nunca gera erro. O compilador cria esse nome como número,
+//! mas antes pergunta ao ERP, que responde com variáveis próprias de cada lugar, como as `VS` do
+//! identificador, os campos da tabela na tela SGI e o `ValStr` do relatório, e essa lista o servidor
+//! não tem. Data conta como número. Dentro da função, um parâmetro alfa, com ou sem `end`, também se
+//! comporta como número, e só na chamada ele é alfa.
 //! O apóstrofo (`'c'`) vale como alfa na atribuição alfa e é o código do caractere numa conta,
 //! então fica de fora.
 //!

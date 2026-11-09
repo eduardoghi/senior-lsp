@@ -18,6 +18,77 @@ pub struct Embedded {
     pub rule: EmbeddedRule,
 }
 
+/// Nome cadastrado no modelo fora das regras, que vale nelas como variável sem `definir`. É uma
+/// entrada da lista `entrance`, como `ECodFil`, ou um controle cujo valor a regra lê ou define.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub kind: EntryKind,
+    /// Tipo da variável que o ERP cria para o nome antes de compilar as regras. Na entrada vem do
+    /// `type_var`, com 1, 2 e 5 para número, 3 para alfa e 4 para data, e a alfa de um caractere
+    /// (`size` 1), como a lista com S para sintético e A para analítico, vira número com o código do
+    /// caractere. Variável do sistema (6) fica sem tipo, porque depende de qual é.
+    pub ty: Option<crate::symbols::VarType>,
+    pub description: String,
+    /// Posição do nome no JSON, o conteúdo entre as aspas de `sytem_varName` ou do `name` do
+    /// controle.
+    pub name_range: TextRange,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    Entrance,
+    /// Controle pela classe, como `TSFormula`.
+    Control(Control),
+}
+
+/// Controles cujo nome aparece nas regras. A descrição ganha `definir alfa` com o nome dela antes
+/// das regras, e o total vira variável numérica do sistema. A fórmula não é declarada, e o nome dela
+/// nas regras é a variável numérica que o compilador cria para nome sem `definir`. O `type_var` da
+/// fórmula só diz como a máscara formata o valor. Memorando e código de barras imprimem a variável
+/// de mesmo nome, que a regra define. Os outros, como campo de tabela e desenho, não têm valor que a
+/// regra use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Control {
+    Formula,
+    Total,
+    Descricao,
+    Memorando,
+    CodigoBarras,
+}
+
+impl Control {
+    fn from_class(class: &str) -> Option<Control> {
+        Some(match class {
+            "TSFormula" => Control::Formula,
+            "TSTotal" => Control::Total,
+            "TSDescricao" => Control::Descricao,
+            "TSMemoran" => Control::Memorando,
+            "TSCodBarra" => Control::CodigoBarras,
+            _ => return None,
+        })
+    }
+
+    fn ty(self) -> Option<crate::symbols::VarType> {
+        use crate::symbols::VarType;
+        match self {
+            Control::Descricao => Some(VarType::Alfa),
+            Control::Formula | Control::Total => Some(VarType::Numero),
+            Control::Memorando | Control::CodigoBarras => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Control::Formula => "fórmula",
+            Control::Total => "total",
+            Control::Descricao => "descrição",
+            Control::Memorando => "memorando",
+            Control::CodigoBarras => "código de barras",
+        }
+    }
+}
+
 /// Uma regra encontrada no JSON.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmbeddedRule {
@@ -74,13 +145,26 @@ impl EmbeddedRule {
     }
 }
 
-/// Regras de todos os JSON do modelo de `json_path`, a pasta dele. O arquivo aberto no editor
-/// entra com `current`, e os outros são lidos do disco, em UTF-8 ou cp1252.
+/// Regras e entradas de todos os JSON de um modelo.
+#[derive(Debug, Default)]
+pub struct Model {
+    pub rules: Vec<(std::path::PathBuf, std::sync::Arc<Embedded>)>,
+    /// Cada entrada com o JSON onde está cadastrada.
+    pub entries: Vec<(std::path::PathBuf, std::sync::Arc<str>, Entry)>,
+}
+
+/// Regras de todos os JSON do modelo de `json_path`.
 pub fn model_rules(
     json_path: &std::path::Path,
     current: &str,
 ) -> Vec<(std::path::PathBuf, std::sync::Arc<Embedded>)> {
-    let mut out = Vec::new();
+    model(json_path, current).rules
+}
+
+/// Regras e entradas de todos os JSON do modelo de `json_path`, a pasta dele. O arquivo aberto no
+/// editor entra com `current`, e os outros são lidos do disco, em UTF-8 ou cp1252.
+pub fn model(json_path: &std::path::Path, current: &str) -> Model {
+    let mut out = Model::default();
     let Some(dir) = json_path.parent() else {
         return out;
     };
@@ -110,12 +194,17 @@ pub fn model_rules(
             continue;
         };
         let json: std::sync::Arc<str> = text.into();
-        for rule in extract(&json) {
+        let (rules, entries) = scan(&json);
+        for rule in rules {
             let embedded = Embedded {
                 json: json.clone(),
                 rule,
             };
-            out.push((path.clone(), std::sync::Arc::new(embedded)));
+            out.rules
+                .push((path.clone(), std::sync::Arc::new(embedded)));
+        }
+        for entry in entries {
+            out.entries.push((path.clone(), json.clone(), entry));
         }
     }
     out
@@ -123,20 +212,27 @@ pub fn model_rules(
 
 /// Todas as regras com código do JSON, na ordem do texto.
 pub fn extract(json: &str) -> Vec<EmbeddedRule> {
+    scan(json).0
+}
+
+/// Regras com código e entradas do JSON.
+pub fn scan(json: &str) -> (Vec<EmbeddedRule>, Vec<Entry>) {
     let mut scanner = Scanner {
         bytes: json.as_bytes(),
         pos: 0,
+        entries: Vec::new(),
         depth: 0,
     };
     let mut rules = Vec::new();
     scanner.value(&mut rules, None);
     rules.retain(|r| !r.text.trim().is_empty());
-    rules
+    (rules, scanner.entries)
 }
 
 struct Scanner<'a> {
     bytes: &'a [u8],
     pos: usize,
+    entries: Vec<Entry>,
     /// Níveis de `[` e `{` abertos. Passando de [`MAX_DEPTH`], o resto não é lido, para um JSON
     /// muito aninhado não estourar a pilha da recursão.
     depth: u32,
@@ -217,10 +313,32 @@ impl Scanner<'_> {
         }
     }
 
+    /// Lê um inteiro sem sinal. Outro valor no lugar é pulado e dá `None`.
+    fn integer(&mut self, rules: &mut Vec<EmbeddedRule>) -> Option<u32> {
+        self.skip_ws();
+        let start = self.pos;
+        while self.bytes.get(self.pos).is_some_and(u8::is_ascii_digit) {
+            self.pos += 1;
+        }
+        if self.pos == start {
+            self.value(rules, None);
+            return None;
+        }
+        std::str::from_utf8(&self.bytes[start..self.pos])
+            .ok()
+            .and_then(|n| n.parse().ok())
+    }
+
     fn object(&mut self, rules: &mut Vec<EmbeddedRule>, is_rule: bool) {
         self.pos += 1;
         let mut prop = String::new();
         let mut lines: Vec<JsonString> = Vec::new();
+        let mut entry_name: Option<JsonString> = None;
+        let mut type_var = None;
+        let mut description = String::new();
+        let mut size = None;
+        let mut class = None;
+        let mut control_name: Option<JsonString> = None;
         loop {
             match self.peek() {
                 Some(b'}') | None => {
@@ -237,6 +355,18 @@ impl Scanner<'_> {
                         lines = self.string_array();
                     } else if is_rule && key == "prop_name" && self.peek() == Some(b'"') {
                         prop = self.string().value;
+                    } else if key == "sytem_varName" && self.peek() == Some(b'"') {
+                        entry_name = Some(self.string());
+                    } else if key == "description" && self.peek() == Some(b'"') {
+                        description = self.string().value;
+                    } else if key == "classname" && self.peek() == Some(b'"') {
+                        class = Control::from_class(&self.string().value);
+                    } else if key == "name" && self.peek() == Some(b'"') {
+                        control_name = Some(self.string());
+                    } else if key == "type_var" {
+                        type_var = self.integer(rules);
+                    } else if key == "size" {
+                        size = self.integer(rules);
                     } else {
                         self.value(rules, Some(&key));
                     }
@@ -246,6 +376,31 @@ impl Scanner<'_> {
         }
         if is_rule {
             rules.push(assemble(prop, lines));
+        }
+        if let Some(name) = entry_name {
+            use crate::symbols::VarType;
+            let ty = match type_var {
+                Some(1 | 2 | 5) => Some(VarType::Numero),
+                Some(3) if size == Some(1) => Some(VarType::Numero),
+                Some(3) => Some(VarType::Alfa),
+                Some(4) => Some(VarType::Data),
+                _ => None,
+            };
+            self.entries.push(Entry {
+                name: name.value,
+                kind: EntryKind::Entrance,
+                ty,
+                description,
+                name_range: TextRange::new(TextSize::new(name.start), TextSize::new(name.end)),
+            });
+        } else if let (Some(control), Some(name)) = (class, control_name) {
+            self.entries.push(Entry {
+                name: name.value,
+                kind: EntryKind::Control(control),
+                ty: control.ty(),
+                description: String::new(),
+                name_range: TextRange::new(TextSize::new(name.start), TextSize::new(name.end)),
+            });
         }
     }
 
@@ -465,6 +620,54 @@ mod tests {
         }
         let rule = &extract("{\"rule\": {\"lines\": [\"a\\\u{e9}b\"]}}")[0];
         assert_eq!(rule.text, "a\u{e9}b");
+    }
+
+    #[test]
+    fn entradas_do_relatorio() {
+        let json = r#"{ "entrance": [
+  { "sytem_varName": "ECodEmp", "description": "Empresa", "type_var": 1 },
+  { "sytem_varName": "ECodFil", "description": "Filial(+)", "type_var": 3, "embrance": "true" },
+  { "sytem_varName": "EDatIni", "description": "Mês/Ano", "type_var": 4 },
+  { "sytem_varName": "EAnaSin", "description": "Analítico / Sintético", "type_var": 3, "entrance_type": 3, "size": 1 },
+  { "sytem_varName": "ETipo", "description": "Tipo", "type_var": 3, "entrance_type": 3, "size": 2 }
+] }"#;
+        let (_, entries) = scan(json);
+        let names: Vec<_> = entries.iter().map(|e| (e.name.as_str(), e.ty)).collect();
+        use crate::symbols::VarType;
+        assert_eq!(
+            names,
+            [
+                ("ECodEmp", Some(VarType::Numero)),
+                ("ECodFil", Some(VarType::Alfa)),
+                ("EDatIni", Some(VarType::Data)),
+                ("EAnaSin", Some(VarType::Numero)),
+                ("ETipo", Some(VarType::Alfa))
+            ]
+        );
+        assert_eq!(&json[entries[1].name_range], "ECodFil");
+        assert_eq!(entries[1].description, "Filial(+)");
+    }
+
+    #[test]
+    fn controles_com_valor_viram_nomes_do_modelo() {
+        let json = r#"{ "classname": "TSDetail", "name": "Detalhe_1", "children": [
+  { "classname": "TSFormula", "name": "FSaldo", "font": { "name": "Arial" }, "formula": { "type_var": 5 } },
+  { "classname": "TSCadastro", "name": "Cadastro001" },
+  { "name": "DSigFil", "classname": "TSDescricao" }
+] }"#;
+        let (_, entries) = scan(json);
+        let found: Vec<_> = entries.iter().map(|e| (e.name.as_str(), e.kind)).collect();
+        assert_eq!(
+            found,
+            [
+                ("FSaldo", EntryKind::Control(Control::Formula)),
+                ("DSigFil", EntryKind::Control(Control::Descricao))
+            ]
+        );
+        assert_eq!(&json[entries[1].name_range], "DSigFil");
+        use crate::symbols::VarType;
+        assert_eq!(entries[0].ty, Some(VarType::Numero));
+        assert_eq!(entries[1].ty, Some(VarType::Alfa));
     }
 
     #[test]

@@ -32,6 +32,8 @@ pub struct InheritedDef {
     /// Quantas regras definem a função. Num modelo de relatório, mais de uma deixa em dúvida qual
     /// assinatura vale.
     pub rules: usize,
+    /// Entrada ou controle do relatório, cadastrado no modelo e não por `definir`.
+    pub entry: Option<crate::report::EntryKind>,
     /// Regra de modelo de relatório de onde a definição veio, para levar a posição ao JSON.
     /// `None` quando `text` é o próprio arquivo.
     pub embedded: Option<Arc<crate::report::Embedded>>,
@@ -44,6 +46,9 @@ pub struct InheritedDef {
 pub struct Inherited {
     functions: HashMap<String, InheritedDef>,
     variables: HashMap<String, InheritedDef>,
+    /// Nomes das entradas e dos controles do relatório, em maiúsculas, mesmo os que uma regra
+    /// também define.
+    entries: std::collections::HashSet<String>,
 }
 
 impl Inherited {
@@ -57,6 +62,12 @@ impl Inherited {
 
     pub fn variables(&self) -> impl Iterator<Item = &InheritedDef> {
         self.variables.values()
+    }
+
+    /// Diz se o nome é de uma entrada ou de um controle do relatório. Ele vem do cadastro do
+    /// modelo, então renomear só nas regras quebra a ligação.
+    pub fn is_entry(&self, name: &str) -> bool {
+        self.entries.contains(&name.to_uppercase())
     }
 
     pub fn variable(&self, name: &str) -> Option<&InheritedDef> {
@@ -78,14 +89,54 @@ impl Inherited {
     /// Junta as definições das regras de um modelo de relatório, que se enxergam umas às outras
     /// sem ordem. Um nome definido com tipos diferentes em duas regras fica sem tipo, para não
     /// dar erro de tipo com o tipo errado.
-    pub fn from_model(
-        rules: impl IntoIterator<Item = (PathBuf, Arc<crate::report::Embedded>)>,
-    ) -> Inherited {
-        let rules = rules.into_iter().map(|(path, embedded)| {
+    ///
+    /// As entradas do relatório entram como variáveis, menos as que alguma regra define com
+    /// `definir`, que vale primeiro.
+    pub fn from_model(model: &crate::report::Model) -> Inherited {
+        let rules = model.rules.iter().map(|(path, embedded)| {
             let text: Arc<str> = Arc::from(embedded.rule.text.as_str());
-            (path, text, Some(embedded))
+            (path.clone(), text, Some(embedded.clone()))
         });
-        Inherited::collect(rules, true)
+        let mut inherited = Inherited::collect(rules, true);
+        // A regra que o ERP monta antes das outras define as entradas e depois as descrições. Os
+        // outros controles só valem se nada definiu o nome.
+        let order = |e: &crate::report::Entry| match e.kind {
+            crate::report::EntryKind::Entrance => 0,
+            crate::report::EntryKind::Control(crate::report::Control::Descricao) => 1,
+            crate::report::EntryKind::Control(_) => 2,
+        };
+        let mut entries: Vec<_> = model.entries.iter().collect();
+        entries.sort_by_key(|(_, _, e)| order(e));
+        for (path, json, entry) in entries {
+            let key = entry.name.to_uppercase();
+            inherited.entries.insert(key.clone());
+            if inherited.variables.contains_key(&key) {
+                continue;
+            }
+            let ty = entry.ty.map_or("", |t| match t {
+                VarType::Alfa => "alfa",
+                VarType::Numero => "numero",
+                VarType::Data => "data",
+            });
+            let def = InheritedDef {
+                kind: DefKind::Variable(entry.ty),
+                path: path.clone(),
+                text: json.clone(),
+                name: entry.name_range,
+                decl: match entry.kind {
+                    crate::report::EntryKind::Entrance => {
+                        format!("{ty} {}  @ {} @", entry.name, entry.description)
+                    }
+                    crate::report::EntryKind::Control(_) => format!("{ty} {}", entry.name),
+                },
+                params: Vec::new(),
+                rules: 1,
+                entry: Some(entry.kind),
+                embedded: None,
+            };
+            inherited.variables.insert(key, def);
+        }
+        inherited
     }
 
     fn collect(
@@ -122,6 +173,7 @@ impl Inherited {
                         decl: header(&tree, &text, def.node),
                         params: Vec::new(),
                         rules: 1,
+                        entry: None,
                         embedded: embedded.clone(),
                     };
                     inherited.variables.insert(key, var);
@@ -153,6 +205,7 @@ impl Inherited {
                         decl: String::new(),
                         params: Vec::new(),
                         rules: 1,
+                        entry: None,
                         embedded: embedded.clone(),
                     }),
                 };

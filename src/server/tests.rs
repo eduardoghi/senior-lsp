@@ -587,10 +587,113 @@ fn regras_de_modelo_de_relatorio() {
     );
     assert_eq!(locations[0]["range"]["start"]["line"], 2);
 
-    // Fora de regra, no JSON em si, não há resposta, e renomear fica desligado.
+    // Fora de regra, no JSON em si, não há resposta.
     let r = editor.request(HoverRequest::METHOD, at(0, 2));
     assert!(r.response_result.unwrap().is_null());
-    let r = editor.request(PrepareRenameRequest::METHOD, at(1, 12));
+
+    // As referências da função atravessam os JSON do modelo.
+    let base_uri = crate::form::uri_from_path(&model.join("Base_Structure.json"));
+    let mut params = at(2, 4);
+    params["context"] = json!({ "includeDeclaration": true });
+    let r = editor.request(References::METHOD, params);
+    let refs = r.response_result.unwrap();
+    let mut found: Vec<_> = refs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            (
+                l["uri"].as_str().unwrap() == base_uri.as_str(),
+                l["range"]["start"]["line"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    found.sort();
+    assert_eq!(found, [(false, 2), (true, 1), (true, 2)]);
+
+    // Renomear troca nos dois arquivos e recusa nome que já existe no modelo.
+    let rename = |editor: &mut Editor, name: &str| {
+        let mut params = at(2, 4);
+        params["newName"] = json!(name);
+        editor.request(Rename::METHOD, params)
+    };
+    let r = rename(&mut editor, "Total");
+    let changes = r.response_result.unwrap()["changes"]
+        .as_object()
+        .unwrap()
+        .clone();
+    assert_eq!(changes[base_uri.as_str()].as_array().unwrap().len(), 2);
+    assert_eq!(changes[uri.as_str()].as_array().unwrap().len(), 1);
+    let r = rename(&mut editor, "aTxt");
+    assert!(r.response_result.is_err());
+    // Função do ERP continua sem renomear.
+    let r = editor.request(PrepareRenameRequest::METHOD, at(3, 5));
+    assert!(r.response_result.unwrap().is_null());
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn entradas_de_modelo_de_relatorio() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-entradas-{}", std::process::id()));
+    let model = base.join("Modelos/M1.GER");
+    std::fs::create_dir_all(&model).unwrap();
+    let structure = r#"{ "entrance": [
+  { "sytem_varName": "ECodEmp", "description": "Empresa", "type_var": 1, "size": 0 }
+], "children": [ { "classname": "TSFormula", "name": "FTotal" } ] }"#;
+    let structure_path = model.join("Base_Structure.json");
+    std::fs::write(&structure_path, structure).unwrap();
+    let header = r#"{ "children": [ { "rule": { "prop_name": "SOnPrint", "lines": [
+  "Definir Alfa aTxt;",
+  "aTxt = ECodEmp;",
+  "Se (ECodEmp = 1) { }",
+  "Se (FTotal > 0) { }"
+] } } ] }"#;
+    let header_path = model.join("Cabecalho.json");
+    std::fs::write(&header_path, header).unwrap();
+    let uri = crate::form::uri_from_path(&header_path);
+
+    let (mut editor, _) = Editor::start(None);
+    editor.open(&uri, 1, header);
+    let d = editor.diagnostics();
+    let lines: Vec<_> = d.diagnostics.iter().map(|d| d.range.start.line).collect();
+    // A entrada vale como variável numérica, sem `definir`.
+    assert_eq!(lines, [2], "{:?}", d.diagnostics);
+
+    let at = |line: u32, character: u32| json!({ "textDocument": { "uri": uri }, "position": { "line": line, "character": character } });
+    let r = editor.request(HoverRequest::METHOD, at(3, 8));
+    let hover = r.response_result.unwrap();
+    let text = hover["contents"]["value"].as_str().unwrap();
+    assert!(text.contains("numero ECodEmp"), "{text}");
+    assert!(text.contains("Entrada do relatório"), "{text}");
+
+    let r = editor.request(GotoDefinition::METHOD, at(3, 8));
+    let locations = r.response_result.unwrap();
+    assert_eq!(
+        locations[0]["uri"],
+        crate::form::uri_from_path(&structure_path).as_str()
+    );
+    assert_eq!(locations[0]["range"]["start"]["line"], 1);
+
+    let mut params = at(3, 8);
+    params["context"] = json!({ "includeDeclaration": true });
+    let r = editor.request(References::METHOD, params);
+    let refs = r.response_result.unwrap();
+    assert_eq!(refs.as_array().unwrap().len(), 3);
+
+    // O nome da entrada é o do cadastro no modelo, então não se renomeia pela regra.
+    let r = editor.request(PrepareRenameRequest::METHOD, at(3, 8));
+    assert!(r.response_result.unwrap().is_null());
+
+    // O controle de fórmula também vale como variável.
+    let r = editor.request(HoverRequest::METHOD, at(4, 8));
+    let hover = r.response_result.unwrap();
+    let text = hover["contents"]["value"].as_str().unwrap();
+    assert!(text.contains("Controle de fórmula do relatório"), "{text}");
+    assert!(text.contains("numero FTotal"), "{text}");
+    let r = editor.request(GotoDefinition::METHOD, at(4, 8));
+    assert_eq!(r.response_result.unwrap()[0]["range"]["start"]["line"], 2);
+    let r = editor.request(PrepareRenameRequest::METHOD, at(4, 8));
     assert!(r.response_result.unwrap().is_null());
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();

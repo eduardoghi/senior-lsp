@@ -146,14 +146,7 @@ impl Context<'_> {
         for r in crate::form::uses(&def.text, name, true) {
             out.extend(self.def_location(def, r));
         }
-        if def.embedded.is_some() {
-            // Num modelo de relatório, ficam os usos desta regra. As outras regras do modelo não
-            // entram ainda.
-            let here = crate::form::uses(&self.doc.text, name, false);
-            out.extend(here.into_iter().map(|r| self.location(r)));
-        } else {
-            out.extend(self.uses_below(&def.path, name));
-        }
+        out.extend(self.uses_below(&def.path, name));
         out
     }
 
@@ -167,6 +160,123 @@ impl Context<'_> {
         Range::new(p(range.start()), p(range.end()))
     }
 
+    /// Nome na posição que vale no modelo de relatório inteiro, e se é função. Parâmetro e rótulo
+    /// ficam de fora, porque valem só na regra deles.
+    fn model_symbol_at(&self, offset: TextSize) -> Option<(std::string::String, bool)> {
+        let symbols = &self.doc.symbols;
+        if let Some(targets) = symbols.at(offset) {
+            let def = &symbols.definitions[targets[0]];
+            if matches!(def.kind, DefKind::Parameter(_) | DefKind::Label) {
+                return None;
+            }
+            let name = self.doc.text[def.name].to_owned();
+            return Some((name, def.kind == DefKind::Function));
+        }
+        let (range, def) = self.inherited_at(offset)?;
+        Some((
+            self.doc.text[range].to_owned(),
+            def.kind == DefKind::Function,
+        ))
+    }
+
+    /// Definições e usos de `name` em todas as regras do modelo de relatório. Numa regra entram os
+    /// usos sem `definir` nela e os que apontam para uma definição dela que não seja parâmetro.
+    /// O JSON aberto no editor entra com o texto e o endereço do editor.
+    fn model_references(
+        &self,
+        name: &str,
+        function: bool,
+        include_declaration: bool,
+    ) -> Vec<Location> {
+        let (Some(embedding), Some(path)) = (
+            self.embedding,
+            crate::form::path_from_uri(self.uri.as_str()),
+        ) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut indexes: std::collections::HashMap<
+            std::path::PathBuf,
+            crate::line_index::LineIndex,
+        > = std::collections::HashMap::new();
+        let model = crate::report::model(&path, embedding.json);
+        if include_declaration && !function {
+            for (entry_path, json, entry) in &model.entries {
+                if !entry.name.eq_ignore_ascii_case(name) {
+                    continue;
+                }
+                let uri = if *entry_path == path {
+                    Some(self.uri.clone())
+                } else {
+                    crate::form::uri_from_path(entry_path).parse().ok()
+                };
+                if let Some(uri) = uri {
+                    out.push(Location::new(uri, self.range_in(json, entry.name_range)));
+                }
+            }
+        }
+        for (rule_path, embedded) in model.rules {
+            let text = &embedded.rule.text;
+            let Ok(tree) = crate::parse(text) else {
+                continue;
+            };
+            let symbols = crate::symbols::Symbols::build(&tree, text);
+            let mut ranges = Vec::new();
+            if include_declaration {
+                ranges.extend(
+                    symbols
+                        .definitions
+                        .iter()
+                        .filter(|d| text[d.name].eq_ignore_ascii_case(name))
+                        .filter(|d| (d.kind == DefKind::Function) == function)
+                        .filter(|d| !matches!(d.kind, DefKind::Parameter(_) | DefKind::Label))
+                        .map(|d| d.name),
+                );
+            }
+            let mut stack = vec![tree.root()];
+            while let Some(node) = stack.pop() {
+                stack.extend(tree.children(node));
+                let Some((_, is_callee)) = name_ref_kind(&tree, node) else {
+                    continue;
+                };
+                let range = tree.text_range(node);
+                if is_callee != function || !text[range].eq_ignore_ascii_case(name) {
+                    continue;
+                }
+                let to_param = symbols.reference_at(range).is_some_and(|r| {
+                    r.targets
+                        .iter()
+                        .any(|&t| matches!(symbols.definitions[t].kind, DefKind::Parameter(_)))
+                });
+                if !to_param {
+                    ranges.push(range);
+                }
+            }
+            ranges.sort_by_key(|r| r.start());
+            let uri = if rule_path == path {
+                Some(self.uri.clone())
+            } else {
+                crate::form::uri_from_path(&rule_path).parse().ok()
+            };
+            let Some(uri) = uri else {
+                continue;
+            };
+            let index = indexes
+                .entry(rule_path.clone())
+                .or_insert_with(|| crate::line_index::LineIndex::new(&embedded.json));
+            for range in ranges {
+                let json_range = embedded.rule.range_to_json(range);
+                let p = |offset| {
+                    let lc = index.line_col(&embedded.json, offset, self.encoding);
+                    Position::new(lc.line, lc.col)
+                };
+                let range = Range::new(p(json_range.start()), p(json_range.end()));
+                out.push(Location::new(uri.clone(), range));
+            }
+        }
+        out
+    }
+
     /// Usos do símbolo na posição, em ordem de texto, e as definições dele quando
     /// `include_declaration`.
     pub(crate) fn references(
@@ -175,6 +285,12 @@ impl Context<'_> {
         include_declaration: bool,
     ) -> Vec<Location> {
         let offset = self.offset(position);
+        // Num modelo de relatório, uma variável ou função vale em todas as regras dele.
+        if self.embedding.is_some() {
+            if let Some((name, function)) = self.model_symbol_at(offset) {
+                return self.model_references(&name, function, include_declaration);
+            }
+        }
         let symbols = &self.doc.symbols;
         let Some(mut targets) = symbols.at(offset) else {
             return self.inherited_references(offset, include_declaration);
@@ -256,12 +372,26 @@ impl Context<'_> {
     /// Trecho do nome que pode ser renomeado na posição. `None` quando ali não há nome definido
     /// no arquivo nem numa regra acima no formulário, como uma função do ERP.
     pub(crate) fn prepare_rename(&self, position: Position) -> Option<Range> {
-        // Num modelo de relatório, um nome costuma ser usado em várias regras, e renomear só esta
-        // quebraria o modelo.
-        if self.embedding.is_some() {
-            return None;
-        }
         let offset = self.offset(position);
+        // Renomear uma entrada do relatório mudaria o cadastro dela no modelo, mesmo quando uma
+        // regra também a define com `definir`.
+        if let Some((node, _)) = name_at(&self.doc.tree, offset) {
+            let name = &self.doc.text[self.doc.tree.text_range(node)];
+            if self.doc.inherited.is_entry(name) {
+                return None;
+            }
+        }
+        if let Some(def) = self
+            .doc
+            .symbols
+            .definitions
+            .iter()
+            .find(|d| d.name.contains_inclusive(offset))
+        {
+            if self.doc.inherited.is_entry(&self.doc.text[def.name]) {
+                return None;
+            }
+        }
         let symbols = &self.doc.symbols;
         let local = symbols
             .references
@@ -320,6 +450,12 @@ impl Context<'_> {
             .any(|d| text[d.name].eq_ignore_ascii_case(new_name));
         if taken && !old.eq_ignore_ascii_case(new_name) {
             return Err(format!("Já existe \"{new_name}\" definido neste arquivo."));
+        }
+        // Num modelo de relatório, o nome novo também não pode existir nas outras regras.
+        let in_model = self.doc.inherited.get(new_name).is_some()
+            || self.doc.inherited.variable(new_name).is_some();
+        if self.embedding.is_some() && in_model && !old.eq_ignore_ascii_case(new_name) {
+            return Err(format!("Já existe \"{new_name}\" definido neste modelo."));
         }
         let mut changes: std::collections::HashMap<Uri, Vec<TextEdit>> =
             std::collections::HashMap::new();
@@ -444,10 +580,16 @@ impl Context<'_> {
             let line = self
                 .def_location(def, def.name)
                 .map_or(0, |l| l.range.start.line + 1);
+            let what = match def.entry {
+                Some(crate::report::EntryKind::Entrance) => "Entrada do relatório".to_owned(),
+                Some(crate::report::EntryKind::Control(c)) => {
+                    format!("Controle de {} do relatório", c.label())
+                }
+                None => describe(def.kind).to_owned(),
+            };
             let value = format!(
-                "```lsp\n{}\n```\n{} em {}, linha {line}",
+                "```lsp\n{}\n```\n{what} em {}, linha {line}",
                 def.decl,
-                describe(def.kind),
                 def.path.display()
             );
             (range, value)
@@ -588,6 +730,22 @@ fn enclosing_function_at(tree: &crate::Tree, offset: TextSize) -> Option<NodeId>
         node = child;
     }
     found
+}
+
+/// Se o nó é um nome de uso, fora de campo depois de ponto, e se ele é o nome chamado numa chamada.
+fn name_ref_kind(tree: &crate::Tree, node: NodeId) -> Option<(NodeId, bool)> {
+    if tree.kind(node) != SyntaxKind::NameRef
+        || tree.tokens().kind(tree.token_range(node).start) != SyntaxKind::Ident
+    {
+        return None;
+    }
+    let parent = tree.parent(node)?;
+    let first = tree.children(parent).next() == Some(node);
+    match tree.kind(parent) {
+        SyntaxKind::FieldExpr if !first => None,
+        SyntaxKind::CallExpr if first => Some((node, true)),
+        _ => Some((node, false)),
+    }
 }
 
 /// Nome que contém `offset`, fora de campo depois de ponto, e se ele é o nome chamado numa
