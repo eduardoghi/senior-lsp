@@ -62,6 +62,14 @@ impl Dictionaries {
         })
     }
 
+    /// Tabela pelo dicionário de produção, ou pelo de teste quando produção não tem.
+    pub fn table(&self, name: &str) -> Option<&Table> {
+        [&self.production, &self.test]
+            .into_iter()
+            .flatten()
+            .find_map(|d| d.table(name))
+    }
+
     /// Diz se a tabela existe em algum dos dicionários.
     pub fn has_table(&self, table: &str) -> bool {
         [&self.production, &self.test]

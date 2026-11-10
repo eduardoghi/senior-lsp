@@ -285,6 +285,22 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                  nativo\"."
             ),
         ),
+        CheckKind::CursorFieldNotInSelect => (
+            "SEN055",
+            format!(
+                "O campo {} não está no SELECT do cursor {name} (Erro na variável de registro, \
+                 falta \"campo ou operação não existem\").",
+                &text[check.range]
+            ),
+        ),
+        CheckKind::ReturnedColumnNotInSelect => (
+            "SEN067",
+            format!(
+                "A coluna {} não está no SELECT de {name}. Compila, mas a execução para com \
+                 \"O campo não foi encontrado\".",
+                &text[check.range]
+            ),
+        ),
         CheckKind::FunctionInsideBlock => (
             "SEN062",
             format!(

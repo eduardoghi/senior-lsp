@@ -61,6 +61,11 @@ pub enum CheckKind {
     CursorConstantColumn,
     /// `SQL_UsarSQLSenior2(x, 0)` sem `SQL_UsarAbrangencia(x, 0)`. Compila, e a execução para.
     NativeSqlWithScope,
+    /// `cur.CAMPO` com um campo que não está no SELECT do cursor nem é operação dele.
+    CursorFieldNotInSelect,
+    /// `SQL_Retornar*(obj, "coluna", ...)` com uma coluna que não está no SELECT. Compila, e a
+    /// execução para.
+    ReturnedColumnNotInSelect,
 }
 
 impl CheckKind {
@@ -83,6 +88,7 @@ impl CheckKind {
                 | CheckKind::TooFewArguments
                 | CheckKind::UnknownFunction
                 | CheckKind::CursorConstantColumn
+                | CheckKind::CursorFieldNotInSelect
         )
     }
 }
@@ -108,11 +114,13 @@ pub(crate) fn dictionary_field<'a>(
     inherited: &'a Inherited,
     node: NodeId,
 ) -> Option<crate::dictionary::Found<'a>> {
+    static NO_SQL: std::sync::LazyLock<sql::Sources> = std::sync::LazyLock::new(Default::default);
     let scope = types::Scope {
         symbols,
         text,
         inherited,
         context,
+        sql: &NO_SQL,
     };
     types::table_field(tree, &scope, node).map(|(found, _)| found)
 }
@@ -125,11 +133,13 @@ pub fn validate(
     inherited: &Inherited,
 ) -> Vec<Check> {
     let mut checks = Vec::new();
+    let sources = sql::Sources::build(tree, symbols, text, &inherited.dictionaries);
     let scope = types::Scope {
         symbols,
         text,
         inherited,
         context,
+        sql: &sources,
     };
     let mut native_sql = sql::NativeSql::default();
     let mut stack = vec![tree.root()];
@@ -142,10 +152,12 @@ pub fn validate(
             CallStmt => {
                 unknown_function(tree, symbols, text, context, inherited, node, &mut checks);
                 native_sql.visit(tree, text, node);
+                sources.check_returned_column(tree, text, node, &mut checks);
             }
             FieldCommand => sql::cursor_sql(tree, text, node, &mut checks),
             Literal => lowercase_char(tree, text, node, &mut checks),
             FieldExpr => {
+                sources.check_cursor_field(tree, symbols, text, node, &mut checks);
                 if let Some((found, _)) = types::table_field(tree, &scope, node)
                     && found.only_in_test
                 {
@@ -418,6 +430,34 @@ mod tests {
         );
         // O SQL_DefinirComando é lido na execução, onde constante vale.
         assert!(checks("SQL_DefinirComando(aQ, \"SELECT 1 FROM DUAL\");").is_empty());
+    }
+
+    #[test]
+    fn campo_do_cursor_fora_do_select() {
+        let text = "definir cursor c;\nc.SQL \"SELECT T.A, B AS X FROM T\";\nc.AbrirCursor();\n\
+                    se (c.Achou) { y = c.a; y = c.X; y = c.Nao; c.Proximo(); }\nc.FecharCursor();";
+        assert_eq!(checks(text), [(CursorFieldNotInSelect, "Nao")]);
+        // Com dois SQL, vale o campo de qualquer um.
+        let dois = "definir cursor c;\nc.SQL \"SELECT A FROM T\";\nc.SQL \"SELECT B FROM T\";\n\
+                    y = c.A + c.B;";
+        assert!(checks(dois).is_empty());
+        // SQL numa variável, ou * sem dicionário, deixam o cursor sem conferência.
+        assert!(checks("definir cursor c;\nc.SQL aSql;\ny = c.Z;").is_empty());
+        assert!(checks("definir cursor c;\nc.SQL \"SELECT * FROM T\";\ny = c.Z;").is_empty());
+    }
+
+    #[test]
+    fn coluna_do_sql_retornar_fora_do_select() {
+        let text = "SQL_UsarAbrangencia(aQ, 0);\nSQL_UsarSQLSenior2(aQ, 0);\n\
+                    SQL_DefinirComando(aQ, \"SELECT 123.45 AS num, T.TXT FROM T\");\n\
+                    SQL_RetornarAlfa(aQ, \"num\", a);\nSQL_RetornarAlfa(aQ, \"txt\", a);\n\
+                    SQL_RetornarAlfa(aQ, \"naoexiste\", a);";
+        assert_eq!(checks(text), [(ReturnedColumnNotInSelect, "\"naoexiste\"")]);
+        // Comando montado na execução não é conferido.
+        assert!(
+            checks("SQL_DefinirComando(aQ, \"SELECT A FROM \" + aTab);\nSQL_RetornarAlfa(aQ, \"z\", a);")
+                .is_empty()
+        );
     }
 
     #[test]

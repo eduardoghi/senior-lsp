@@ -130,6 +130,7 @@ Cada diagnóstico tem um código fixo.
 | SEN052 | erro | chamada a uma função que não existe no ERP nem no arquivo |
 | SEN053 | erro | constante num parâmetro `end` |
 | SEN054 | erro | constante entre as colunas do SELECT de um cursor |
+| SEN055 | erro | campo do cursor que não está no SELECT dele |
 | SEN060 | aviso | `e` ou `ou` seguido de `-`, que não grava o valor da atribuição |
 | SEN061 | aviso | comando depois do bloco de uma função, que ainda faz parte dela |
 | SEN062 | aviso | `funcao` com um bloco de outra função ainda aberto |
@@ -137,6 +138,7 @@ Cada diagnóstico tem um código fixo.
 | SEN064 | aviso | apóstrofo com letra minúscula, que o compilador lê em maiúscula |
 | SEN065 | aviso | campo de tabela que só existe no dicionário de teste |
 | SEN066 | aviso | SQL nativo sem `SQL_UsarAbrangencia(x, 0)`, que para na execução |
+| SEN067 | aviso | coluna do `SQL_Retornar*` que não está no SELECT, que para na execução |
 
 ## Dicionário de dados
 

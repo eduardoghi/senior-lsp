@@ -39,6 +39,8 @@ pub(super) struct Scope<'a> {
     pub(super) text: &'a str,
     pub(super) inherited: &'a Inherited,
     pub(super) context: Context,
+    /// Colunas do SQL dos cursores, para o tipo de `cur.CAMPO`.
+    pub(super) sql: &'a super::sql::Sources,
 }
 
 pub(super) fn check(
@@ -302,14 +304,19 @@ fn leaf_type(tree: &Tree, scope: &Scope, node: NodeId) -> Ty {
             _ => Ty::Unknown,
         },
         NameRef => name_type(tree, scope, node),
-        FieldExpr => match table_field(tree, scope, node) {
-            Some((found, _)) => match found.field.ty.var_type() {
+        FieldExpr => {
+            let ty = match table_field(tree, scope, node) {
+                Some((found, _)) => found.field.ty.var_type(),
+                None => scope
+                    .sql
+                    .cursor_field_type(tree, scope.symbols, scope.text, node),
+            };
+            match ty {
                 Some(VarType::Alfa) => Ty::Alfa,
                 Some(_) => Ty::Num,
                 None => Ty::Unknown,
-            },
-            None => Ty::Unknown,
-        },
+            }
+        }
         _ => Ty::Unknown,
     }
 }
@@ -465,6 +472,37 @@ mod tests {
         .into_iter()
         .map(|c| (c.kind, &text[c.range]))
         .collect()
+    }
+
+    #[test]
+    fn campo_de_cursor_pelo_sql_e_pelo_dicionario() {
+        let cursor = |sql: &str, uso: &str| {
+            format!(
+                "definir alfa aTxt; definir numero n; definir cursor c;\nc.SQL \"{sql}\";\n{uso}"
+            )
+        };
+        // Com e sem a tabela na frente, com apelido e pelo *, o tipo vem do dicionário.
+        for sql in [
+            "SELECT E070EMP.CodEmp, E070EMP.NomEmp FROM E070EMP",
+            "SELECT CodEmp, NomEmp FROM E070EMP",
+            "SELECT E.CodEmp, E.NomEmp FROM E070EMP E",
+            "SELECT * FROM E070EMP",
+        ] {
+            let ok = cursor(sql, "aTxt = c.NomEmp; n = c.CodEmp;");
+            assert!(checks_com_dicionario(&ok).is_empty(), "{sql}");
+            let erro = cursor(sql, "aTxt = c.CodEmp; n = c.NomEmp;");
+            assert_eq!(
+                checks_com_dicionario(&erro),
+                [(AlfaAndNumber, "c.CodEmp"), (NumberAndAlfa, "c.NomEmp")],
+                "{sql}"
+            );
+        }
+        // Campo fora do SELECT, mesmo existindo na tabela.
+        let fora = cursor("SELECT CodEmp FROM E070EMP", "aTxt = c.NomEmp;");
+        assert_eq!(
+            checks_com_dicionario(&fora),
+            [(CursorFieldNotInSelect, "NomEmp")]
+        );
     }
 
     #[test]
