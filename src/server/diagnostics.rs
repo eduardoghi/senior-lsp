@@ -270,6 +270,21 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
              função)."
                 .to_owned(),
         ),
+        CheckKind::CursorConstantColumn => (
+            "SEN054",
+            format!(
+                "O SELECT do cursor não aceita a constante {name} como coluna (O campo precisa \
+                 ser informado com a tabela). Coluna sem tabela e * compilam."
+            ),
+        ),
+        CheckKind::NativeSqlWithScope => (
+            "SEN066",
+            format!(
+                "SQL nativo em {name} sem SQL_UsarAbrangencia({name}, 0). Compila, mas a \
+                 execução para com \"Não é suportado o uso de abrangência de usuário com SQL \
+                 nativo\"."
+            ),
+        ),
         CheckKind::FunctionInsideBlock => (
             "SEN062",
             format!(

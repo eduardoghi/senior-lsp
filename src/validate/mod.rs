@@ -11,6 +11,7 @@ use crate::builtins::{self, Context};
 use crate::form::Inherited;
 use crate::symbols::{DefKind, Symbols, VarType};
 
+mod sql;
 mod types;
 use crate::{Element, NodeId, Tree};
 
@@ -56,6 +57,10 @@ pub enum CheckKind {
     /// Campo de tabela que só existe no dicionário de teste. Compila na base de teste e não em
     /// produção, como uma customização ainda não promovida.
     OnlyInTest,
+    /// Constante entre as colunas do SELECT de um cursor, como `cur.SQL "SELECT 1 FROM T"`.
+    CursorConstantColumn,
+    /// `SQL_UsarSQLSenior2(x, 0)` sem `SQL_UsarAbrangencia(x, 0)`. Compila, e a execução para.
+    NativeSqlWithScope,
 }
 
 impl CheckKind {
@@ -77,6 +82,7 @@ impl CheckKind {
                 | CheckKind::TooManyArguments
                 | CheckKind::TooFewArguments
                 | CheckKind::UnknownFunction
+                | CheckKind::CursorConstantColumn
         )
     }
 }
@@ -125,6 +131,7 @@ pub fn validate(
         inherited,
         context,
     };
+    let mut native_sql = sql::NativeSql::default();
     let mut stack = vec![tree.root()];
     while let Some(node) = stack.pop() {
         types::check(tree, &scope, context, node, &mut checks);
@@ -133,8 +140,10 @@ pub fn validate(
             Assign => assignment(tree, node, &mut checks),
             CallExpr => message_text(tree, &scope, node, &mut checks),
             CallStmt => {
-                unknown_function(tree, symbols, text, context, inherited, node, &mut checks)
+                unknown_function(tree, symbols, text, context, inherited, node, &mut checks);
+                native_sql.visit(tree, text, node);
             }
+            FieldCommand => sql::cursor_sql(tree, text, node, &mut checks),
             Literal => lowercase_char(tree, text, node, &mut checks),
             FieldExpr => {
                 if let Some((found, _)) = types::table_field(tree, &scope, node)
@@ -156,6 +165,7 @@ pub fn validate(
         // Em ordem de texto, para os diagnósticos saírem na ordem do arquivo.
         stack[first..].reverse();
     }
+    native_sql.finish(&mut checks);
     checks.extend(
         symbols
             .references
@@ -395,6 +405,31 @@ mod tests {
         .into_iter()
         .map(|c| (c.kind, &text[c.range]))
         .collect()
+    }
+
+    #[test]
+    fn constante_no_select_do_cursor() {
+        assert_eq!(
+            checks("definir cursor c;\nc.SQL \"SELECT 123, T.A FROM T\";"),
+            [(CursorConstantColumn, "\"SELECT 123, T.A FROM T\"")]
+        );
+        assert!(
+            checks("definir cursor c;\nc.SQL \"SELECT T.A, B, * FROM T WHERE A = 1\";").is_empty()
+        );
+        // O SQL_DefinirComando é lido na execução, onde constante vale.
+        assert!(checks("SQL_DefinirComando(aQ, \"SELECT 1 FROM DUAL\");").is_empty());
+    }
+
+    #[test]
+    fn sql_nativo_sem_desligar_a_abrangencia() {
+        assert_eq!(
+            checks("SQL_Criar(aQ);\nSQL_UsarSQLSenior2(aQ, 0);"),
+            [(NativeSqlWithScope, "SQL_UsarSQLSenior2")]
+        );
+        assert!(
+            checks("SQL_UsarSQLSenior2(aq, 0);\nSQL_UsarAbrangencia(AQ, 0);\nSQL_UsarSQLSenior2(aB, 1);")
+                .is_empty()
+        );
     }
 
     #[test]
