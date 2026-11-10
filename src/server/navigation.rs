@@ -286,10 +286,10 @@ impl Context<'_> {
     ) -> Vec<Location> {
         let offset = self.offset(position);
         // Num modelo de relatório, uma variável ou função vale em todas as regras dele.
-        if self.embedding.is_some() {
-            if let Some((name, function)) = self.model_symbol_at(offset) {
-                return self.model_references(&name, function, include_declaration);
-            }
+        if self.embedding.is_some()
+            && let Some((name, function)) = self.model_symbol_at(offset)
+        {
+            return self.model_references(&name, function, include_declaration);
         }
         let symbols = &self.doc.symbols;
         let Some(mut targets) = symbols.at(offset) else {
@@ -319,10 +319,11 @@ impl Context<'_> {
         // Função ou variável deste arquivo num formulário SGI também é usada nas regras seguintes.
         let first = &symbols.definitions[targets[0]];
         let global = !matches!(first.kind, DefKind::Parameter(_) | DefKind::Label);
-        if global && self.doc.context == builtins::Context::Sgi {
-            if let Some(path) = crate::form::path_from_uri(self.uri.as_str()) {
-                out.extend(self.uses_after(&path, &self.doc.text[first.name]));
-            }
+        if global
+            && self.doc.context == builtins::Context::Sgi
+            && let Some(path) = crate::form::path_from_uri(self.uri.as_str())
+        {
+            out.extend(self.uses_after(&path, &self.doc.text[first.name]));
         }
         out
     }
@@ -390,10 +391,9 @@ impl Context<'_> {
             .definitions
             .iter()
             .find(|d| d.name.contains_inclusive(offset))
+            && self.doc.inherited.is_entry(&self.doc.text[def.name])
         {
-            if self.doc.inherited.is_entry(&self.doc.text[def.name]) {
-                return None;
-            }
+            return None;
         }
         let symbols = &self.doc.symbols;
         let local = symbols

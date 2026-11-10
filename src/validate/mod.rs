@@ -137,15 +137,15 @@ pub fn validate(
             }
             Literal => lowercase_char(tree, text, node, &mut checks),
             FieldExpr => {
-                if let Some((found, _)) = types::table_field(tree, &scope, node) {
-                    if found.only_in_test {
-                        checks.push(Check {
-                            kind: CheckKind::OnlyInTest,
-                            range: tree.text_range(node),
-                            name: None,
-                            label: None,
-                        });
-                    }
+                if let Some((found, _)) = types::table_field(tree, &scope, node)
+                    && found.only_in_test
+                {
+                    checks.push(Check {
+                        kind: CheckKind::OnlyInTest,
+                        range: tree.text_range(node),
+                        name: None,
+                        label: None,
+                    });
                 }
             }
             FuncImpl => function(tree, node, &mut checks),

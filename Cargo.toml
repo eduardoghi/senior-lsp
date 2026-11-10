@@ -2,7 +2,7 @@
 name = "senior-lsp"
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.86"
+rust-version = "1.99"
 license = "MIT"
 
 [lib]

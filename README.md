@@ -58,7 +58,7 @@ traz variáveis próprias que o servidor não conhece.
 
 ## Compilar
 
-Precisa de Rust 1.86 ou mais novo.
+Precisa de Rust 1.99 ou mais novo.
 
 ```sh
 cargo build --release

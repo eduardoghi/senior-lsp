@@ -207,15 +207,14 @@ pub(crate) fn percent_decode(text: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' {
-            if let Some(b) = text
+        if bytes[i] == b'%'
+            && let Some(b) = text
                 .get(i + 1..i + 3)
                 .and_then(|h| u8::from_str_radix(h, 16).ok())
-            {
-                out.push(b);
-                i += 3;
-                continue;
-            }
+        {
+            out.push(b);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;

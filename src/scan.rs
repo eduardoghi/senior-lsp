@@ -17,10 +17,10 @@ fn zero_bytes(word: u64) -> u64 {
 /// um deles sempre fica depois de um acerto verdadeiro do mesmo.
 #[inline]
 pub fn find_any<const N: usize>(bytes: &[u8], needles: [u8; N]) -> Option<usize> {
-    let mut chunks = bytes.chunks_exact(8);
+    let (chunks, remainder) = bytes.as_chunks::<8>();
     let mut offset = 0;
-    for chunk in &mut chunks {
-        let word = u64::from_le_bytes(chunk.try_into().unwrap());
+    for chunk in chunks {
+        let word = u64::from_le_bytes(*chunk);
         let mut hits = 0;
         for needle in needles {
             hits |= zero_bytes(word ^ (ONES * u64::from(needle)));
@@ -30,8 +30,7 @@ pub fn find_any<const N: usize>(bytes: &[u8], needles: [u8; N]) -> Option<usize>
         }
         offset += 8;
     }
-    chunks
-        .remainder()
+    remainder
         .iter()
         .position(|b| needles.contains(b))
         .map(|i| offset + i)

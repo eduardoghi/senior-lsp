@@ -482,11 +482,10 @@ impl Scanner<'_> {
             if let Some(piece) = bytes
                 .get(from..to)
                 .and_then(|b| std::str::from_utf8(b).ok())
+                && !piece.is_empty()
             {
-                if !piece.is_empty() {
-                    runs.push((value.len() as u32, from as u32, piece.len() as u32));
-                    value.push_str(piece);
-                }
+                runs.push((value.len() as u32, from as u32, piece.len() as u32));
+                value.push_str(piece);
             }
         };
         while self.pos < self.bytes.len() {

@@ -474,10 +474,10 @@ impl Context {
         let relations = relations.unwrap_or_default();
         for (i, relation) in relations.iter().enumerate() {
             for name in [&relation.from_table, &relation.to_table] {
-                if let Some(t) = tables.iter_mut().find(|t| &t.name == name) {
-                    if t.relations.last() != Some(&i) {
-                        t.relations.push(i);
-                    }
+                if let Some(t) = tables.iter_mut().find(|t| &t.name == name)
+                    && t.relations.last() != Some(&i)
+                {
+                    t.relations.push(i);
                 }
             }
         }
@@ -943,7 +943,9 @@ impl Reader<'_> {
                 let n = self.length()?;
                 let bytes = self.raw(n.saturating_mul(2))?;
                 let units: Vec<u16> = bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| u16::from_le_bytes([c[0], c[1]]))
                     .collect();
                 Ok(String::from_utf16_lossy(&units))
