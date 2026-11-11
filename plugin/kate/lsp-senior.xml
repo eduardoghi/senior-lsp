@@ -84,12 +84,16 @@
                 <DetectChar attribute="Symbol" context="#stay" char="}" endRegion="Bloco"/>
                 <AnyChar attribute="Symbol" context="#stay" String="()[];,=&lt;&gt;+-*/"/>
             </context>
-            <!-- @ ... @ só vale numa linha. -->
+            <!-- @ ... @ só vale numa linha. A diretiva senior-lsp-disable e os códigos SENxxx ganham cor própria. -->
             <context name="LineComment" attribute="Comment" lineEndContext="#pop">
                 <DetectChar attribute="Comment" context="#pop" char="@"/>
+                <RegExpr attribute="Directive" context="#stay" String="\bsenior-lsp-(disable-next-line|disable|enable)\b" insensitive="true"/>
+                <RegExpr attribute="Diagnostic Code" context="#stay" String="\bSEN\d{3}\b" insensitive="true"/>
             </context>
             <context name="BlockComment" attribute="Comment" lineEndContext="#stay">
                 <Detect2Chars attribute="Comment" context="#pop" char="*" char1="/" endRegion="Comment"/>
+                <RegExpr attribute="Directive" context="#stay" String="\bsenior-lsp-(disable-next-line|disable|enable)\b" insensitive="true"/>
+                <RegExpr attribute="Diagnostic Code" context="#stay" String="\bSEN\d{3}\b" insensitive="true"/>
             </context>
             <!-- Barra no fim da linha continua o texto na linha seguinte, como no SQL das regras. -->
             <context name="String" attribute="String" lineEndContext="#pop">
@@ -116,6 +120,8 @@
             <itemData name="Data Type" defStyleNum="dsDataType"/>
             <itemData name="Function" defStyleNum="dsKeyword"/>
             <itemData name="Comment" defStyleNum="dsComment"/>
+            <itemData name="Directive" defStyleNum="dsAnnotation"/>
+            <itemData name="Diagnostic Code" defStyleNum="dsCommentVar"/>
             <itemData name="String" defStyleNum="dsString"/>
             <itemData name="String Char" defStyleNum="dsSpecialChar"/>
             <itemData name="Number" defStyleNum="dsDecVal"/>

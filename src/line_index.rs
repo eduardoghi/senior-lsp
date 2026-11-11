@@ -96,6 +96,19 @@ impl LineIndex {
     pub fn line_count(&self) -> usize {
         self.line_starts.len()
     }
+
+    /// Linha, a partir de zero, que contém `offset`.
+    pub fn line_of(&self, offset: TextSize) -> usize {
+        self.line_starts.partition_point(|&start| start <= offset) - 1
+    }
+
+    /// Posição em bytes do começo da linha, ou o fim do texto para a linha depois da última.
+    pub fn line_start(&self, line: usize, text: &str) -> TextSize {
+        self.line_starts
+            .get(line)
+            .copied()
+            .unwrap_or_else(|| TextSize::of(text))
+    }
 }
 
 #[cfg(test)]
@@ -118,6 +131,18 @@ mod tests {
         assert_eq!(lc(text, 7, Utf16), (3, 0));
         // O \r de um \r\n ainda é da linha de cima.
         assert_eq!(lc(text, 3, Utf16), (1, 1));
+    }
+
+    #[test]
+    fn linha_de_uma_posicao_e_comeco_da_linha() {
+        let text = "a\nbc\r\nd";
+        let index = LineIndex::new(text);
+        assert_eq!(index.line_of(TextSize::new(0)), 0);
+        assert_eq!(index.line_of(TextSize::new(3)), 1);
+        assert_eq!(index.line_of(TextSize::new(7)), 2);
+        assert_eq!(index.line_start(1, text), TextSize::new(2));
+        assert_eq!(index.line_start(2, text), TextSize::new(6));
+        assert_eq!(index.line_start(3, text), TextSize::of(text));
     }
 
     #[test]

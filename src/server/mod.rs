@@ -6,6 +6,7 @@
 
 mod calls;
 mod diagnostics;
+mod directives;
 mod documents;
 mod folding;
 mod highlight;
@@ -760,28 +761,11 @@ impl Server<'_> {
                     };
                     lsp_types::Range::new(p(json_range.start()), p(json_range.end()))
                 };
-                let doc = &rule.doc;
-                all.extend(diagnostics::diagnostics_with(
-                    &doc.text,
-                    &doc.tree,
-                    &doc.symbols,
-                    doc.context,
-                    &doc.inherited,
-                    &to_range,
-                ));
+                all.extend(diagnostics::diagnostics(&rule.doc, Vec::new(), &to_range));
             }
             return Some((all, Some(report.version)));
         }
         let doc = documents.get(uri)?;
-        let mut diagnostics = diagnostics::diagnostics(
-            &doc.text,
-            &doc.tree,
-            &doc.symbols,
-            doc.context,
-            &doc.inherited,
-            &doc.index,
-            self.encoding,
-        );
         // Os parâmetros do web service vêm do Port.json no disco, fora da validação da regra.
         let context = navigation::Context {
             doc,
@@ -789,7 +773,11 @@ impl Server<'_> {
             encoding: self.encoding,
             embedding: None,
         };
-        diagnostics.extend(context.webservice_diagnostics());
+        let mut diagnostics = diagnostics::diagnostics(
+            doc,
+            context.webservice_diagnostics(),
+            &diagnostics::lsp_range(doc, self.encoding),
+        );
         context.add_related(&mut diagnostics);
         Some((diagnostics, Some(doc.version)))
     }

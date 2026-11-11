@@ -10,6 +10,7 @@ O servidor oferece:
 - erros de sintaxe e de tipo, com o texto do compilador entre parênteses para quem já conhece a
   mensagem do ERP
 - avisos de código que compila mas faz outra coisa do que parece
+- [diretivas em comentário](#esconder-diagnósticos) que escondem diagnósticos por código
 - ir para a definição e achar as referências de variáveis, funções, parâmetros e rótulos
 - ir para a implementação, do `definir funcao` ou da chamada para a `funcao`, e da `funcao` de volta
 - hierarquia de chamadas, com quem chama a função (outras funções, o corpo da regra e, numa tela
@@ -301,6 +302,8 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN069 | aviso | membro de web service que não é parâmetro da porta no `Port.json` da exportação, nem um dos implícitos (`Usuario`, `Senha`, `Token`, `ModoExecucao`, `ErroExecucao`) |
 | SEN070 | dica | função definida e nunca chamada, só na regra comum |
 | SEN071 | aviso | instruções depois de `Pare`, `Cancel` ou `VaPara` no mesmo bloco, que nunca executam |
+| SEN072 | aviso | diretiva `senior-lsp-*` mal escrita, como sem código, com código que não existe ou de erro de sintaxe, e `senior-lsp-enable` sem `senior-lsp-disable` antes |
+| SEN073 | aviso | diretiva que não escondeu nenhum diagnóstico do código citado |
 
 O SEN068 e o SEN070 saem como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
 conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da
@@ -311,6 +314,32 @@ O SEN071 cobre da primeira instrução depois do comando até a última do bloco
 o trecho. Um rótulo (`nome:`) no meio do bloco volta a tornar o código alcançável, porque um
 `VaPara` pode chegar nele. Um `Pare`, `Cancel` ou `VaPara` dentro de um `se` só afeta o resto do
 bloco do `se`. O `Continue` e o `Cancelar` ainda não geram o aviso.
+
+## Esconder diagnósticos
+
+Um comentário com uma diretiva esconde os diagnósticos dos códigos citados. Vale nos formatos `@ ... @` e `/* ... */`, em qualquer tipo de regra, inclusive nas que ficam dentro dos JSON dos modelos de relatório e nos arquivos `regras/*.txt`. A diretiva é a primeira palavra do comentário.
+
+```text
+@ senior-lsp-disable-next-line SEN071 @
+Mensagem(Retorna, aMsg);
+
+@ senior-lsp-disable SEN048, SEN061 @
+...
+@ senior-lsp-enable SEN048, SEN061 @
+```
+
+- `senior-lsp-disable-next-line` esconde os diagnósticos que começam na próxima linha com código, sem contar as linhas vazias e as que só têm comentário. Um diagnóstico que ocupa várias linhas é escondido quando começa nela.
+- `senior-lsp-disable` esconde os diagnósticos que começam depois do comentário, até o `senior-lsp-enable` do mesmo código. Sem `enable`, vale até o fim do arquivo. Numa regra dentro do JSON de um modelo, o fim é o da regra.
+- Os códigos são obrigatórios, separados por vírgula ou espaço, e podem estar em maiúscula ou minúscula. Cada código tem o seu `enable`, então `enable SEN048` não religa o `SEN061` de um `disable SEN048, SEN061`.
+- O comentário `@ ... @` tem que fechar na mesma linha. O `/* ... */` pode ocupar várias linhas, e os códigos podem quebrar de linha dentro dele.
+- Os erros de sintaxe, do SEN001 ao SEN028, não se escondem.
+
+Uma diretiva que não serve para nada vira aviso no próprio comentário.
+
+- SEN072 quando a diretiva não tem código, tem um código que não existe ou que não se pode esconder (erro de sintaxe, SEN072 e SEN073), tem um nome desconhecido (`senior-lsp-` seguido de outra palavra) ou quando um `enable` não tem o `disable` do código antes.
+- SEN073 quando a diretiva não escondeu nenhum diagnóstico do código citado, como o `@ts-expect-error` do TypeScript e o `#[expect]` do Rust. Numa lista com vários códigos, só os que não esconderam nada são marcados. Um `disable` de um código que já estava desligado por outro `disable` também sai como SEN073.
+
+O SEN072 e o SEN073 não se escondem por diretiva.
 
 ## Dicionário de dados
 

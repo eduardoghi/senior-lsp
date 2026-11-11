@@ -229,7 +229,7 @@ fn child(dir: &Path, name: &str) -> Option<PathBuf> {
 impl Context<'_> {
     /// Membros de web service que não estão no `Port.json` da porta, como `ws.Campo` ou
     /// `ws.conjunto.Coluna`. Sem a porta na exportação, nada é conferido.
-    pub(crate) fn webservice_diagnostics(&self) -> Vec<lsp_types::Diagnostic> {
+    pub(crate) fn webservice_diagnostics(&self) -> Vec<super::diagnostics::Found> {
         let tree = &self.doc.tree;
         let text = &self.doc.text;
         let mut ports: std::collections::HashMap<String, Option<Port>> =
@@ -304,19 +304,17 @@ impl Context<'_> {
                 .any(|p| p.name.eq_ignore_ascii_case(member_name))
                 || fixed.iter().any(|f| f.eq_ignore_ascii_case(member_name));
             if !exists {
-                diagnostics.push(lsp_types::Diagnostic {
-                    range: self.range(tree.text_range(member)),
-                    severity: Some(lsp_types::DiagnosticSeverity::WARNING),
-                    code: Some(lsp_types::NumberOrString::String("SEN069".to_owned())),
-                    source: Some("senior-lsp".to_owned()),
+                diagnostics.push(super::diagnostics::Found {
+                    range: tree.text_range(member),
+                    code: "SEN069",
+                    severity: lsp_types::DiagnosticSeverity::WARNING,
                     message: format!(
                         "{member_name} não é parâmetro {place} no Port.json da exportação."
                     ),
-                    ..lsp_types::Diagnostic::default()
                 });
             }
         }
-        diagnostics.sort_by_key(|d| (d.range.start.line, d.range.start.character));
+        diagnostics.sort_by_key(|d| d.range.start());
         diagnostics
     }
 }

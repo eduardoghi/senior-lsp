@@ -33,12 +33,35 @@
             "patterns": [
                 {
                     "name": "comment.line.lsp-senior",
-                    "match": "@[^@\\n]*@?"
+                    "begin": "@",
+                    "end": "@|(?=\\n)",
+                    "patterns": [
+                        {
+                            "include": "#diretivas"
+                        }
+                    ]
                 },
                 {
                     "name": "comment.block.lsp-senior",
                     "begin": "/\\*",
-                    "end": "\\*/"
+                    "end": "\\*/",
+                    "patterns": [
+                        {
+                            "include": "#diretivas"
+                        }
+                    ]
+                }
+            ]
+        },
+        "diretivas": {
+            "patterns": [
+                {
+                    "name": "keyword.other.directive.lsp-senior",
+                    "match": "(?i)\\bsenior-lsp-(?:disable-next-line|disable|enable)\\b"
+                },
+                {
+                    "name": "constant.other.diagnostic-code.lsp-senior",
+                    "match": "(?i)\\bSEN\\d{3}\\b"
                 }
             ]
         },

@@ -1963,3 +1963,198 @@ fn busca_de_simbolos_limita_o_resultado() {
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+/// Código, linha inicial e texto do trecho de cada diagnóstico publicado.
+fn found(params: &PublishDiagnosticsParams, text: &str) -> Vec<(String, u32, String)> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    params
+        .diagnostics
+        .iter()
+        .map(|d| {
+            let Some(lsp_types::NumberOrString::String(code)) = &d.code else {
+                unreachable!()
+            };
+            let line = lines[d.range.start.line as usize];
+            let shown = if d.range.start.line == d.range.end.line {
+                line[d.range.start.character as usize..d.range.end.character as usize].to_owned()
+            } else {
+                String::new()
+            };
+            (code.clone(), d.range.start.line, shown)
+        })
+        .collect()
+}
+
+#[test]
+fn diretiva_da_proxima_linha_esconde_o_diagnostico() {
+    let (editor, _) = Editor::start(None);
+    editor.open(RULE, 1, "Pare;\nx = 1;");
+    assert_eq!(codes(&editor.diagnostics()), ["SEN071"]);
+
+    // A diretiva pula a linha vazia e o comentário entre ela e o código.
+    let text = "Pare;\n@ senior-lsp-disable-next-line SEN071 @\n\n/* outro\n   comentário */\nx = 1;\ny = 2;";
+    editor.change(RULE, 2, text);
+    assert!(editor.diagnostics().diagnostics.is_empty());
+
+    // A diretiva de outra linha não esconde.
+    let text = "@ senior-lsp-disable-next-line SEN071 @\nx = 1;\nPare;\nx = 1;";
+    editor.change(RULE, 3, text);
+    let d = editor.diagnostics();
+    assert_eq!(codes(&d), ["SEN071", "SEN073"]);
+    editor.stop();
+}
+
+#[test]
+fn diretiva_de_trecho_com_varios_codigos_e_enable() {
+    let (editor, _) = Editor::start(None);
+    let text = "@ senior-lsp-disable SEN060, sen071 @\nPare;\nx = 2 e -3;\n@ senior-lsp-enable SEN060 @\ny = 2 e -3;";
+    editor.open(RULE, 1, text);
+    // O SEN060 volta depois do enable, e o SEN071 vale até o fim do arquivo.
+    let d = editor.diagnostics();
+    assert_eq!(found(&d, text), [("SEN060".to_owned(), 4, "-3".to_owned())]);
+    editor.stop();
+}
+
+#[test]
+fn diretiva_sem_enable_vale_ate_o_fim_do_arquivo() {
+    let (editor, _) = Editor::start(None);
+    let text = "x = 1;\n@ senior-lsp-disable SEN060 @\ny = 2 e -3;\nz = 2 e -3;";
+    editor.open(RULE, 1, text);
+    assert!(editor.diagnostics().diagnostics.is_empty());
+    editor.stop();
+}
+
+#[test]
+fn diretiva_mal_escrita_e_sem_efeito_viram_aviso() {
+    let (editor, _) = Editor::start(None);
+    let text = "@ senior-lsp-disable SEN999 @\n@ senior-lsp-enable SEN048 @\n@ senior-lsp-disable-next-line @\n@ senior-lsp-disable-next-line SEN071, SEN020 @\n@ senior-lsp-disable-next-line SEN048 @\nx = 1;";
+    editor.open(RULE, 1, text);
+    let d = editor.diagnostics();
+    assert_eq!(
+        found(&d, text),
+        [
+            ("SEN072".to_owned(), 0, "SEN999".to_owned()),
+            ("SEN072".to_owned(), 1, "SEN048".to_owned()),
+            (
+                "SEN072".to_owned(),
+                2,
+                "senior-lsp-disable-next-line".to_owned()
+            ),
+            ("SEN073".to_owned(), 3, "SEN071".to_owned()),
+            ("SEN072".to_owned(), 3, "SEN020".to_owned()),
+            ("SEN073".to_owned(), 4, "SEN048".to_owned()),
+        ]
+    );
+    // Na linha 3 o SEN020 é recusado e o SEN071 vale, mas não há o que esconder. Só os códigos
+    // que não esconderam nada saem como diretiva sem efeito, e o editor os esmaece.
+    let unused = d
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(lsp_types::NumberOrString::String("SEN073".into())));
+    for d in unused {
+        assert_eq!(d.tags, Some(vec![lsp_types::DiagnosticTag::UNNECESSARY]));
+    }
+    editor.stop();
+}
+
+#[test]
+fn comentario_de_bloco_e_aceito_e_o_erro_de_sintaxe_nao_se_esconde() {
+    let (editor, _) = Editor::start(None);
+    let text = "/* senior-lsp-disable-next-line SEN043 */\ndefinir alfa a;\na = 1;\n@ senior-lsp-disable-next-line SEN021 @\nb = ;";
+    editor.open(RULE, 1, text);
+    let d = editor.diagnostics();
+    // O SEN043 está na linha 2, e a diretiva do bloco vale para a 1. A do erro de sintaxe é recusada.
+    assert_eq!(
+        found(&d, text)
+            .into_iter()
+            .map(|(c, l, _)| (c, l))
+            .collect::<Vec<_>>(),
+        [
+            ("SEN021".to_owned(), 4),
+            ("SEN043".to_owned(), 2),
+            ("SEN073".to_owned(), 0),
+            ("SEN072".to_owned(), 3),
+        ]
+    );
+    let text = "definir alfa a;\n/* senior-lsp-disable-next-line\n   SEN043 */\na = 1;";
+    editor.change(RULE, 2, text);
+    assert!(editor.diagnostics().diagnostics.is_empty());
+    editor.stop();
+}
+
+#[test]
+fn diretiva_esconde_o_aviso_do_web_service() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-ws-ignora-{}", std::process::id()));
+    let porta = base.join("Web Services/interno/com.empresa.vendas/Consultar");
+    std::fs::create_dir_all(&porta).unwrap();
+    std::fs::write(
+        porta.join("Port.json"),
+        "{\"params\":[{\"name\":\"CodEmp\",\"kind\":\"pkIn\",\"type\":\"ptInteger\"}]}",
+    )
+    .unwrap();
+    let regra = base.join("regras/R1.LSP/Rule.txt");
+    std::fs::create_dir_all(regra.parent().unwrap()).unwrap();
+    let regra_uri = crate::form::uri_from_path(&regra);
+
+    let (editor, _) = Editor::start(None);
+    let text = "Definir interno.com.empresa.vendas.Consultar ws;\n\
+                ws.CodRep = 2;\n\
+                @ senior-lsp-disable-next-line SEN069 @\n\
+                ws.CodOutro = 2;\n\
+                ws.CodEmp = 2;";
+    editor.open(&regra_uri, 1, text);
+    let d = editor.diagnostics();
+    assert_eq!(
+        found(&d, text),
+        [("SEN069".to_owned(), 1, "CodRep".to_owned())]
+    );
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn diretiva_em_modelo_de_relatorio_e_em_regra_separada() {
+    let base =
+        std::env::temp_dir().join(format!("senior-lsp-ignora-modelo-{}", std::process::id()));
+    let model = base.join("Modelos/M1.GER");
+    let regras = model.join("regras");
+    std::fs::create_dir_all(&regras).unwrap();
+    let header = r#"{ "children": [ { "rule": { "prop_name": "SOnPrint", "lines": [
+  "Definir Alfa aTxt;",
+  "@ senior-lsp-disable-next-line SEN052 @",
+  "Inexistente(1);",
+  "Outra(2);"
+] } } ] }"#;
+    let header_path = model.join("Cabecalho.json");
+    std::fs::write(&header_path, header).unwrap();
+    let uri = crate::form::uri_from_path(&header_path);
+    let separada = regras.join("Rodape.Campo.SOnPrint.txt");
+    let texto = "@ senior-lsp-disable-next-line SEN052 @\r\nInexistente(1);\r\nOutra(2);\r\n";
+    std::fs::write(&separada, texto).unwrap();
+    let separada_uri = crate::form::uri_from_path(&separada);
+    std::fs::write(
+        model.join("Rodape.json"),
+        r#"{ "children": [ { "name": "Campo", "rule": { "prop_name": "SOnPrint", "lines": "regras/Rodape.Campo.SOnPrint.txt" } } ] }"#,
+    )
+    .unwrap();
+
+    let (editor, _) = Editor::start(None);
+    editor.open(&uri, 1, header);
+    // A linha da diretiva e a do código, no JSON, não contam: só a segunda chamada aparece.
+    let d = editor.diagnostics();
+    let lines: Vec<_> = d
+        .diagnostics
+        .iter()
+        .map(|d| (d.code.clone().unwrap(), d.range.start.line))
+        .collect();
+    assert_eq!(
+        lines,
+        [(lsp_types::NumberOrString::String("SEN052".into()), 4)]
+    );
+    editor.open(&separada_uri, 1, texto);
+    let d = editor.diagnostics();
+    assert_eq!(codes(&d), ["SEN052"]);
+    assert_eq!(d.diagnostics[0].range.start.line, 2);
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}

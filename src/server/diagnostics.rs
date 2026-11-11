@@ -9,37 +9,62 @@
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 use text_size::TextRange;
 
-use crate::builtins::Context;
-use crate::form::Inherited;
+use super::directives;
+use super::documents::Document;
 use crate::line_index::{ColumnEncoding, LineIndex};
-use crate::symbols::Symbols;
 use crate::validate::{Check, CheckKind, validate};
 use crate::{LexErrorKind, ParseErrorKind, SyntaxKind, Tree};
 
-pub(crate) fn diagnostics(
-    text: &str,
-    tree: &Tree,
-    symbols: &Symbols,
-    context: Context,
-    inherited: &Inherited,
-    index: &LineIndex,
-    encoding: ColumnEncoding,
-) -> Vec<Diagnostic> {
-    diagnostics_with(text, tree, symbols, context, inherited, &|range| {
-        to_lsp(text, index, encoding, range)
-    })
+/// Diagnóstico ainda na posição do texto da regra, antes das diretivas e da conversão para linha e coluna.
+pub(crate) struct Found {
+    pub(crate) range: TextRange,
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+    pub(crate) severity: DiagnosticSeverity,
 }
 
-/// Diagnósticos com a conversão de posição dada, para regras cujo texto não é o arquivo, como as
-/// de dentro de um modelo de relatório.
-pub(crate) fn diagnostics_with(
-    text: &str,
-    tree: &Tree,
-    symbols: &Symbols,
-    context: Context,
-    inherited: &Inherited,
+/// Diagnósticos da regra para o editor. `extra` traz os que o servidor acrescenta fora do
+/// validador, como o do web service. Depois de todos prontos, as diretivas do arquivo escondem os
+/// que citam, menos os erros de sintaxe.
+///
+/// `to_range` converte a posição no texto da regra, que num modelo de relatório não é a do arquivo.
+pub(crate) fn diagnostics(
+    doc: &Document,
+    extra: Vec<Found>,
     to_range: &dyn Fn(TextRange) -> Range,
 ) -> Vec<Diagnostic> {
+    let mut found = found(doc);
+    found.extend(extra);
+    let (mut found, notices) = directives::filter(&doc.text, &doc.tree, &doc.index, found, |f| {
+        (f.code, f.range.start())
+    });
+    found.extend(notices.into_iter().map(|n| Found {
+        range: n.range,
+        code: n.code,
+        message: n.message,
+        severity: DiagnosticSeverity::WARNING,
+    }));
+    found
+        .into_iter()
+        .map(|f| {
+            Diagnostic {
+                range: to_range(f.range),
+                severity: Some(f.severity),
+                code: Some(NumberOrString::String(f.code.to_owned())),
+                source: Some("senior-lsp".to_owned()),
+                message: f.message,
+                // O editor esmaece o nome sem uso, o código que não executa e a diretiva sem efeito.
+                tags: matches!(f.code, "SEN068" | "SEN070" | "SEN071" | "SEN073")
+                    .then(|| vec![lsp_types::DiagnosticTag::UNNECESSARY]),
+                ..Diagnostic::default()
+            }
+        })
+        .collect()
+}
+
+/// Erros do lexer e do parser e avisos do validador, antes das diretivas.
+fn found(doc: &Document) -> Vec<Found> {
+    let (text, tree) = (doc.text.as_str(), &doc.tree);
     let lex = tree
         .tokens()
         .errors()
@@ -52,7 +77,7 @@ pub(crate) fn diagnostics_with(
     let errors = lex
         .chain(parse)
         .map(|(range, described)| (range, described, DiagnosticSeverity::ERROR));
-    let checks = validate(tree, symbols, text, context, inherited)
+    let checks = validate(tree, &doc.symbols, text, doc.context, &doc.inherited)
         .into_iter()
         .map(|c| {
             let severity = if c.kind.is_error() {
@@ -66,18 +91,21 @@ pub(crate) fn diagnostics_with(
         });
     errors
         .chain(checks)
-        .map(|(range, (code, message), severity)| Diagnostic {
-            range: to_range(range),
-            severity: Some(severity),
-            code: Some(NumberOrString::String(code.to_owned())),
-            source: Some("senior-lsp".to_owned()),
+        .map(|(range, (code, message), severity)| Found {
+            range,
+            code,
             message,
-            // O editor esmaece o nome sem uso e o código que não executa.
-            tags: matches!(code, "SEN068" | "SEN070" | "SEN071")
-                .then(|| vec![lsp_types::DiagnosticTag::UNNECESSARY]),
-            ..Diagnostic::default()
+            severity,
         })
         .collect()
+}
+
+/// Conversão da posição no texto do documento para linha e coluna do editor.
+pub(crate) fn lsp_range(
+    doc: &Document,
+    encoding: ColumnEncoding,
+) -> impl Fn(TextRange) -> Range + '_ {
+    move |range| to_lsp(&doc.text, &doc.index, encoding, range)
 }
 
 fn to_lsp(text: &str, index: &LineIndex, encoding: ColumnEncoding, range: TextRange) -> Range {
@@ -346,33 +374,37 @@ fn expected(token: SyntaxKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtins::Context;
+    use crate::server::documents::Documents;
 
     /// Código, início e fim de cada diagnóstico, com linha e coluna.
     type Resumo = (String, (u32, u32), (u32, u32));
 
+    /// Diagnósticos de uma regra comum, sem configuração.
+    fn run(text: &str, encoding: ColumnEncoding) -> Vec<Diagnostic> {
+        let uri: lsp_types::Uri = "file:///regras/R.LSP/Rule.txt".parse().unwrap();
+        let mut documents = Documents::default();
+        documents
+            .set(uri.clone(), text.to_owned(), 1, Context::Rule)
+            .unwrap();
+        let doc = documents.get(&uri).unwrap();
+        diagnostics(doc, Vec::new(), &lsp_range(doc, encoding))
+    }
+
     fn diags(text: &str, encoding: ColumnEncoding) -> Vec<Resumo> {
-        let tree = crate::parse(text).unwrap();
-        diagnostics(
-            text,
-            &tree,
-            &Symbols::build(&tree, text),
-            Context::Rule,
-            &Inherited::default(),
-            &LineIndex::new(text),
-            encoding,
-        )
-        .into_iter()
-        .map(|d| {
-            let NumberOrString::String(code) = d.code.unwrap() else {
-                unreachable!()
-            };
-            (
-                code,
-                (d.range.start.line, d.range.start.character),
-                (d.range.end.line, d.range.end.character),
-            )
-        })
-        .collect()
+        run(text, encoding)
+            .into_iter()
+            .map(|d| {
+                let NumberOrString::String(code) = d.code.unwrap() else {
+                    unreachable!()
+                };
+                (
+                    code,
+                    (d.range.start.line, d.range.start.character),
+                    (d.range.end.line, d.range.end.character),
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -409,18 +441,8 @@ mod tests {
     #[test]
     fn aviso_do_validador_e_warning() {
         let text = "definir funcao f();\nfuncao f(); { x = 1; }\nx = 2 e -3;";
-        let tree = crate::parse(text).unwrap();
-        let d = diagnostics(
-            text,
-            &tree,
-            &Symbols::build(&tree, text),
-            Context::Rule,
-            &Inherited::default(),
-            &LineIndex::new(text),
-            ColumnEncoding::Utf16,
-        );
         // A função do exemplo não é chamada, e a dica disso não é o assunto aqui.
-        let d: Vec<_> = d
+        let d: Vec<_> = run(text, ColumnEncoding::Utf16)
             .into_iter()
             .filter(|d| d.code != Some(NumberOrString::String("SEN070".to_owned())))
             .collect();
@@ -448,16 +470,7 @@ mod tests {
     #[test]
     fn codigo_inalcancavel_e_aviso_esmaecido() {
         let text = "Pare;\nx = 1;\ny = 2;\nCancel(1);";
-        let tree = crate::parse(text).unwrap();
-        let d = diagnostics(
-            text,
-            &tree,
-            &Symbols::build(&tree, text),
-            Context::Rule,
-            &Inherited::default(),
-            &LineIndex::new(text),
-            ColumnEncoding::Utf16,
-        );
+        let d = run(text, ColumnEncoding::Utf16);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].code, Some(NumberOrString::String("SEN071".to_owned())));
         assert_eq!(d[0].severity, Some(DiagnosticSeverity::WARNING));
@@ -476,17 +489,16 @@ mod tests {
 
     #[test]
     fn mensagem_do_caractere_invalido_mostra_o_caractere() {
-        let text = "x = 1; #";
-        let tree = crate::parse(text).unwrap();
-        let d = diagnostics(
-            text,
-            &tree,
-            &Symbols::build(&tree, text),
-            Context::Rule,
-            &Inherited::default(),
-            &LineIndex::new(text),
-            ColumnEncoding::Utf16,
-        );
+        let d = run("x = 1; #", ColumnEncoding::Utf16);
         assert_eq!(d[0].message, "O caractere \"#\" é inválido.");
+    }
+
+    #[test]
+    fn diretiva_esconde_o_aviso_mas_nao_o_erro_de_sintaxe() {
+        let text = "Pare;\n@ senior-lsp-disable-next-line SEN071, SEN020 @\nx = 1;\ny = ;";
+        let d = diags(text, ColumnEncoding::Utf16);
+        let codes: Vec<_> = d.iter().map(|(c, _, _)| c.as_str()).collect();
+        // O SEN071 some, o SEN020 da diretiva é recusado e o erro de sintaxe da linha 3 continua.
+        assert_eq!(codes, ["SEN021", "SEN072"]);
     }
 }
