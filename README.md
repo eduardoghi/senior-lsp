@@ -232,6 +232,12 @@ Cada diagnóstico tem um código fixo.
 | SEN065 | aviso | campo de tabela que só existe no dicionário de teste |
 | SEN066 | aviso | SQL nativo sem `SQL_UsarAbrangencia(x, 0)`, que para na execução |
 | SEN067 | aviso | coluna do `SQL_Retornar*` que não está no SELECT, que para na execução |
+| SEN068 | dica | variável, cursor, lista, tabela ou web service definido e nunca usado, só na regra comum |
+
+O SEN068 sai como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
+conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da
+variável num texto para uma função preencher. Na tela e no relatório o aviso não sai, porque as
+regras seguintes podem usar o nome.
 
 ## Dicionário de dados
 

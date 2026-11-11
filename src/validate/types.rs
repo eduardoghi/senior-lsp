@@ -408,8 +408,12 @@ fn is_relational(tree: &Tree, node: NodeId) -> bool {
 mod tests {
     use crate::validate::CheckKind::{self, *};
 
+    /// Sem o aviso de definição sem uso, porque os exemplos definem mais do que usam.
     fn checks(text: &str) -> Vec<(CheckKind, &str)> {
         super::super::tests::checks(text)
+            .into_iter()
+            .filter(|(kind, _)| *kind != CheckKind::Unused)
+            .collect()
     }
 
     const DEFS: &str = "definir alfa aTxt; definir alfa aB; definir numero n; definir data d;\n";

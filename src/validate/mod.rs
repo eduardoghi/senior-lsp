@@ -66,6 +66,9 @@ pub enum CheckKind {
     /// `SQL_Retornar*(obj, "coluna", ...)` com uma coluna que não está no SELECT. Compila, e a
     /// execução para.
     ReturnedColumnNotInSelect,
+    /// Variável, cursor, lista, tabela ou web service definido e nunca usado. Só na regra comum,
+    /// porque na tela e no relatório as regras seguintes podem usar o nome.
+    Unused,
 }
 
 impl CheckKind {
@@ -178,6 +181,9 @@ pub fn validate(
         stack[first..].reverse();
     }
     native_sql.finish(&mut checks);
+    if context == Context::Rule {
+        unused(tree, symbols, text, &mut checks);
+    }
     checks.extend(
         symbols
             .references
@@ -192,6 +198,51 @@ pub fn validate(
     );
     checks.sort_by_key(|c| c.range.start());
     checks
+}
+
+/// Definições sem nenhum uso. Um nome citado dentro de um texto conta como usado, porque o SQL de
+/// um cursor ou do `ExecSql` lê a variável como `:nome`, e há regras que passam o nome da
+/// variável num texto para uma função preencher.
+fn unused(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
+    let mut used = vec![false; symbols.definitions.len()];
+    for target in symbols.references.iter().flat_map(|r| &r.targets) {
+        used[*target] = true;
+    }
+    let tokens = tree.tokens();
+    let mut in_sql = std::collections::HashSet::new();
+    for i in 0..tokens.len() {
+        if tokens.kind(i) == SyntaxKind::String {
+            for name in words(tokens.text(i, text)) {
+                in_sql.insert(name.to_ascii_uppercase());
+            }
+        }
+    }
+    for (i, def) in symbols.definitions.iter().enumerate() {
+        let kind = matches!(
+            def.kind,
+            DefKind::Variable(_)
+                | DefKind::Cursor
+                | DefKind::List
+                | DefKind::Table
+                | DefKind::WebService
+        );
+        let name = &text[def.name];
+        if kind && !used[i] && !in_sql.contains(&name.to_ascii_uppercase()) {
+            checks.push(Check {
+                kind: CheckKind::Unused,
+                range: def.name,
+                name: None,
+                label: Some(name.to_owned()),
+            });
+        }
+    }
+}
+
+/// Palavras de um texto que podem ser nome, como `nCodEmp` em `"WHERE CODEMP = :nCodEmp"`.
+fn words(literal: &str) -> impl Iterator<Item = &str> {
+    literal
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|w| w.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'))
 }
 
 fn binary(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
@@ -403,6 +454,39 @@ fn operator(tree: &Tree, node: NodeId) -> Option<SyntaxKind> {
 mod tests {
     use super::*;
     use CheckKind::*;
+
+    #[test]
+    fn definicao_sem_uso() {
+        let text = "definir alfa aUsada; definir alfa aSobra; definir numero nNoSql;\n\
+                    definir cursor cSobra; definir lista lSobra; definir numero nAtribuida;\n\
+                    definir numero nPeloNome;\n\
+                    aUsada = \"SELECT 1 FROM T WHERE A = :nNoSql\"; nAtribuida = 1;\n\
+                    aUsada = \"nPeloNome\";\n\
+                    Mensagem(Retorna, aUsada);";
+        let unused: Vec<_> = checks(text)
+            .into_iter()
+            .filter(|(kind, _)| *kind == CheckKind::Unused)
+            .map(|(_, name)| name)
+            .collect();
+        assert_eq!(unused, ["aSobra", "cSobra", "lSobra"]);
+    }
+
+    #[test]
+    fn sem_aviso_de_sem_uso_fora_da_regra_comum() {
+        let text = "definir alfa aSobra;";
+        let tree = crate::parse(text).unwrap();
+        let symbols = Symbols::build(&tree, text);
+        for context in [Context::Sgi, Context::Report] {
+            let checks = validate(&tree, &symbols, text, context, &Inherited::default());
+            assert!(checks.is_empty(), "{context:?}");
+        }
+    }
+
+    #[test]
+    fn palavras_de_um_texto() {
+        let found: Vec<_> = words("\"A = :nCodEmp AND B=:x_1, 9x\"").collect();
+        assert_eq!(found, ["A", "nCodEmp", "AND", "B", "x_1"]);
+    }
 
     pub(super) fn checks(text: &str) -> Vec<(CheckKind, &str)> {
         let tree = crate::parse(text).unwrap();

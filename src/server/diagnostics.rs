@@ -57,6 +57,8 @@ pub(crate) fn diagnostics_with(
         .map(|c| {
             let severity = if c.kind.is_error() {
                 DiagnosticSeverity::ERROR
+            } else if c.kind == CheckKind::Unused {
+                DiagnosticSeverity::HINT
             } else {
                 DiagnosticSeverity::WARNING
             };
@@ -70,6 +72,8 @@ pub(crate) fn diagnostics_with(
             code: Some(NumberOrString::String(code.to_owned())),
             source: Some("senior-lsp".to_owned()),
             message,
+            // O editor esmaece o nome sem uso, como faz com código morto.
+            tags: (code == "SEN068").then(|| vec![lsp_types::DiagnosticTag::UNNECESSARY]),
             ..Diagnostic::default()
         })
         .collect()
@@ -300,6 +304,10 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                  \"O campo não foi encontrado\".",
                 &text[check.range]
             ),
+        ),
+        CheckKind::Unused => (
+            "SEN068",
+            format!("{name} é definido e nunca usado neste arquivo."),
         ),
         CheckKind::FunctionInsideBlock => (
             "SEN062",
