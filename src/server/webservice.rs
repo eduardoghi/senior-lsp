@@ -16,6 +16,58 @@ use crate::SyntaxKind;
 impl Context<'_> {
     /// Regra da porta do web service cujo nome qualificado está em `offset`.
     pub(crate) fn webservice_definition(&self, offset: TextSize) -> Option<Location> {
+        let name = self.qualified_at(offset)?;
+        let rule = child(&self.port_dir(name)?, "Rule.txt")?;
+        let uri: Uri = crate::form::uri_from_path(&rule).parse().ok()?;
+        Some(Location::new(
+            uri,
+            Range::new(Position::new(0, 0), Position::new(0, 0)),
+        ))
+    }
+
+    /// Descrição e parâmetros da porta, no hover do nome qualificado.
+    pub(crate) fn webservice_hover(&self, offset: TextSize) -> Option<lsp_types::Hover> {
+        let name = self.qualified_at(offset)?;
+        let port = read_port(&self.port_dir(name)?)?;
+        let mut value = format!("```lsp\n{name}\n```\n");
+        if !port.description.is_empty() {
+            value.push_str(&port.description);
+            value.push_str("\n\n");
+        }
+        for kind in ["entrada", "entrada e saída", "saída"] {
+            let list: Vec<String> = port
+                .params
+                .iter()
+                .filter(|p| p.kind == kind)
+                .map(|p| {
+                    let help = if p.help.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {}", p.help)
+                    };
+                    format!("- `{}` ({}{help})", p.name, p.ty)
+                })
+                .collect();
+            if !list.is_empty() {
+                let title = match kind {
+                    "entrada" => "Entrada",
+                    "saída" => "Saída",
+                    _ => "Entrada e saída",
+                };
+                value.push_str(&format!("{title}\n\n{}\n\n", list.join("\n")));
+            }
+        }
+        Some(lsp_types::Hover {
+            contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                kind: lsp_types::MarkupKind::Markdown,
+                value: value.trim_end().to_owned(),
+            }),
+            range: None,
+        })
+    }
+
+    /// Nome qualificado de um `definir` de web service em `offset`.
+    fn qualified_at(&self, offset: TextSize) -> Option<&str> {
         let tree = &self.doc.tree;
         let mut node = tree.root();
         let qualified = loop {
@@ -30,8 +82,14 @@ impl Context<'_> {
         if tree.parent(qualified).map(|p| tree.kind(p)) != Some(SyntaxKind::WsDef) {
             return None;
         }
-        let name = &self.doc.text[tree.text_range(qualified)];
-        let parts: Vec<&str> = name.split('.').map(str::trim).collect();
+        Some(&self.doc.text[tree.text_range(qualified)])
+    }
+}
+
+impl Context<'_> {
+    /// Pasta da porta na exportação, pelo nome qualificado `provedor.serviço.porta`.
+    pub(crate) fn port_dir(&self, qualified: &str) -> Option<PathBuf> {
+        let parts: Vec<&str> = qualified.split('.').map(str::trim).collect();
         let [provider, service @ .., port] = parts.as_slice() else {
             return None;
         };
@@ -40,17 +98,93 @@ impl Context<'_> {
         }
         let service = service.join(".");
         let file = crate::form::path_from_uri(self.uri.as_str())?;
-        let rule = file.ancestors().skip(1).find_map(|dir| {
+        file.ancestors().skip(1).find_map(|dir| {
             let root = child(dir, "Web Services")?;
-            let port_dir = child(&child(&child(&root, provider)?, &service)?, port)?;
-            child(&port_dir, "Rule.txt")
-        })?;
-        let uri: Uri = crate::form::uri_from_path(&rule).parse().ok()?;
-        Some(Location::new(
-            uri,
-            Range::new(Position::new(0, 0), Position::new(0, 0)),
-        ))
+            child(&child(&child(&root, provider)?, &service)?, port)
+        })
     }
+
+    /// Nome qualificado do web service definido como `variable` na regra.
+    pub(crate) fn webservice_name(&self, variable: &str) -> Option<&str> {
+        let tree = &self.doc.tree;
+        let text = &self.doc.text;
+        let def = self.doc.symbols.definitions.iter().find(|d| {
+            d.kind == crate::symbols::DefKind::WebService
+                && text[d.name].eq_ignore_ascii_case(variable)
+        })?;
+        let qualified = tree
+            .children(def.node)
+            .find(|&c| tree.kind(c) == SyntaxKind::QualifiedName)?;
+        Some(&text[tree.text_range(qualified)])
+    }
+
+    /// Parâmetros da porta do web service definido como `variable`.
+    pub(crate) fn webservice_params(&self, variable: &str) -> Option<Port> {
+        read_port(&self.port_dir(self.webservice_name(variable)?)?)
+    }
+}
+
+/// Porta lida do `Port.json` da exportação.
+pub(crate) struct Port {
+    pub(crate) description: String,
+    pub(crate) params: Vec<PortParam>,
+}
+
+/// Parâmetro da porta. Um conjunto (`ptComplexSet`) tem colunas, que também são parâmetros.
+pub(crate) struct PortParam {
+    pub(crate) name: String,
+    /// `entrada`, `saída` ou `entrada e saída`.
+    pub(crate) kind: &'static str,
+    /// O tipo como a regra vê, ou `conjunto`.
+    pub(crate) ty: &'static str,
+    pub(crate) help: String,
+    pub(crate) columns: Vec<PortParam>,
+}
+
+impl PortParam {
+    pub(crate) fn is_set(&self) -> bool {
+        self.ty == "conjunto"
+    }
+}
+
+/// Lê o `Port.json`, que o gerenciador grava em cp1252.
+fn read_port(dir: &Path) -> Option<Port> {
+    let bytes = std::fs::read(child(dir, "Port.json")?).ok()?;
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(t) => t.to_owned(),
+        Err(_) => crate::cp1252::decode(&bytes)?,
+    };
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let description = json["description"].as_str().unwrap_or_default().to_owned();
+    Some(Port {
+        description,
+        params: params(&json["params"]),
+    })
+}
+
+fn params(list: &serde_json::Value) -> Vec<PortParam> {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            Some(PortParam {
+                name: p["name"].as_str()?.to_owned(),
+                kind: match p["kind"].as_str() {
+                    Some("pkIn") => "entrada",
+                    Some("pkOut") => "saída",
+                    _ => "entrada e saída",
+                },
+                ty: match p["type"].as_str() {
+                    Some("ptString" | "ptBlob") => "alfa",
+                    Some("ptDateTime") => "data",
+                    Some("ptComplexSet") => "conjunto",
+                    _ => "numero",
+                },
+                help: p["help"].as_str().unwrap_or_default().to_owned(),
+                columns: params(&p["columns"]),
+            })
+        })
+        .collect()
 }
 
 /// Entrada da pasta com o nome, sem diferenciar maiúsculas, como o ERP e o Windows.

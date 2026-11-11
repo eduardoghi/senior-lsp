@@ -14,6 +14,10 @@ O servidor oferece:
 - ir para a implementação, do `definir funcao` ou da chamada para a `funcao`, e da `funcao` de volta
 - ir da definição de um web service interno (`Definir interno.com.x.Servico.Porta ws;`) para o
   `Rule.txt` da porta, na pasta `Web Services` da mesma exportação
+- os parâmetros da porta do web service, lidos do `Port.json` da exportação, no hover do nome
+  qualificado e no completar depois de `ws.`, junto com `Executar` e `ErroExecucao`. Depois de
+  `ws.conjunto.` ou `ws.conjunto[i].` vêm as colunas do conjunto e `QtdLinhas`, `LinhaAtual`,
+  `CriarLinha` e `ExcluirLinha`
 - destacar as outras ocorrências do nome que está no cursor
 - contagem de referências em cima de cada `funcao`, que abre a lista das chamadas no VS Code. Nos
   outros editores, o clique chama o comando `senior-lsp.mostrarReferencias`, que o editor precisa

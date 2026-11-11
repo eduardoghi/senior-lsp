@@ -50,17 +50,16 @@ impl Context<'_> {
     /// Itens depois de `base.`, que começam com `prefix`. Vazio quando a base não é um nome
     /// simples ou não é cursor, lista, tabela da regra nem tabela do dicionário.
     pub(crate) fn member_completion(&self, head: &str, prefix: &str) -> Vec<CompletionItem> {
-        let Some(head) = head.trim_end().strip_suffix('.') else {
+        let Some((before, base)) = last_name(head) else {
             return Vec::new();
         };
-        let head = head.trim_end();
-        let start = head
-            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .map_or(0, |i| i + 1);
-        let base = &head[start..];
-        // `a.b.` e nomes qualificados de web service ficam de fora.
-        if base.is_empty() || head[..start].ends_with('.') {
-            return Vec::new();
+        // `ws.conjunto.`, com ou sem índice, dá as colunas do conjunto da porta.
+        // O ponto de cima tem que estar colado no nome. `cur.` numa linha e `lst.` na seguinte são
+        // dois acessos separados.
+        if let Some((_, parent)) = before.ends_with('.').then(|| last_name(before)).flatten() {
+            let mut items = self.set_members(parent, base);
+            retain_prefix(&mut items, prefix);
+            return items;
         }
 
         let text = &self.doc.text;
@@ -97,6 +96,19 @@ impl Context<'_> {
                     items.push(field(&name, ty, "campo da tabela"));
                 }
             }
+            Some((DefKind::WebService, _)) => {
+                operations(&mut items, &["Executar"], "executa a porta");
+                items.push(field(
+                    "ErroExecucao",
+                    Some(VarType::Alfa),
+                    "mensagem de erro da execução",
+                ));
+                if let Some(port) = self.webservice_params(base) {
+                    for param in &port.params {
+                        items.push(port_field(param));
+                    }
+                }
+            }
             Some(_) => {}
             None => {
                 if let Some(table) = self.doc.inherited.dictionaries.table(base) {
@@ -106,14 +118,73 @@ impl Context<'_> {
                 }
             }
         }
-        items.retain(|i| {
-            i.label.len() >= prefix.len()
-                && i.label.is_char_boundary(prefix.len())
-                && i.label[..prefix.len()].eq_ignore_ascii_case(prefix)
-        });
-        let mut seen = std::collections::HashSet::new();
-        items.retain(|i| seen.insert(i.label.to_uppercase()));
+        retain_prefix(&mut items, prefix);
         items
+    }
+
+    /// Colunas e operações do conjunto `set` da porta do web service `ws`.
+    fn set_members(&self, ws: &str, set: &str) -> Vec<CompletionItem> {
+        let Some(port) = self.webservice_params(ws) else {
+            return Vec::new();
+        };
+        let Some(param) = port
+            .params
+            .iter()
+            .find(|p| p.is_set() && p.name.eq_ignore_ascii_case(set))
+        else {
+            return Vec::new();
+        };
+        let mut items = Vec::new();
+        operations(
+            &mut items,
+            &["QtdLinhas", "LinhaAtual", "CriarLinha", "ExcluirLinha"],
+            "operação do conjunto",
+        );
+        for column in &param.columns {
+            items.push(port_field(column));
+        }
+        items
+    }
+}
+
+/// Último nome antes do ponto no fim de `head`, sem o índice (`ws.tb[i].` dá `tb`), e o texto
+/// antes dele, que termina em ponto quando há outro nível.
+fn last_name(head: &str) -> Option<(&str, &str)> {
+    let head = head.trim_end().strip_suffix('.')?.trim_end();
+    let head = match head.strip_suffix(']') {
+        Some(h) => h[..h.rfind('[')?].trim_end(),
+        None => head,
+    };
+    let start = head
+        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .map_or(0, |i| i + 1);
+    let base = &head[start..];
+    (!base.is_empty()).then_some((&head[..start], base))
+}
+
+fn retain_prefix(items: &mut Vec<CompletionItem>, prefix: &str) {
+    items.retain(|i| {
+        i.label.len() >= prefix.len()
+            && i.label.is_char_boundary(prefix.len())
+            && i.label[..prefix.len()].eq_ignore_ascii_case(prefix)
+    });
+    let mut seen = std::collections::HashSet::new();
+    items.retain(|i| seen.insert(i.label.to_uppercase()));
+}
+
+/// Parâmetro da porta, como `numero, entrada. Empresa`.
+fn port_field(param: &super::webservice::PortParam) -> CompletionItem {
+    let mut detail = format!("{}, {}", param.ty, param.kind);
+    if !param.help.is_empty() {
+        detail.push_str(". ");
+        detail.push_str(&param.help);
+    }
+    CompletionItem {
+        label: param.name.clone(),
+        kind: Some(CompletionItemKind::FIELD),
+        detail: Some(detail),
+        sort_text: Some(format!("0{}", param.name.to_lowercase())),
+        ..CompletionItem::default()
     }
 }
 

@@ -1343,3 +1343,69 @@ fn ir_para_a_implementacao_e_de_volta() {
     assert_eq!(go(1, 16), [4], "sem chamada nenhuma");
     editor.stop();
 }
+
+#[test]
+fn parametros_da_porta_do_web_service() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-ws-port-{}", std::process::id()));
+    let porta = base.join("Web Services/interno/com.empresa.vendas/Consultar");
+    std::fs::create_dir_all(&porta).unwrap();
+    std::fs::write(porta.join("Rule.txt"), "").unwrap();
+    // O gerenciador grava o Port.json em cp1252, por isso o "ç" vai como um byte só.
+    let json = b"{\"name\":\"Consultar\",\"description\":\"Consulta pre\xe7o\",\"params\":[\
+        {\"name\":\"CodEmp\",\"kind\":\"pkIn\",\"type\":\"ptInteger\",\"help\":\"Empresa\"},\
+        {\"name\":\"tbItens\",\"kind\":\"pkOut\",\"type\":\"ptComplexSet\",\"columns\":[\
+          {\"name\":\"CodPro\",\"kind\":\"pkOut\",\"type\":\"ptString\"}]},\
+        {\"name\":\"PerCom\",\"kind\":\"pkOut\",\"type\":\"ptDouble\"}]}";
+    std::fs::write(porta.join("Port.json"), json).unwrap();
+    let regra = base.join("regras/R1.LSP/Rule.txt");
+    std::fs::create_dir_all(regra.parent().unwrap()).unwrap();
+    let regra_uri = crate::form::uri_from_path(&regra);
+
+    let (mut editor, _) = Editor::start(None);
+    let text = "Definir interno.com.empresa.vendas.Consultar ws;\nws.\nws.tbItens[1].\n";
+    editor.open(&regra_uri, 1, text);
+    editor.diagnostics();
+    let mut labels = |line: u32, character: u32| -> Vec<String> {
+        let response = editor.request(
+            lsp_types::request::Completion::METHOD,
+            json!({ "textDocument": { "uri": regra_uri },
+                    "position": { "line": line, "character": character } }),
+        );
+        let items: Vec<lsp_types::CompletionItem> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        let mut l: Vec<String> = items.into_iter().map(|i| i.label).collect();
+        l.sort();
+        l
+    };
+    assert_eq!(
+        labels(1, 3),
+        ["CodEmp", "ErroExecucao", "Executar", "PerCom", "tbItens"]
+    );
+    assert_eq!(
+        labels(2, 14),
+        [
+            "CodPro",
+            "CriarLinha",
+            "ExcluirLinha",
+            "LinhaAtual",
+            "QtdLinhas"
+        ]
+    );
+    let hover = editor.request(
+        HoverRequest::METHOD,
+        json!({ "textDocument": { "uri": regra_uri },
+                "position": { "line": 0, "character": 20 } }),
+    );
+    let value = hover.response_result.unwrap()["contents"]["value"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(value.contains("Consulta preço"), "{value}");
+    assert!(
+        value.contains("Entrada\n\n- `CodEmp` (numero, Empresa)"),
+        "{value}"
+    );
+    assert!(value.contains("- `tbItens` (conjunto)"), "{value}");
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}

@@ -333,6 +333,9 @@ impl Context<'_> {
 
     pub(crate) fn hover(&self, position: Position) -> Option<Hover> {
         let offset = self.offset(position);
+        if let Some(hover) = self.webservice_hover(offset) {
+            return Some(hover);
+        }
         if let Some(hover) = self.dictionary_hover(offset) {
             return Some(hover);
         }
