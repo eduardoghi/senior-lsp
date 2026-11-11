@@ -163,7 +163,9 @@ pub fn validate(
                 native_sql.visit(tree, text, node);
                 sources.check_returned_column(tree, text, node, &mut checks);
             }
-            FieldCommand => sql::cursor_sql(tree, text, node, &mut checks),
+            FieldCommand => {
+                sql::cursor_sql(tree, text, node, &inherited.dictionaries, &mut checks);
+            }
             Literal => lowercase_char(tree, text, node, &mut checks),
             FieldExpr => {
                 sources.check_cursor_field(tree, symbols, text, node, &mut checks);

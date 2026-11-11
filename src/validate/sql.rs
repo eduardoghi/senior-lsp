@@ -10,7 +10,10 @@
 //! é literal, que o `sqlparser` não lê ou que tem coluna sem nome conhecido deixa o cursor ou o
 //! objeto sem conferência.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::sync::Arc;
 
 use sqlparser::ast::{
     Expr, Select, SelectItem, SetExpr, Statement, TableFactor, TableWithJoins, UnaryOperator,
@@ -59,10 +62,7 @@ pub(super) fn string_value(literal: &str) -> String {
 /// precisa ser informado com a tabela`, e um decimal como `123.45` é lido como tabela e campo
 /// (`RowSet inexistente: 123`). Coluna sem tabela e `*` compilam. SQL que o `sqlparser` não lê
 /// não é conferido.
-pub(super) fn constant_columns(sql: &str) -> Vec<String> {
-    let Ok(statements) = Parser::parse_sql(&OracleDialect {}, sql) else {
-        return Vec::new();
-    };
+fn constants_of(statements: &[Statement]) -> Vec<String> {
     let mut constants = Vec::new();
     for statement in statements {
         let Statement::Query(query) = statement else {
@@ -82,6 +82,78 @@ pub(super) fn constant_columns(sql: &str) -> Vec<String> {
         }
     }
     constants
+}
+
+/// O que as conferências tiram de um SQL, depois de lê-lo uma única vez.
+pub(super) struct Analysis {
+    /// As colunas constantes do SELECT, que o cursor recusa.
+    pub(super) constants: Vec<String>,
+    /// As colunas que o SELECT devolve, ou `None` quando não dá para saber todas.
+    pub(super) columns: Option<Vec<Column>>,
+}
+
+/// Quanto SQL, em bytes de texto, o cache guarda antes de recomeçar vazio.
+const CACHE_LIMIT: usize = 512 * 1024;
+
+type SharedDictionary = Option<Arc<crate::tbs::Dictionary>>;
+
+/// Resultado das conferências de cada SQL já lido, para a próxima análise da regra não ler de novo
+/// o que não mudou. Cada tecla analisa o arquivo inteiro, e quase todo SQL fica igual de uma
+/// análise para a outra. As colunas dependem do dicionário de dados, então o cache vale para os
+/// dicionários que guarda e recomeça vazio quando eles trocam. Guardar os `Arc` também impede que
+/// o endereço de um dicionário solto seja reaproveitado por outro.
+#[derive(Default)]
+struct Cache {
+    dictionaries: (SharedDictionary, SharedDictionary),
+    entries: HashMap<String, Rc<Analysis>>,
+    bytes: usize,
+}
+
+thread_local! {
+    static CACHE: RefCell<Cache> = RefCell::default();
+}
+
+fn same_dictionary(a: &SharedDictionary, b: &SharedDictionary) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
+/// Resultado das conferências do SQL, calculado na primeira vez e lembrado depois.
+pub(super) fn analysis(sql: &str, dictionaries: &Dictionaries) -> Rc<Analysis> {
+    let cached = CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let (production, test) = &cache.dictionaries;
+        if !same_dictionary(production, &dictionaries.production)
+            || !same_dictionary(test, &dictionaries.test)
+        {
+            *cache = Cache {
+                dictionaries: (dictionaries.production.clone(), dictionaries.test.clone()),
+                ..Cache::default()
+            };
+        }
+        cache.entries.get(sql).cloned()
+    });
+    if let Some(hit) = cached {
+        return hit;
+    }
+    let statements = Parser::parse_sql(&OracleDialect {}, sql).ok();
+    let analysis = Rc::new(Analysis {
+        constants: statements.as_deref().map(constants_of).unwrap_or_default(),
+        columns: statements.and_then(|s| select_columns(&s, dictionaries)),
+    });
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.bytes + sql.len() > CACHE_LIMIT {
+            cache.entries.clear();
+            cache.bytes = 0;
+        }
+        cache.bytes += sql.len();
+        cache.entries.insert(sql.to_owned(), analysis.clone());
+    });
+    analysis
 }
 
 fn is_constant(expr: &Expr) -> bool {
@@ -105,9 +177,8 @@ pub(super) struct Column {
 
 /// Colunas do SELECT, ou `None` quando não dá para saber todas. O nome é o apelido, ou o do campo
 /// com ou sem a tabela. `*` e `T.*` precisam do dicionário para virar campos.
-pub(super) fn select_columns(sql: &str, dictionaries: &Dictionaries) -> Option<Vec<Column>> {
-    let statements = Parser::parse_sql(&OracleDialect {}, sql).ok()?;
-    let [Statement::Query(query)] = statements.as_slice() else {
+fn select_columns(statements: &[Statement], dictionaries: &Dictionaries) -> Option<Vec<Column>> {
+    let [Statement::Query(query)] = statements else {
         return None;
     };
     let SetExpr::Select(select) = query.body.as_ref() else {
@@ -320,11 +391,12 @@ impl Sources {
                     if !field.eq_ignore_ascii_case("SQL") {
                         continue;
                     }
-                    let columns = tree
+                    let analysis = tree
                         .children(node)
                         .nth(1)
                         .and_then(|value| string_literal(tree, value))
-                        .and_then(|lit| select_columns(&string_value(&text[lit]), dictionaries));
+                        .map(|lit| analysis(&string_value(&text[lit]), dictionaries));
+                    let columns = analysis.as_ref().and_then(|a| a.columns.as_deref());
                     merge(&mut sources.cursors, cursor, columns);
                 }
                 SyntaxKind::CallStmt => {
@@ -340,8 +412,9 @@ impl Sources {
                     if tree.kind(*object) != SyntaxKind::NameRef {
                         continue;
                     }
-                    let columns = string_literal(tree, *command)
-                        .and_then(|lit| select_columns(&string_value(&text[lit]), dictionaries));
+                    let analysis = string_literal(tree, *command)
+                        .map(|lit| analysis(&string_value(&text[lit]), dictionaries));
+                    let columns = analysis.as_ref().and_then(|a| a.columns.as_deref());
                     let object = text[tree.text_range(*object)].to_uppercase();
                     merge(&mut sources.objects, object, columns);
                 }
@@ -441,11 +514,7 @@ impl Sources {
 
 /// Junta as colunas de mais um SQL às que o cursor ou objeto já tem. Um SQL desconhecido deixa
 /// tudo desconhecido, e o mesmo nome com tipos diferentes fica sem tipo.
-fn merge(
-    map: &mut HashMap<String, Option<Vec<Column>>>,
-    key: String,
-    columns: Option<Vec<Column>>,
-) {
+fn merge(map: &mut HashMap<String, Option<Vec<Column>>>, key: String, columns: Option<&[Column]>) {
     let entry = map.entry(key).or_insert_with(|| Some(Vec::new()));
     let (Some(known), Some(columns)) = (entry.as_mut(), columns) else {
         *entry = None;
@@ -455,7 +524,7 @@ fn merge(
         match known.iter_mut().find(|c| c.name == column.name) {
             Some(existing) if existing.ty != column.ty => existing.ty = None,
             Some(_) => {}
-            None => known.push(column),
+            None => known.push(column.clone()),
         }
     }
 }
@@ -514,7 +583,13 @@ fn string_literal(tree: &Tree, node: NodeId) -> Option<text_size::TextRange> {
 }
 
 /// `cur.SQL "SELECT ..."` com uma constante entre as colunas.
-pub(super) fn cursor_sql(tree: &Tree, text: &str, node: NodeId, checks: &mut Vec<Check>) {
+pub(super) fn cursor_sql(
+    tree: &Tree,
+    text: &str,
+    node: NodeId,
+    dictionaries: &Dictionaries,
+    checks: &mut Vec<Check>,
+) {
     let Some(field) = tree.children(node).next() else {
         return;
     };
@@ -532,12 +607,12 @@ pub(super) fn cursor_sql(tree: &Tree, text: &str, node: NodeId, checks: &mut Vec
     else {
         return;
     };
-    for constant in constant_columns(&string_value(&text[range])) {
+    for constant in &analysis(&string_value(&text[range]), dictionaries).constants {
         checks.push(Check {
             kind: CheckKind::CursorConstantColumn,
             range,
             name: None,
-            label: Some(constant),
+            label: Some(constant.clone()),
         });
     }
 }
@@ -610,6 +685,45 @@ mod tests {
             "SELECT A   FROM T"
         );
         assert_eq!(string_value("\"x \\\r\nyz\""), "x  yz");
+    }
+
+    fn constant_columns(sql: &str) -> Vec<String> {
+        analysis(sql, &Dictionaries::default()).constants.clone()
+    }
+
+    #[test]
+    fn o_cache_vale_para_os_dicionarios_que_guarda() {
+        use crate::tbs::{Dictionary, Field, FieldKind, FieldType, Table};
+        let with_field = |name: &str| {
+            let field = Field {
+                name: name.to_owned(),
+                ty: FieldType {
+                    kind: FieldKind::Number,
+                    ..FieldType::default()
+                },
+                ..Field::default()
+            };
+            Dictionaries {
+                production: Some(Arc::new(Dictionary {
+                    tables: vec![Table {
+                        name: "T".to_owned(),
+                        fields: vec![field],
+                        ..Table::default()
+                    }],
+                    ..Dictionary::default()
+                })),
+                test: None,
+            }
+        };
+        let (one, other) = (with_field("A"), with_field("B"));
+        let names = |a: Rc<Analysis>| -> Vec<String> {
+            a.columns.iter().flatten().map(|c| c.name.clone()).collect()
+        };
+        let sql = "SELECT * FROM T";
+        assert_eq!(names(analysis(sql, &one)), ["A"]);
+        assert_eq!(names(analysis(sql, &one)), ["A"]);
+        assert_eq!(names(analysis(sql, &other)), ["B"]);
+        assert!(names(analysis(sql, &Dictionaries::default())).is_empty());
     }
 
     #[test]
