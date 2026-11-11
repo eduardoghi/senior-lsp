@@ -15,6 +15,7 @@ mod sql;
 mod types;
 use crate::{Element, NodeId, Tree};
 pub use sql::cursor_columns;
+pub(crate) use sql::cursor_sql_literals;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckKind {

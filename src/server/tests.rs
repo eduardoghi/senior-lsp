@@ -390,6 +390,42 @@ fn variavel_dentro_do_sql_vai_para_o_definir() {
 }
 
 #[test]
+fn coluna_do_cursor_vai_para_o_select() {
+    let text = "definir cursor cur;\n\
+                cur.SQL \"SELECT E070EMP.CodEmp, \\\n\
+                \x20 NOMEMP AS nome, COUNT(*) \\\n\
+                \x20 FROM E070EMP\";\n\
+                cur.AbrirCursor();\n\
+                x = cur.codemp;\n\
+                y = cur.Nome;\n\
+                z = cur.Inexistente;";
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let at = |line: u32, character: u32| json!({ "textDocument": { "uri": RULE }, "position": { "line": line, "character": character } });
+    let range = |v: &serde_json::Value| {
+        let r = &v.as_array().unwrap()[0]["range"];
+        [
+            r["start"]["line"].as_u64().unwrap(),
+            r["start"]["character"].as_u64().unwrap(),
+            r["end"]["character"].as_u64().unwrap(),
+        ]
+    };
+
+    // O campo de `TABELA.CAMPO` e o apelido, e a caixa não importa.
+    let r = editor.request(GotoDefinition::METHOD, at(5, 11));
+    assert_eq!(range(&r.response_result.unwrap()), [1, 24, 30]);
+    let r = editor.request(GotoDefinition::METHOD, at(6, 10));
+    assert_eq!(range(&r.response_result.unwrap()), [2, 12, 16]);
+    // Coluna fora da lista do SELECT não leva a lugar nenhum, e o cursor continua indo para o `definir`.
+    let r = editor.request(GotoDefinition::METHOD, at(7, 12));
+    assert!(r.response_result.unwrap().as_array().unwrap().is_empty());
+    let r = editor.request(GotoDefinition::METHOD, at(5, 5));
+    assert_eq!(range(&r.response_result.unwrap())[0], 0);
+    editor.stop();
+}
+
+#[test]
 fn pedido_em_documento_fechado_responde_null() {
     let (mut editor, _) = Editor::start(None);
     let params =

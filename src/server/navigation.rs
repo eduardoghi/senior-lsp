@@ -85,6 +85,10 @@ impl Context<'_> {
         }
         let symbols = &self.doc.symbols;
         let Some(targets) = symbols.at(offset) else {
+            let column = self.cursor_column_definition(offset);
+            if !column.is_empty() {
+                return column;
+            }
             return self.inherited_definition(offset).into_iter().collect();
         };
         targets
@@ -981,7 +985,7 @@ fn field_links(found: &crate::dictionary::Found) -> Vec<String> {
 }
 
 /// `FieldExpr` mais interno que contém `offset`, com a base e o campo como nomes simples.
-fn field_expr_at(tree: &crate::Tree, offset: TextSize) -> Option<NodeId> {
+pub(super) fn field_expr_at(tree: &crate::Tree, offset: TextSize) -> Option<NodeId> {
     let mut node = tree.root();
     let mut found = None;
     while let Some(child) = tree

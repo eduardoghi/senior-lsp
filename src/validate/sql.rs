@@ -255,6 +255,40 @@ pub fn cursor_columns(
     Some(columns.iter().map(|c| (c.name.clone(), c.ty)).collect())
 }
 
+/// Campo de `cur.CAMPO` e os literais de todos os `cur.SQL "..."` do mesmo cursor no arquivo, para
+/// achar a coluna no texto do SELECT. `None` quando o nó não é o campo de um cursor definido.
+pub(crate) fn cursor_sql_literals<'t>(
+    tree: &Tree,
+    symbols: &Symbols,
+    text: &'t str,
+    node: NodeId,
+) -> Option<(&'t str, Vec<text_size::TextRange>)> {
+    let (cursor, field) = cursor_field(tree, symbols, text, node)?;
+    let mut literals = Vec::new();
+    let mut stack = vec![tree.root()];
+    while let Some(node) = stack.pop() {
+        stack.extend(tree.children(node));
+        if tree.kind(node) != SyntaxKind::FieldCommand {
+            continue;
+        }
+        let is_sql = tree
+            .children(node)
+            .next()
+            .and_then(|f| cursor_field(tree, symbols, text, f))
+            .is_some_and(|(c, f)| c == cursor && f.eq_ignore_ascii_case("SQL"));
+        if let Some(literal) = tree
+            .children(node)
+            .nth(1)
+            .filter(|_| is_sql)
+            .and_then(|value| string_literal(tree, value))
+        {
+            literals.push(literal);
+        }
+    }
+    literals.sort_by_key(|r| r.start());
+    Some((field, literals))
+}
+
 /// Colunas de cada cursor e de cada objeto de `SQL_DefinirComando`, pelo nome em maiúsculas.
 /// `None` é cursor ou objeto sem conferência.
 #[derive(Default)]

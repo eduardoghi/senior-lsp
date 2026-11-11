@@ -39,6 +39,8 @@ O servidor oferece:
   `definir` e mostra a linha dele no hover, e `TABELA.Campo` e o nome de uma tabela mostram a
   descrição do dicionário de dados. O hover de tabela só vale em textos que começam com `SELECT`,
   `UPDATE`, `INSERT`, `DELETE` ou `WITH`, e o apelido da tabela no `FROM` não é resolvido
+- ir de `cur.COLUNA` para a coluna na lista do `SELECT` do `cur.SQL`, pelo nome do campo ou pelo
+  apelido (`AS`). Com `SELECT *` ou uma expressão sem apelido, não há para onde ir
 - as funções que o ERP já traz, como `IntParaAlfa`, com a declaração no hover e a conferência dos
   parâmetros na chamada
 - ajuda de assinatura, com a declaração da função e o parâmetro atual enquanto se digita a chamada

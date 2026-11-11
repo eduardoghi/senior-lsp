@@ -1,4 +1,5 @@
-//! Hover e ir para a definição dentro do texto do SQL.
+//! Hover e ir para a definição dentro do texto do SQL, e ir de `cur.COLUNA` para a coluna no
+//! SELECT do cursor.
 //!
 //! O SQL das regras é um literal de texto. Dentro dele o `:nome` é uma variável da regra, e o
 //! `TABELA.Campo` e o nome de tabela são do dicionário de dados. Os nomes são procurados no texto
@@ -10,7 +11,7 @@ use std::ops::Range;
 use lsp_types::{Hover, Location};
 use text_size::{TextRange, TextSize};
 
-use super::navigation::{Context, enclosing_function_at};
+use super::navigation::{Context, enclosing_function_at, field_expr_at};
 use crate::SyntaxKind;
 
 /// Primeiras palavras de um texto que é SQL.
@@ -85,6 +86,34 @@ impl Context<'_> {
         }
         let def = self.doc.inherited.variable(name)?;
         Some(self.def_location(def, def.name).into_iter().collect())
+    }
+
+    /// Ir de `cur.COLUNA` para a coluna na lista do SELECT de cada `cur.SQL "..."` do cursor.
+    pub(super) fn cursor_column_definition(&self, offset: TextSize) -> Vec<Location> {
+        let tree = &self.doc.tree;
+        let text = &self.doc.text;
+        let Some(node) = field_expr_at(tree, offset) else {
+            return Vec::new();
+        };
+        if !tree
+            .children(node)
+            .nth(1)
+            .is_some_and(|name| tree.text_range(name).contains_inclusive(offset))
+        {
+            return Vec::new();
+        }
+        let Some((column, literals)) =
+            crate::validate::cursor_sql_literals(tree, &self.doc.symbols, text, node)
+        else {
+            return Vec::new();
+        };
+        literals
+            .into_iter()
+            .filter_map(|literal| {
+                let found = select_column(&mask(&text[literal]), column)?;
+                Some(self.location(shift(literal, &found)))
+            })
+            .collect()
     }
 
     /// Definições do `:nome` usado em `offset`, vistas da `funcao` em volta.
@@ -254,6 +283,55 @@ fn starts_statement(mask: &[u8]) -> bool {
         .any(|s| word.eq_ignore_ascii_case(s.as_bytes()))
 }
 
+/// Trecho do nome da coluna `column` na lista do primeiro SELECT. O nome de cada item é a última
+/// palavra dele, que é o apelido quando há (com ou sem `AS`) e o campo em `TABELA.CAMPO`. Item
+/// que termina em `)` ou em `*` não tem nome.
+fn select_column(mask: &[u8], column: &str) -> Option<Range<usize>> {
+    let mut depth = 0_i32;
+    let mut list = false;
+    let mut item_start = 0;
+    let mut items = Vec::new();
+    let mut i = 0;
+    while i < mask.len() {
+        match mask[i] {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b',' if list && depth == 0 => {
+                items.push(item_start..i);
+                item_start = i + 1;
+            }
+            b if is_word(b) && (i == 0 || !is_word(mask[i - 1])) => {
+                let end = i + mask[i..].iter().take_while(|&&b| is_word(b)).count();
+                let word = &mask[i..end];
+                if depth == 0 && !list && word.eq_ignore_ascii_case(b"select") {
+                    list = true;
+                    item_start = end;
+                } else if depth == 0 && list && word.eq_ignore_ascii_case(b"from") {
+                    items.push(item_start..i);
+                    list = false;
+                    break;
+                }
+                i = end;
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if list {
+        items.push(item_start..mask.len());
+    }
+    items.into_iter().find_map(|item| {
+        let end = item.start + mask[item.clone()].trim_ascii_end().len();
+        let start = mask[item.start..end]
+            .iter()
+            .rposition(|&b| !is_word(b))
+            .map_or(item.start, |p| item.start + p + 1);
+        (start < end && mask[start..end].eq_ignore_ascii_case(column.as_bytes()))
+            .then_some(start..end)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +379,34 @@ mod tests {
         )));
         assert!(!starts_statement(&mask("\"Selecionar a empresa\"")));
         assert!(!starts_statement(&mask("\"E070EMP\"")));
+    }
+
+    #[test]
+    fn coluna_na_lista_do_select() {
+        let find =
+            |sql: &str, column: &str| select_column(&mask(sql), column).map(|r| sql[r].to_owned());
+        let sql = "\"SELECT e000anx.numanx, \\\n  e000anx.seqanx AS seq, COUNT(*), \
+                   NVL(x, 0) total, a.* \\\n FROM e000anx WHERE numanx = 1\"";
+        assert_eq!(find(sql, "NUMANX").as_deref(), Some("numanx"));
+        assert_eq!(find(sql, "Seq").as_deref(), Some("seq"));
+        assert_eq!(find(sql, "TOTAL").as_deref(), Some("total"));
+        // O campo de origem do apelido, a expressão e o que está fora da lista não valem.
+        assert_eq!(find(sql, "SEQANX"), None);
+        assert_eq!(find(sql, "X"), None);
+        assert_eq!(find(sql, "NUMANX2"), None);
+        // O WHERE não entra, nem a subconsulta no meio da lista.
+        let sql = "\"SELECT (SELECT MAX(z) FROM t) AS m, k FROM u WHERE k = 1\"";
+        assert_eq!(find(sql, "M").as_deref(), Some("m"));
+        assert_eq!(find(sql, "Z"), None);
+        assert_eq!(find(sql, "K").as_deref(), Some("k"));
+    }
+
+    #[test]
+    fn coluna_do_select_com_tabela_e_antes_do_from() {
+        let sql = "\"SELECT DISTINCT E070EMP.NomEmp FROM E070EMP\"";
+        let found = select_column(&mask(sql), "nomemp").unwrap();
+        assert_eq!(&sql[found], "NomEmp");
+        assert_eq!(select_column(&mask("\"SELECT * FROM T\""), "A"), None);
     }
 
     /// Documento de teste com o dicionário `E070EMP` (`CodEmp` e `NomEmp`, chave em `CodEmp`).
