@@ -870,3 +870,65 @@ fn ajuda_de_assinatura_mostra_o_parametro_atual() {
     assert_eq!(help(&mut editor, 0, 0), json!(null));
     editor.stop();
 }
+
+#[test]
+fn destaque_semantico_classifica_cada_nome() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "Definir Funcao Soma(Numero A);\n\
+                definir alfa aTxt;\n\
+                definir cursor cur;\n\
+                IntParaAlfa(DatSis, aTxt);\n\
+                Soma(1);\n\
+                aTxt = cur.NomEmp;\n\
+                funcao Soma(Numero A); { A = 1; }";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let response = editor.request(
+        lsp_types::request::SemanticTokensFullRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE } }),
+    );
+    let data: Vec<u32> =
+        serde_json::from_value(response.response_result.unwrap()["data"].clone()).unwrap();
+    // Volta do formato relativo para (texto, tipo, modificadores).
+    let tipos = [
+        "function",
+        "variable",
+        "parameter",
+        "property",
+        "struct",
+        "class",
+    ];
+    let lines: Vec<&str> = text.lines().collect();
+    let (mut line, mut col) = (0usize, 0usize);
+    let mut found = Vec::new();
+    for t in data.chunks(5) {
+        if t[0] > 0 {
+            line += t[0] as usize;
+            col = t[1] as usize;
+        } else {
+            col += t[1] as usize;
+        }
+        let name = &lines[line][col..col + t[2] as usize];
+        found.push(format!("{name} {} {}", tipos[t[3] as usize], t[4]));
+    }
+    assert_eq!(
+        found,
+        [
+            "Soma function 1",
+            "A parameter 1",
+            "aTxt variable 1",
+            "cur variable 1",
+            "IntParaAlfa function 2",
+            "DatSis variable 2",
+            "aTxt variable 0",
+            "Soma function 0",
+            "aTxt variable 0",
+            "cur variable 0",
+            "NomEmp property 0",
+            "Soma function 1",
+            "A parameter 1",
+            "A parameter 0",
+        ]
+    );
+    editor.stop();
+}

@@ -16,6 +16,8 @@ O servidor oferece:
 - as funções que o ERP já traz, como `IntParaAlfa`, com a declaração no hover e a conferência dos
   parâmetros na chamada
 - ajuda de assinatura, com a declaração da função e o parâmetro atual enquanto se digita a chamada
+- destaque semântico, que colore cada nome pelo que ele é: função do ERP ou da regra, variável,
+  parâmetro, campo depois do ponto, tabela e web service
 - a lista de variáveis e funções do arquivo
 - completar nomes num editor, com as variáveis e funções do arquivo, as do ERP e as palavras da
   linguagem

@@ -8,6 +8,7 @@ mod diagnostics;
 mod documents;
 mod kind;
 mod navigation;
+mod semantic;
 mod signature;
 
 use std::collections::HashMap;
@@ -21,7 +22,7 @@ use lsp_types::notification::{
 use lsp_types::request::{
     CodeActionRequest, Completion, DocumentSymbolRequest, ExecuteCommand, GotoDefinition,
     HoverRequest, PrepareRenameRequest, References, Rename, Request as LspRequest,
-    SignatureHelpRequest,
+    SemanticTokensFullRequest, SignatureHelpRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -60,6 +61,16 @@ pub fn run(connection: Connection) -> Result<()> {
                 prepare_provider: Some(true),
                 work_done_progress_options: Default::default(),
             })),
+            semantic_tokens_provider: Some(
+                lsp_types::SemanticTokensServerCapabilities::SemanticTokensOptions(
+                    lsp_types::SemanticTokensOptions {
+                        legend: semantic::legend(),
+                        full: Some(lsp_types::SemanticTokensFullOptions::Bool(true)),
+                        range: None,
+                        work_done_progress_options: Default::default(),
+                    },
+                ),
+            ),
             signature_help_provider: Some(lsp_types::SignatureHelpOptions {
                 trigger_characters: Some(vec!["(".to_owned(), ",".to_owned()]),
                 retrigger_characters: None,
@@ -246,6 +257,16 @@ impl Server<'_> {
                         serde_json::to_value(DocumentSymbolResponse::Nested(c.document_symbols()))
                     }),
                 }
+            }
+            SemanticTokensFullRequest::METHOD => {
+                let params: lsp_types::SemanticTokensParams =
+                    serde_json::from_value(request.params)?;
+                // Nos JSON de modelo de relatório não há destaque, porque a posição de cada regra
+                // dentro do JSON mudaria a conta das colunas.
+                Ok(match self.documents.get(&params.text_document.uri) {
+                    Some(doc) => serde_json::to_value(semantic::tokens(doc, self.encoding))?,
+                    None => serde_json::Value::Null,
+                })
             }
             SignatureHelpRequest::METHOD => {
                 let params: lsp_types::SignatureHelpParams =
