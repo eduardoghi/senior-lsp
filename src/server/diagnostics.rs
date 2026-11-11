@@ -13,7 +13,7 @@ use super::config::Levels;
 use super::directives;
 use super::documents::Document;
 use crate::line_index::{ColumnEncoding, LineIndex};
-use crate::validate::{Check, CheckKind, validate};
+use crate::validate::{Check, CheckKind};
 use crate::{LexErrorKind, ParseErrorKind, SyntaxKind, Tree};
 
 /// Diagnóstico ainda na posição do texto da regra, antes das diretivas, da configuração e da
@@ -39,9 +39,14 @@ pub(crate) fn diagnostics(
 ) -> Vec<Diagnostic> {
     let mut found = found(doc);
     found.extend(extra);
-    let (mut found, notices) = directives::filter(&doc.text, &doc.tree, &doc.index, found, |f| {
-        (f.code, f.range.start())
-    });
+    let (mut found, notices) = directives::filter(
+        &doc.text,
+        &doc.index,
+        doc.scan(),
+        || doc.code_lines(),
+        found,
+        |f| (f.code, f.range.start()),
+    );
     found.extend(notices.into_iter().map(|n| Found {
         range: n.range,
         code: n.code,
@@ -85,18 +90,16 @@ fn found(doc: &Document) -> Vec<Found> {
     let errors = lex
         .chain(parse)
         .map(|(range, described)| (range, described, DiagnosticSeverity::ERROR));
-    let checks = validate(tree, &doc.symbols, text, doc.context, &doc.inherited)
-        .into_iter()
-        .map(|c| {
-            let severity = if c.kind.is_error() {
-                DiagnosticSeverity::ERROR
-            } else if matches!(c.kind, CheckKind::Unused | CheckKind::UnusedFunction) {
-                DiagnosticSeverity::HINT
-            } else {
-                DiagnosticSeverity::WARNING
-            };
-            (c.range, describe_check(&c, tree, text), severity)
-        });
+    let checks = doc.checks().iter().map(|c| {
+        let severity = if c.kind.is_error() {
+            DiagnosticSeverity::ERROR
+        } else if matches!(c.kind, CheckKind::Unused | CheckKind::UnusedFunction) {
+            DiagnosticSeverity::HINT
+        } else {
+            DiagnosticSeverity::WARNING
+        };
+        (c.range, describe_check(c, tree, text), severity)
+    });
     errors
         .chain(checks)
         .map(|(range, (code, message), severity)| Found {

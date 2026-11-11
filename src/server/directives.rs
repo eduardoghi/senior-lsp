@@ -270,34 +270,34 @@ struct Span {
 
 /// Tira de `items` os diagnósticos que as diretivas do arquivo escondem e devolve também os
 /// avisos sobre as próprias diretivas. `key` diz o código e onde o diagnóstico começa.
-pub(crate) fn filter<T>(
+pub(crate) fn filter<'a, T>(
     text: &str,
-    tree: &Tree,
     index: &LineIndex,
+    scan: &Scan,
+    code_lines: impl FnOnce() -> &'a [usize],
     items: Vec<T>,
     key: impl Fn(&T) -> (&str, TextSize),
 ) -> (Vec<T>, Vec<Notice>) {
-    let scan = scan(text, tree);
     if scan.directives.is_empty() && scan.problems.is_empty() {
         return (items, Vec::new());
     }
     let mut notices: Vec<Notice> = scan
         .problems
-        .into_iter()
+        .iter()
         .map(|p| Notice {
             range: p.range,
             code: BAD_DIRECTIVE,
-            message: p.message,
+            message: p.message.clone(),
         })
         .collect();
-    let lines = code_lines(tree, index);
+    let lines = code_lines();
     let mut spans: Vec<Span> = Vec::new();
     let mut open: HashMap<&str, usize> = HashMap::new();
     for directive in &scan.directives {
         for code in &directive.codes {
             match directive.kind {
                 Kind::NextLine => {
-                    let target = next_code_line(&lines, end_line(index, directive.comment));
+                    let target = next_code_line(lines, end_line(index, directive.comment));
                     let (from, to) = match target {
                         Some(line) => (
                             index.line_start(line, text),
@@ -402,7 +402,16 @@ mod tests {
             .iter()
             .map(|&(code, line)| ((code, line), index.line_start(line as usize, text)))
             .collect();
-        let (kept, notices) = filter(text, &tree, &index, items, |(item, start)| (item.0, *start));
+        let scan = scan(text, &tree);
+        let lines = code_lines(&tree, &index);
+        let (kept, notices) = filter(
+            text,
+            &index,
+            &scan,
+            || &lines,
+            items,
+            |(item, start)| (item.0, *start),
+        );
         (
             kept.into_iter().map(|(item, _)| item).collect(),
             notices

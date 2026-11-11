@@ -22,8 +22,8 @@ impl Context<'_> {
             return Vec::new();
         }
         let doc = self.doc;
-        let scan = directives::scan(&doc.text, &doc.tree);
-        let lines = directives::code_lines(&doc.tree, &doc.index);
+        let scan = doc.scan();
+        let lines = doc.code_lines();
         let mut done: Vec<(&str, u32)> = Vec::new();
         let mut actions = Vec::new();
         for d in shown {
@@ -41,7 +41,7 @@ impl Context<'_> {
                 let end = directives::end_line(&doc.index, dir.comment);
                 dir.kind == Kind::NextLine
                     && end + 1 == line
-                    && directives::next_code_line(&lines, end) == Some(line)
+                    && directives::next_code_line(lines, end) == Some(line)
             });
             let edit = match above.and_then(|dir| dir.codes.last()) {
                 Some(last) => (TextRange::empty(last.range.end()), format!(", {code}")),

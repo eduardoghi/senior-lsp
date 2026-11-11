@@ -209,14 +209,7 @@ impl Context<'_> {
         let start = self.offset(range.start);
         let end = self.offset(range.end);
         let wanted = TextRange::new(start.min(end), end.max(start));
-        let checks = crate::validate::validate(
-            &doc.tree,
-            &doc.symbols,
-            &doc.text,
-            doc.context,
-            &doc.inherited,
-        );
-        checks
+        doc.checks()
             .iter()
             .filter(|c| c.range.intersect(wanted).is_some() || c.range.contains_inclusive(start))
             .filter_map(|c| self.fix(c))

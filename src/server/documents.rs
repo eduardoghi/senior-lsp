@@ -5,6 +5,7 @@
 //! e fica guardada para os pedidos do editor, como ir para a definição. As regras vizinhas, como as
 //! de cima num formulário SGI e as outras de um modelo de relatório, são lidas do disco.
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -14,7 +15,10 @@ use crate::builtins::Context;
 use crate::form::Inherited;
 use crate::line_index::LineIndex;
 use crate::symbols::Symbols;
+use crate::validate::Check;
 use crate::{TextTooLarge, Tree};
+
+use super::directives;
 
 pub(crate) struct Document {
     pub(crate) text: String,
@@ -26,6 +30,62 @@ pub(crate) struct Document {
     /// Funções e variáveis de outras regras que valem para esta, como as de cima num formulário
     /// SGI ou as das outras regras de um modelo de relatório.
     pub(crate) inherited: Arc<Inherited>,
+    /// Resultado de cada etapa que só depende do texto e que mais de um pedido do editor usa,
+    /// calculado na primeira vez que alguém pede.
+    checks: OnceCell<Vec<Check>>,
+    scan: OnceCell<directives::Scan>,
+    code_lines: OnceCell<Vec<usize>>,
+}
+
+impl Document {
+    pub(crate) fn new(
+        text: String,
+        version: i32,
+        tree: Tree,
+        symbols: Symbols,
+        index: LineIndex,
+        context: Context,
+        inherited: Arc<Inherited>,
+    ) -> Document {
+        Document {
+            text,
+            version,
+            tree,
+            symbols,
+            index,
+            context,
+            inherited,
+            checks: OnceCell::new(),
+            scan: OnceCell::new(),
+            code_lines: OnceCell::new(),
+        }
+    }
+
+    /// Avisos do validador, calculados uma vez por texto. Os diagnósticos e as correções rápidas
+    /// de um mesmo texto usam a mesma lista.
+    pub(crate) fn checks(&self) -> &[Check] {
+        self.checks.get_or_init(|| {
+            crate::validate::validate(
+                &self.tree,
+                &self.symbols,
+                &self.text,
+                self.context,
+                &self.inherited,
+            )
+        })
+    }
+
+    /// Diretivas dos comentários.
+    pub(crate) fn scan(&self) -> &directives::Scan {
+        self.scan
+            .get_or_init(|| directives::scan(&self.text, &self.tree))
+    }
+
+    /// Linhas com código, para as diretivas de próxima linha.
+    pub(crate) fn code_lines(&self) -> &[usize] {
+        self.code_lines
+            .get_or_init(|| directives::code_lines(&self.tree, &self.index))
+    }
 }
 
 /// JSON de um modelo de relatório, com cada regra dele analisada como um documento.
@@ -94,15 +154,7 @@ impl Documents {
         let tree = crate::parse(&text)?;
         let symbols = Symbols::build(&tree, &text);
         let index = LineIndex::new(&text);
-        let doc = Document {
-            text,
-            version,
-            tree,
-            symbols,
-            index,
-            context,
-            inherited,
-        };
+        let doc = Document::new(text, version, tree, symbols, index, context, inherited);
         self.open.insert(uri, doc);
         Ok(())
     }
@@ -143,15 +195,15 @@ impl Documents {
             let tree = crate::parse(&text)?;
             let symbols = Symbols::build(&tree, &text);
             let index = LineIndex::new(&text);
-            let doc = Document {
+            let doc = Document::new(
                 text,
                 version,
                 tree,
                 symbols,
                 index,
-                context: Context::Report,
-                inherited: inherited.clone(),
-            };
+                Context::Report,
+                inherited.clone(),
+            );
             rules.push(ReportRule { embedded, doc });
         }
         let index = LineIndex::new(&json);

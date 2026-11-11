@@ -724,15 +724,17 @@ mod tests {
             test: None,
         };
         let tree = crate::parse(text).unwrap();
-        crate::server::documents::Document {
-            text: text.to_owned(),
-            version: 1,
-            symbols: crate::symbols::Symbols::build(&tree, text),
-            index: crate::line_index::LineIndex::new(text),
+        let symbols = crate::symbols::Symbols::build(&tree, text);
+        let index = crate::line_index::LineIndex::new(text);
+        crate::server::documents::Document::new(
+            text.to_owned(),
+            1,
             tree,
-            context: crate::builtins::Context::Rule,
-            inherited: std::sync::Arc::new(inherited),
-        }
+            symbols,
+            index,
+            crate::builtins::Context::Rule,
+            std::sync::Arc::new(inherited),
+        )
     }
 
     /// Texto do hover no ponto marcado com `^`, ou `None` quando não há hover.
