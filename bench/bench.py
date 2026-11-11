@@ -26,13 +26,15 @@ class Cliente:
         threading.Thread(target=self._ler, daemon=True).start()
         uri = CORPUS.resolve().as_uri()
         t = time.perf_counter()
-        self.pedir("initialize", {
+        _, init = self.pedir("initialize", {
             "processId": os.getpid(), "rootUri": uri,
             "workspaceFolders": [{"uri": uri, "name": "corpus"}],
             "capabilities": {"textDocument": {"publishDiagnostics": {}}},
             "initializationOptions": {"tbs_producao": TBS, "analisar_pasta": analisar_pasta},
         })
         self.t_init = time.perf_counter() - t
+        sync = init["capabilities"]["textDocumentSync"]
+        self.incremental = (sync.get("change") if isinstance(sync, dict) else sync) == 2
         self.notificar("initialized", {})
 
     def _ler(self):
@@ -140,8 +142,8 @@ def medir_regra(regra):
     d = c.esperar_diag(uri, 1, t)
     print(f"  didOpen até diagnósticos     {ms(d)}   RSS {c.rss_mb():.0f} MB")
 
-    # O servidor usa sincronização completa, então cada tecla manda o texto inteiro. Insere e apaga
-    # um espaço no começo da linha do meio.
+    # Insere e apaga um espaço no começo da linha do meio. Com sincronização completa cada tecla
+    # manda o texto inteiro, e com a incremental só o trecho alterado.
     linhas = texto.split("\n")
     meio = len(linhas) // 2
     com_espaco = "\n".join(linhas[:meio] + [" " + linhas[meio]] + linhas[meio + 1:])
@@ -149,7 +151,12 @@ def medir_regra(regra):
     versao = 1
     for k in range(30):
         versao += 1
-        mud = {"text": com_espaco if k % 2 == 0 else texto}
+        if c.incremental:
+            ini = {"line": meio, "character": 0}
+            fim = {"line": meio, "character": 0 if k % 2 == 0 else 1}
+            mud = {"range": {"start": ini, "end": fim}, "text": " " if k % 2 == 0 else ""}
+        else:
+            mud = {"text": com_espaco if k % 2 == 0 else texto}
         t = time.perf_counter()
         c.notificar("textDocument/didChange", {"textDocument": {"uri": uri, "version": versao}, "contentChanges": [mud]})
         tempos.append(c.esperar_diag(uri, versao, t))

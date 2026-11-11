@@ -1,8 +1,8 @@
 //! Servidor de linguagem pelo protocolo LSP.
 //!
 //! O laço é síncrono. Uma regra média é analisada em microssegundos, então cada mensagem é
-//! respondida na hora, sem fila nem thread de trabalho. O editor manda o texto inteiro a cada
-//! mudança, e o arquivo é analisado de novo do começo.
+//! respondida na hora, sem fila nem thread de trabalho. O editor manda só o trecho alterado de cada
+//! mudança (sincronização incremental), e o arquivo é analisado de novo do começo.
 
 mod calls;
 mod config;
@@ -25,6 +25,7 @@ mod selection;
 mod semantic;
 mod signature;
 mod sql;
+mod sync;
 mod webservice;
 mod workspace;
 mod workspace_symbols;
@@ -54,7 +55,7 @@ use lsp_types::{
 };
 
 use crate::builtins::Context;
-use crate::line_index::ColumnEncoding;
+use crate::line_index::{ColumnEncoding, LineIndex};
 use documents::{Documents, is_report, is_report_rule, is_rule};
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -77,7 +78,9 @@ pub fn run(connection: Connection) -> Result<()> {
                 ColumnEncoding::Utf8 => PositionEncodingKind::UTF8,
                 ColumnEncoding::Utf16 => PositionEncodingKind::UTF16,
             }),
-            text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+            text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                TextDocumentSyncKind::INCREMENTAL,
+            )),
             definition_provider: Some(OneOf::Left(true)),
             implementation_provider: Some(lsp_types::ImplementationProviderCapability::Simple(
                 true,
@@ -693,18 +696,28 @@ impl Server<'_> {
                     serde_json::from_value(notification.params)?;
                 let uri = params.text_document.uri;
                 let version = params.text_document.version;
-                // Com a sincronização completa, a última mudança traz o texto inteiro.
-                let Some(change) = params.content_changes.into_iter().last() else {
+                let changes = params.content_changes;
+                if changes.is_empty() {
                     return Ok(());
-                };
+                }
                 // O didChange não traz a linguagem, então vale o que o didOpen aceitou.
-                if self.documents.get(&uri).is_some() {
+                if let Some(doc) = self.documents.take(&uri) {
                     let context = self.rule_context(&uri);
-                    self.documents
-                        .set(uri.clone(), change.text, version, context)?;
-                } else if is_report(&uri) {
-                    self.documents
-                        .set_report(uri.clone(), change.text, version)?;
+                    let text = sync::apply(doc.text, &doc.index, changes, self.encoding);
+                    self.documents.set(uri.clone(), text, version, context)?;
+                } else if let Some(report) = self.documents.take_report(&uri) {
+                    let text = sync::apply(
+                        report.json.to_string(),
+                        &report.index,
+                        changes,
+                        self.encoding,
+                    );
+                    self.documents.set_report(uri.clone(), text, version)?;
+                } else if is_report(&uri) && changes.iter().any(|c| c.range.is_none()) {
+                    // JSON de modelo que o servidor não tem. Só o texto inteiro serve de base.
+                    let text =
+                        sync::apply(String::new(), &LineIndex::new(""), changes, self.encoding);
+                    self.documents.set_report(uri.clone(), text, version)?;
                 } else {
                     return Ok(());
                 }

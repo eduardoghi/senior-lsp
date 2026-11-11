@@ -1,9 +1,9 @@
 //! Documentos abertos no editor.
 //!
-//! O texto vem sempre do editor, pelo `didOpen` e pelo `didChange`. Assim o que ainda não foi salvo
-//! também é analisado. A análise é refeita a cada mudança e fica guardada para os pedidos do
-//! editor, como ir para a definição. As regras vizinhas, como as de cima num formulário SGI e as
-//! outras de um modelo de relatório, são lidas do disco.
+//! O texto vem sempre do editor, pelo `didOpen` e pelo `didChange`, que o servidor aplica ao texto
+//! guardado. Assim o que ainda não foi salvo também é analisado. A análise é refeita a cada mudança
+//! e fica guardada para os pedidos do editor, como ir para a definição. As regras vizinhas, como as
+//! de cima num formulário SGI e as outras de um modelo de relatório, são lidas do disco.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -169,6 +169,17 @@ impl Documents {
 
     pub(crate) fn get(&self, uri: &Uri) -> Option<&Document> {
         self.open.get(uri)
+    }
+
+    /// Tira a regra aberta para o texto dela ser editado sem cópia. Quem chama guarda de volta
+    /// com [`Documents::set`].
+    pub(crate) fn take(&mut self, uri: &Uri) -> Option<Document> {
+        self.open.remove(uri)
+    }
+
+    /// Tira o JSON de modelo aberto, como [`Documents::take`] faz com a regra.
+    pub(crate) fn take_report(&mut self, uri: &Uri) -> Option<ReportDocument> {
+        self.reports.remove(uri)
     }
 
     /// Regras em texto abertas no editor. Os JSON de modelo ficam de fora.

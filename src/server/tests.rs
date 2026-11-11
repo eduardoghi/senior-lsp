@@ -22,6 +22,8 @@ struct Editor {
     conn: Connection,
     server: Option<JoinHandle<super::Result<()>>>,
     next_id: i32,
+    /// Capacidades que o servidor anunciou no `initialize`.
+    capabilities: serde_json::Value,
     /// Notificações que chegaram enquanto o editor esperava a resposta de um pedido, como os
     /// diagnósticos que o comando de troca de tipo publica antes de responder.
     pending: std::cell::RefCell<std::collections::VecDeque<Message>>,
@@ -45,6 +47,7 @@ impl Editor {
             conn: client,
             server: Some(server),
             next_id: 0,
+            capabilities: json!(null),
             pending: Default::default(),
         };
         let capabilities = ClientCapabilities {
@@ -64,8 +67,9 @@ impl Editor {
             params["workspaceFolders"] = folders;
         }
         let response = editor.request(Initialize::METHOD, params);
-        let result: InitializeResult =
-            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        let result = response.response_result.unwrap();
+        editor.capabilities = result["capabilities"].clone();
+        let result: InitializeResult = serde_json::from_value(result).unwrap();
         editor.notify(Initialized::METHOD, json!({}));
         (editor, result.capabilities.position_encoding.unwrap())
     }
@@ -146,6 +150,23 @@ impl Editor {
             DidChangeTextDocument::METHOD,
             json!({ "textDocument": { "uri": uri, "version": version },
                     "contentChanges": [{ "text": text }] }),
+        );
+    }
+
+    /// Mudanças incrementais, cada uma como `(linha inicial, coluna inicial, linha final, coluna
+    /// final, texto)`.
+    fn change_ranges(&self, uri: &str, version: i32, edits: &[(u32, u32, u32, u32, &str)]) {
+        let changes: Vec<_> = edits
+            .iter()
+            .map(|&(l1, c1, l2, c2, text)| {
+                json!({ "range": { "start": { "line": l1, "character": c1 },
+                                   "end": { "line": l2, "character": c2 } }, "text": text })
+            })
+            .collect();
+        self.notify(
+            DidChangeTextDocument::METHOD,
+            json!({ "textDocument": { "uri": uri, "version": version },
+                    "contentChanges": changes }),
         );
     }
 
@@ -305,6 +326,57 @@ fn abrir_corrigir_e_fechar() {
     let d = editor.diagnostics();
     assert!(d.diagnostics.is_empty());
     assert_eq!(d.version, None);
+    editor.stop();
+}
+
+#[test]
+fn sincronizacao_incremental() {
+    let (editor, _) = Editor::start(None);
+    assert_eq!(editor.capabilities["textDocumentSync"], 2);
+
+    editor.open(RULE, 1, "x = 1;\r\ny = \"ç😀\";\r\nz = 3;");
+    assert!(editor.diagnostics().diagnostics.is_empty());
+
+    // Apaga o `;` da primeira linha, que termina em CRLF. O erro aparece no lugar do `;`.
+    editor.change_ranges(RULE, 2, &[(0, 5, 0, 6, "")]);
+    let d = editor.diagnostics();
+    assert_eq!(d.version, Some(2));
+    assert_eq!(d.diagnostics.len(), 1);
+    assert_eq!(d.diagnostics[0].range.start.line, 0);
+
+    // Várias mudanças numa notificação, a segunda sobre o texto que a primeira deixou. A coluna
+    // depois do emoji conta duas unidades de UTF-16 para ele.
+    editor.change_ranges(
+        RULE,
+        3,
+        &[(0, 5, 0, 5, ";"), (1, 5, 1, 7, ""), (1, 5, 1, 5, "😀")],
+    );
+    let d = editor.diagnostics();
+    assert_eq!(d.version, Some(3));
+    assert!(d.diagnostics.is_empty());
+
+    // Troca no fim do arquivo, depois da última quebra, e uma mudança com o texto inteiro.
+    editor.change_ranges(RULE, 4, &[(2, 6, 2, 6, "\r\nw = #;")]);
+    let d = editor.diagnostics();
+    assert_eq!(d.diagnostics.len(), 2);
+    assert_eq!(d.diagnostics[0].range.start.line, 3);
+    editor.change(RULE, 5, "x = 1;");
+    assert!(editor.diagnostics().diagnostics.is_empty());
+    editor.change_ranges(RULE, 6, &[(0, 6, 0, 6, " y")]);
+    assert_eq!(editor.diagnostics().diagnostics.len(), 1);
+    editor.stop();
+}
+
+#[test]
+fn sincronizacao_incremental_em_utf8() {
+    let (editor, _) = Editor::start(Some(vec![PositionEncodingKind::UTF8]));
+    editor.open(RULE, 1, "x = \"é😀\";\ny = 1;");
+    assert!(editor.diagnostics().diagnostics.is_empty());
+    // Em UTF-8 a coluna conta bytes, e o `;` fica na coluna 12.
+    editor.change_ranges(RULE, 2, &[(0, 12, 0, 13, "")]);
+    let d = editor.diagnostics();
+    assert_eq!(d.diagnostics.len(), 1);
+    assert_eq!(d.diagnostics[0].range.start.line, 0);
     editor.stop();
 }
 
@@ -848,6 +920,34 @@ fn regras_de_modelo_de_relatorio() {
     // Função do ERP continua sem renomear.
     let r = editor.request(PrepareRenameRequest::METHOD, at(3, 5));
     assert!(r.response_result.unwrap().is_null());
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn sincronizacao_incremental_em_json_de_modelo() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-incr-{}", std::process::id()));
+    let model = base.join("Modelos/M1.GER");
+    std::fs::create_dir_all(&model).unwrap();
+    let header = r#"{ "children": [ { "rule": { "prop_name": "SOnPrint", "lines": [
+  "Definir Alfa aTxt;",
+  "Inexistente(1);"
+] } } ] }"#;
+    let header_path = model.join("Cabecalho.json");
+    std::fs::write(&header_path, header).unwrap();
+    let uri = crate::form::uri_from_path(&header_path);
+
+    let (editor, _) = Editor::start(None);
+    editor.open(&uri, 1, header);
+    let d = editor.diagnostics();
+    assert_eq!(d.diagnostics.len(), 1);
+    assert_eq!(d.diagnostics[0].range.start.line, 2);
+
+    // Troca a chamada desconhecida por um `definir`, no texto do JSON.
+    editor.change_ranges(&uri, 2, &[(2, 3, 2, 18, "Definir Alfa aOutra;")]);
+    let d = editor.diagnostics();
+    assert_eq!(d.version, Some(2));
+    assert!(d.diagnostics.is_empty());
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
