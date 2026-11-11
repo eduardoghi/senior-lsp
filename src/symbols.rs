@@ -6,8 +6,6 @@
 //! dentro da sua função. Fora dela o nome do parâmetro ainda compila, mas na execução ele não
 //! existe e o valor lido é lixo, por isso a referência fica marcada em [`Reference::foreign`].
 
-use std::collections::HashMap;
-
 use text_size::{TextRange, TextSize};
 
 use crate::SyntaxKind::{
@@ -15,6 +13,7 @@ use crate::SyntaxKind::{
     ListDef, Name, NameRef, NumeroKw, ParamList, TableDef, VarDef, WsDef,
 };
 use crate::{Element, NodeId, Tree};
+use rustc_hash::FxHashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VarType {
@@ -164,7 +163,7 @@ impl Symbols {
     }
 
     fn resolve(&mut self, tree: &Tree, text: &str, uses: Vec<(NodeId, Namespace, Option<u32>)>) {
-        let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut by_name: FxHashMap<String, Vec<usize>> = FxHashMap::default();
         for (i, def) in self.definitions.iter().enumerate() {
             by_name.entry(upper(&text[def.name])).or_default().push(i);
         }

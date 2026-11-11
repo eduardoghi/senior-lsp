@@ -5,7 +5,7 @@
 //! deles. Um nome fora desses grupos e sem `definir funcao` no arquivo não compila. Os arquivos têm uma
 //! declaração por linha, na ordem em que o compilador registra, e vale a primeira de cada nome.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::LazyLock;
 
 use crate::symbols::VarType;
@@ -62,13 +62,13 @@ struct Table {
     builtins: Vec<Builtin>,
     /// Nome em maiúsculas para o índice em `builtins` e o contexto em que ela existe, ou `None`
     /// quando existe em todos.
-    index: HashMap<String, (usize, Option<Context>)>,
+    index: FxHashMap<String, (usize, Option<Context>)>,
 }
 
 static TABLE: LazyLock<Table> = LazyLock::new(|| {
     let mut table = Table {
         builtins: Vec::new(),
-        index: HashMap::new(),
+        index: FxHashMap::default(),
     };
     for (source, only) in [
         (include_str!("builtins/regra.txt"), None),
@@ -94,7 +94,7 @@ static TABLE: LazyLock<Table> = LazyLock::new(|| {
 /// Variáveis do sistema, como `DatSis` e `NomUsu`, pelo nome em maiúsculas. O ERP registra todas
 /// juntas quando cria o ambiente das regras, sem depender de onde a regra roda. O arquivo traz uma
 /// por linha como `definir`, com o tipo que o compilador recebe.
-static SYSTEM_VARIABLES: LazyLock<HashMap<String, VarType>> = LazyLock::new(|| {
+static SYSTEM_VARIABLES: LazyLock<FxHashMap<String, VarType>> = LazyLock::new(|| {
     include_str!("builtins/variaveis.txt")
         .lines()
         .filter_map(|line| {

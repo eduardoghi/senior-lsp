@@ -221,7 +221,7 @@ fn unused(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
         used[*target] = true;
     }
     let tokens = tree.tokens();
-    let mut in_sql = std::collections::HashSet::new();
+    let mut in_sql = rustc_hash::FxHashSet::default();
     for i in 0..tokens.len() {
         if tokens.kind(i) == SyntaxKind::String {
             for name in words(tokens.text(i, text)) {
