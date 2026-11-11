@@ -768,10 +768,17 @@ fn arquivo_solto_com_a_linguagem_e_analisado_e_troca_de_tipo() {
                            "end": { "line": 0, "character": 0 } },
                 "context": { "diagnostics": [] } }),
     );
-    let actions = actions.response_result.unwrap();
-    let titles: Vec<_> = actions
+    // Só as ações de troca de tipo, que são comandos. As correções vêm como edição.
+    let actions: Vec<serde_json::Value> = actions
+        .response_result
+        .unwrap()
         .as_array()
         .unwrap()
+        .iter()
+        .filter(|a| a["command"].is_string())
+        .cloned()
+        .collect();
+    let titles: Vec<_> = actions
         .iter()
         .map(|a| a["title"].as_str().unwrap().to_owned())
         .collect();
@@ -1162,5 +1169,86 @@ fn completar_depois_do_ponto() {
     assert_eq!(completion_labels(&mut editor, 5, 7), ["Primeiro"]);
     assert_eq!(completion_labels(&mut editor, 6, 6), ["Email"]);
     assert!(completion_labels(&mut editor, 7, 2).is_empty());
+    editor.stop();
+}
+
+/// Aplica a ação de título começando com `title` no ponto e devolve o texto resultante.
+fn apply_fix(editor: &mut Editor, text: &str, line: u32, character: u32, title: &str) -> String {
+    let response = editor.request(
+        lsp_types::request::CodeActionRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "range": { "start": { "line": line, "character": character },
+                           "end": { "line": line, "character": character } },
+                "context": { "diagnostics": [] } }),
+    );
+    let actions: Vec<lsp_types::CodeActionOrCommand> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    let actions: Vec<lsp_types::CodeAction> = actions
+        .into_iter()
+        .filter_map(|a| match a {
+            lsp_types::CodeActionOrCommand::CodeAction(a) => Some(a),
+            lsp_types::CodeActionOrCommand::Command(_) => None,
+        })
+        .collect();
+    let action = actions
+        .iter()
+        .find(|a| a.title.starts_with(title))
+        .unwrap_or_else(|| {
+            panic!(
+                "sem \"{title}\" em {:?}",
+                actions.iter().map(|a| &a.title).collect::<Vec<_>>()
+            )
+        });
+    let mut edits = action.edit.as_ref().unwrap().changes.as_ref().unwrap()[&uri(RULE)].clone();
+    let offset = |p: lsp_types::Position| {
+        text.split_inclusive('\n')
+            .take(p.line as usize)
+            .map(str::len)
+            .sum::<usize>()
+            + p.character as usize
+    };
+    edits.sort_by_key(|e| std::cmp::Reverse(offset(e.range.start)));
+    let mut out = text.to_owned();
+    for e in edits {
+        out.replace_range(offset(e.range.start)..offset(e.range.end), &e.new_text);
+    }
+    out
+}
+
+#[test]
+fn correcoes_dos_avisos() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "definir alfa aUsada;\n\
+                definir alfa aSobra; definir numero n;\n\
+                n = aUsada > 1;\n\
+                n = 'a';\n\
+                definir cursor cur;\n  \
+                SQL_UsarSQLSenior2(cur, 0);\n\
+                Calcula(aUsada, 2);\n";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let fixed = |editor: &mut Editor, line, character, title| {
+        apply_fix(editor, text, line, character, title)
+    };
+    assert!(
+        fixed(&mut editor, 1, 15, "Apagar a definição de aSobra")
+            .contains("\ndefinir numero n;\nn = aUsada")
+    );
+    assert!(fixed(&mut editor, 2, 11, "Pôr a comparação").contains("n = (aUsada > 1);"));
+    assert!(fixed(&mut editor, 3, 5, "Trocar por 'A'").contains("n = 'A';"));
+    assert!(
+        fixed(&mut editor, 5, 4, "Acrescentar SQL_UsarAbrangencia")
+            .contains("  SQL_UsarAbrangencia(cur, 0);\n  SQL_UsarSQLSenior2(cur, 0);")
+    );
+    let declarada = fixed(&mut editor, 6, 2, "Declarar a função Calcula");
+    assert!(
+        declarada.contains("definir funcao Calcula(alfa aUsada, numero Param2);\n"),
+        "{declarada}"
+    );
+    assert!(
+        declarada
+            .ends_with("Calcula(aUsada, 2);\n\nfuncao Calcula(alfa aUsada, numero Param2); {\n}\n"),
+        "{declarada}"
+    );
     editor.stop();
 }

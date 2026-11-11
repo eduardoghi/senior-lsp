@@ -335,6 +335,7 @@ impl Server<'_> {
                         context
                             .define_actions(params.range.start)
                             .into_iter()
+                            .chain(context.check_fixes(params.range))
                             .map(lsp_types::CodeActionOrCommand::CodeAction),
                     );
                 }

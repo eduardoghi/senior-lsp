@@ -14,6 +14,10 @@ O servidor oferece:
 - destacar as outras ocorrências do nome que está no cursor
 - correção rápida que cria o `definir` de um nome usado sem definição, com o tipo deduzido do uso
   (texto atribuído, parâmetro da função do ERP que recebe o nome ou a letra inicial, como `aTexto`)
+- correções rápidas que apagam a definição sem uso (SEN068), põem a comparação entre parênteses
+  (SEN041), trocam o apóstrofo por maiúscula (SEN064), acrescentam o `SQL_UsarAbrangencia(obj, 0)`
+  que falta (SEN066) e declaram a função chamada que não existe (SEN052), com o `Definir Funcao`
+  junto dos outros `definir` e a `funcao` vazia no fim do arquivo
 - hover com a linha do `definir` e, com o dicionário de dados do ERP configurado, o tipo, a
   descrição, as chaves, os relacionamentos e a busca dos campos de tabela
 - as funções que o ERP já traz, como `IntParaAlfa`, com a declaração no hover e a conferência dos
