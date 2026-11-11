@@ -11,9 +11,13 @@ x86_64. Em outro sistema, compile o servidor e informe o caminho em `seniorLsp.s
 
 Configurações:
 
-- `seniorLsp.server.path`: executável do servidor. Vazio usa o do release.
-- `seniorLsp.tbsProducao` e `seniorLsp.tbsTeste`: dicionários de dados do ERP (`sapiens.tbs`),
-  opcionais. Veja a seção Dicionário de dados no README do repositório.
+- `seniorLsp.server.path` é o executável do servidor. Vazio usa o do release.
+- `seniorLsp.tipoPadrao` é o tipo da regra num arquivo fora da exportação, como um arquivo novo.
+- `seniorLsp.tbsProducao` e `seniorLsp.tbsTeste` são os dicionários de dados do ERP
+  (`sapiens.tbs`), opcionais. Veja a seção Dicionário de dados no README do repositório.
+
+Num arquivo fora da exportação, a barra de status mostra o tipo da regra (regra comum, tela SGI ou
+modelo de relatório) e troca ao clicar. A escolha fica guardada no workspace.
 
 O comando "Senior LSP: Reiniciar o servidor" reinicia o servidor. As mensagens dele ficam no canal
 de saída Senior LSP.

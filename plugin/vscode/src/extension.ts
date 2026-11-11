@@ -7,14 +7,33 @@ import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-lan
 
 const REPO = "eduardoghi/senior-lsp";
 
+/** Comando do servidor que troca o tipo da regra de um arquivo solto, e pedido que devolve o tipo. */
+const SERVER_COMMAND = "senior-lsp.tipoRegra";
+const SERVER_REQUEST = "senior-lsp/tipoRegra";
+
+/** Tipos na ordem da lista, com o nome que o servidor usa. */
+const KINDS = [
+    { tipo: "comum", label: "Regra comum" },
+    { tipo: "tela", label: "Tela SGI" },
+    { tipo: "relatorio", label: "Modelo de relatório" },
+];
+
+/** Chave no estado do workspace com o tipo escolhido para cada arquivo, pelo URI. */
+const CHOSEN_KEY = "seniorLsp.tipos";
+
 let client: LanguageClient | undefined;
+let statusBar: vscode.StatusBarItem;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
     const output = vscode.window.createOutputChannel("Senior LSP", { log: true });
     context.subscriptions.push(output);
 
+    statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     context.subscriptions.push(
+        statusBar,
         vscode.commands.registerCommand("seniorLsp.restart", () => restart(context, output)),
+        vscode.commands.registerCommand("seniorLsp.escolherTipo", () => chooseKind()),
+        vscode.window.onDidChangeActiveTextEditor(() => void updateStatusBar()),
         vscode.workspace.onDidChangeConfiguration((e) => {
             if (e.affectsConfiguration("seniorLsp")) {
                 void restart(context, output);
@@ -43,7 +62,7 @@ async function start(context: vscode.ExtensionContext, output: vscode.LogOutputC
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         output.error(message);
-        void vscode.window.showErrorMessage(`Senior LSP: ${message}`);
+        void vscode.window.showErrorMessage(`O Senior LSP não iniciou porque ${message}`);
         return;
     }
 
@@ -53,17 +72,90 @@ async function start(context: vscode.ExtensionContext, output: vscode.LogOutputC
         // linguagem JSON. Os outros JSON do workspace não vão para o servidor.
         documentSelector: [
             { scheme: "file", language: "lsp-senior" },
+            { scheme: "untitled", language: "lsp-senior" },
             { scheme: "file", language: "json", pattern: "**/Modelos/**/*.json" },
         ],
         initializationOptions: {
             tbs_producao: config.get<string>("tbsProducao", ""),
             tbs_teste: config.get<string>("tbsTeste", ""),
+            tipo_padrao: config.get<string>("tipoPadrao", "comum"),
         },
         outputChannel: output,
+        middleware: {
+            // O servidor esquece a escolha quando reinicia, então ela é mandada de novo ao abrir.
+            didOpen: async (document, next) => {
+                await next(document);
+                const tipo = chosen(context)[document.uri.toString()];
+                if (tipo && client) {
+                    await client.sendRequest("workspace/executeCommand", {
+                        command: SERVER_COMMAND,
+                        arguments: [document.uri.toString(), tipo],
+                    });
+                }
+                if (document === vscode.window.activeTextEditor?.document) {
+                    void updateStatusBar();
+                }
+            },
+            // Pela barra de status ou pela ação de código, a escolha passa por aqui e fica guardada.
+            executeCommand: async (command, args, next) => {
+                const result = await next(command, args);
+                if (command === SERVER_COMMAND && args.length === 2) {
+                    const saved = { ...chosen(context), [String(args[0])]: String(args[1]) };
+                    await context.workspaceState.update(CHOSEN_KEY, saved);
+                    void updateStatusBar();
+                }
+                return result;
+            },
+        },
     };
 
     client = new LanguageClient("seniorLsp", "Senior LSP", serverOptions, clientOptions);
     await client.start();
+    void updateStatusBar();
+}
+
+function chosen(context: vscode.ExtensionContext): Record<string, string> {
+    return context.workspaceState.get<Record<string, string>>(CHOSEN_KEY, {});
+}
+
+/** Mostra o tipo da regra do editor ativo. Num arquivo da pasta de tela, o tipo não muda. */
+async function updateStatusBar(): Promise<void> {
+    const document = vscode.window.activeTextEditor?.document;
+    if (!client || !document || document.languageId !== "lsp-senior") {
+        statusBar.hide();
+        return;
+    }
+    const answer = await client.sendRequest<{ tipo: string; fixo: boolean } | null>(SERVER_REQUEST, {
+        uri: document.uri.toString(),
+    });
+    if (!answer || vscode.window.activeTextEditor?.document !== document) {
+        statusBar.hide();
+        return;
+    }
+    const label = KINDS.find((k) => k.tipo === answer.tipo)?.label ?? answer.tipo;
+    statusBar.text = `LSP Senior (${label})`;
+    if (answer.fixo) {
+        statusBar.tooltip = "Tipo da regra pela pasta da exportação";
+        statusBar.command = undefined;
+    } else {
+        statusBar.tooltip = "Tipo da regra. Clique para trocar.";
+        statusBar.command = "seniorLsp.escolherTipo";
+    }
+    statusBar.show();
+}
+
+async function chooseKind(): Promise<void> {
+    const document = vscode.window.activeTextEditor?.document;
+    if (!client || !document || document.languageId !== "lsp-senior") {
+        return;
+    }
+    const pick = await vscode.window.showQuickPick(
+        KINDS.map((k) => ({ label: k.label, tipo: k.tipo })),
+        { placeHolder: "Tipo da regra deste arquivo" },
+    );
+    if (pick) {
+        await vscode.commands.executeCommand(SERVER_COMMAND, document.uri.toString(), pick.tipo);
+    }
 }
 
 /** Caminho do executável, que é o configurado, o compilado no clone ou o baixado do release. */
@@ -133,7 +225,7 @@ function releaseTarget(): string {
 async function fetchBytes(url: string): Promise<Uint8Array> {
     const response = await fetch(url);
     if (!response.ok) {
-        throw new Error(`falha ao baixar ${url} (HTTP ${response.status}).`);
+        throw new Error(`não foi possível baixar ${url} (HTTP ${response.status}).`);
     }
     return new Uint8Array(await response.arrayBuffer());
 }

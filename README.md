@@ -26,13 +26,13 @@ e isso muda as funções do ERP que ela pode chamar:
 
 | Pasta | Arquivo | Regra |
 |---|---|---|
-| `Regras` | `Rule.txt` | regra de identificador, com as funções comuns do ERP |
+| `Regras` | `Rule.txt` | regra comum, como a de identificador, com as funções comuns do ERP |
 | `Formulários SGI` | `rule.txt` | regra de tela SGI, que ganha as funções de tela, os campos da tela e as funções e variáveis definidas nas regras que vêm antes dela |
-| `Web Services` | `Rule.txt` | regra de web service, com as mesmas funções da regra de identificador |
+| `Web Services` | `Rule.txt` | regra de web service, com as mesmas funções da regra comum |
 | `Modelos` | os `.json` de cada modelo | regra de relatório, que ganha as funções de relatório, as entradas e os controles do modelo e as funções e variáveis definidas nas outras regras dele |
 
 O servidor reconhece as pastas `Formulários SGI` e `Modelos`. Qualquer outro arquivo de regra conta
-como regra de identificador, então renomear a pasta `Regras` não muda nada. Os outros tipos de
+como regra comum, então renomear a pasta `Regras` não muda nada. Os outros tipos de
 artefato não exportam regra. Num modelo de relatório, as referências e o renomear atravessam todas
 as regras e todos os JSON do modelo. Antes das regras, o ERP define as entradas, como `ECodFil`, com o
 tipo do cadastro, e as descrições como alfa. A alfa de um caractere vira número com o código do
@@ -40,6 +40,25 @@ caractere. Os totais valem como números, e as fórmulas também, porque o compi
 o nome sem `definir`. Memorando e código de barras imprimem a variável de mesmo nome que a regra
 define. O nome das entradas e desses controles não se renomeia pela regra, porque vem do cadastro
 do modelo.
+
+### Arquivos fora da exportação
+
+Um arquivo com outro nome, como um texto novo ainda sem salvar, é analisado quando o editor manda
+a linguagem `lsp-senior`. O VS Code e o Kate mandam quando o arquivo está na linguagem LSP Senior,
+escolhida à mão ou pelo nome. O plugin do Claude Code associa o servidor pela extensão `.txt`, então
+lá só o nome `Rule.txt` vale.
+
+Fora da pasta `Formulários SGI`, o tipo da regra pode ser trocado por arquivo. O `Rule.txt` começa
+como regra comum e os outros arquivos começam com o tipo da opção `tipo_padrao`
+(`comum`, `tela` ou `relatorio`), passada nas opções de inicialização. As ações de código do
+arquivo trocam o tipo em qualquer editor, pelo comando `senior-lsp.tipoRegra`, que recebe o URI e o
+tipo. O editor pergunta o tipo atual pelo pedido `senior-lsp/tipoRegra`, com o URI, e recebe o tipo
+e se ele vem da pasta (`fixo`).
+
+Num arquivo solto, a regra de tela ganha as funções de tela, mas não os campos da interface, que
+vêm do `definition.json` da exportação. A de relatório ganha as funções de relatório, sem as
+entradas e os controles do modelo. Os nomes que faltam valem como número, como qualquer nome sem
+`definir`.
 
 Numa tela SGI, o ERP compila todas as regras da interface juntas. Primeiro vem a regra da
 interface, depois as ações da interface e, para cada tabela, a regra dela seguida das ações dela. O que uma regra define vale
@@ -110,9 +129,15 @@ npm run package
 code --install-extension senior-lsp-*.vsix
 ```
 
-As configurações são `seniorLsp.server.path`, para usar outro executável, e `seniorLsp.tbsProducao`
+As configurações são `seniorLsp.server.path`, para usar outro executável, `seniorLsp.tipoPadrao`,
+com o tipo dos [arquivos fora da exportação](#arquivos-fora-da-exportação), e `seniorLsp.tbsProducao`
 e `seniorLsp.tbsTeste`, com os dicionários descritos em [Dicionário de dados](#dicionário-de-dados).
 Mudar qualquer uma reinicia o servidor.
+
+Num arquivo fora da exportação, a barra de status mostra o tipo da regra e troca ao clicar, como o
+comando "Senior LSP: Escolher o tipo da regra". A extensão guarda a escolha de cada arquivo no
+workspace. Um arquivo novo analisado precisa estar na linguagem LSP Senior, que se escolhe no
+canto da barra de status.
 
 Para desenvolver, abra `plugin/vscode` no VS Code e rode com F5. Rodando de dentro do clone, a
 extensão usa o `target/release` em vez de baixar.
@@ -152,10 +177,11 @@ usuário, acrescente o servidor:
 
 O `command` aceita só o nome (`senior-lsp`) quando o executável está no `PATH`. As duas opções de
 `initializationOptions` são os dicionários descritos em [Dicionário de dados](#dicionário-de-dados)
-e podem ficar de fora. Os JSON das telas SGI não passam pelo servidor no Kate, porque ligar o
-servidor no modo JSON faria ele abrir todos os arquivos JSON.
+e podem ficar de fora, assim como `tipo_padrao`. Os JSON dos modelos de relatório não passam pelo
+servidor no Kate, porque ligar o servidor no modo JSON faria ele abrir todos os arquivos JSON.
 
-Se um `Rule.txt` abrir em outro modo, escolha Ferramentas → Modo → Fontes → LSP Senior. As
+Qualquer arquivo no modo LSP Senior vai para o servidor. Num arquivo novo, escolha Ferramentas →
+Modo → Fontes → LSP Senior. O tipo da regra troca pelas ações de código do cliente LSP. As
 mensagens do servidor aparecem na aba Saída do cliente LSP.
 
 ## Diagnósticos

@@ -11,10 +11,10 @@ use std::sync::LazyLock;
 use crate::symbols::VarType;
 
 /// Onde a regra roda, pela pasta da exportação do gerenciador de artefatos. O compilador da regra
-/// de web service não acrescenta funções, então ela conta como regra de identificador.
+/// de web service não acrescenta funções, então ela conta como regra comum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Context {
-    /// Regra de identificador, de web service e tudo fora de `Formulários SGI`.
+    /// Regra comum, como a de identificador e a de web service, e tudo fora de `Formulários SGI`.
     Rule,
     /// Regra de tela SGI, na pasta `Formulários SGI`.
     Sgi,

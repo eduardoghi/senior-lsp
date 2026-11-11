@@ -22,18 +22,30 @@ struct Editor {
     conn: Connection,
     server: Option<JoinHandle<super::Result<()>>>,
     next_id: i32,
+    /// Notificações que chegaram enquanto o editor esperava a resposta de um pedido, como os
+    /// diagnósticos que o comando de troca de tipo publica antes de responder.
+    pending: std::cell::RefCell<std::collections::VecDeque<Message>>,
 }
 
 impl Editor {
     /// Sobe o servidor e faz o `initialize`. Devolve o editor e a codificação que o servidor
     /// escolheu.
     fn start(encodings: Option<Vec<PositionEncodingKind>>) -> (Editor, PositionEncodingKind) {
+        Editor::start_with(encodings, json!(null))
+    }
+
+    /// Como o `start`, com as opções de inicialização do editor.
+    fn start_with(
+        encodings: Option<Vec<PositionEncodingKind>>,
+        options: serde_json::Value,
+    ) -> (Editor, PositionEncodingKind) {
         let (client, server_conn) = Connection::memory();
         let server = std::thread::spawn(move || super::run(server_conn));
         let mut editor = Editor {
             conn: client,
             server: Some(server),
             next_id: 0,
+            pending: Default::default(),
         };
         let capabilities = ClientCapabilities {
             general: Some(GeneralClientCapabilities {
@@ -42,7 +54,10 @@ impl Editor {
             }),
             ..ClientCapabilities::default()
         };
-        let response = editor.request(Initialize::METHOD, json!({ "capabilities": capabilities }));
+        let response = editor.request(
+            Initialize::METHOD,
+            json!({ "capabilities": capabilities, "initializationOptions": options }),
+        );
         let result: InitializeResult =
             serde_json::from_value(response.response_result.unwrap()).unwrap();
         editor.notify(Initialized::METHOD, json!({}));
@@ -54,9 +69,16 @@ impl Editor {
         let id = RequestId::from(self.next_id);
         let request = Request::new(id.clone(), method.to_owned(), params);
         self.conn.sender.send(request.into()).unwrap();
+        // Lê direto da conexão, porque o `recv` devolveria de novo as notificações guardadas.
         loop {
-            match self.recv() {
+            let message = self
+                .conn
+                .receiver
+                .recv_timeout(Duration::from_secs(5))
+                .expect("o servidor não respondeu");
+            match message {
                 Message::Response(r) if r.id == id => return r,
+                Message::Notification(n) => self.pending.borrow_mut().push_back(n.into()),
                 _ => continue,
             }
         }
@@ -68,6 +90,9 @@ impl Editor {
     }
 
     fn recv(&self) -> Message {
+        if let Some(message) = self.pending.borrow_mut().pop_front() {
+            return message;
+        }
         self.conn
             .receiver
             .recv_timeout(Duration::from_secs(5))
@@ -87,10 +112,14 @@ impl Editor {
     }
 
     fn open(&self, uri: &str, version: i32, text: &str) {
+        self.open_as(uri, "lsp-senior", version, text);
+    }
+
+    fn open_as(&self, uri: &str, language: &str, version: i32, text: &str) {
         self.notify(
             DidOpenTextDocument::METHOD,
             json!({ "textDocument": {
-                "uri": uri, "languageId": "lsp-senior", "version": version, "text": text } }),
+                "uri": uri, "languageId": language, "version": version, "text": text } }),
         );
     }
 
@@ -200,7 +229,12 @@ fn colunas_em_utf16_e_utf8() {
 #[test]
 fn so_analisa_rule_txt() {
     let (editor, _) = Editor::start(None);
-    editor.open("file:///docs/README.txt", 1, "isto não é regra #");
+    editor.open_as(
+        "file:///docs/README.txt",
+        "plaintext",
+        1,
+        "isto não é regra #",
+    );
     editor.change("file:///docs/README.txt", 2, "outra coisa #");
     editor.close("file:///docs/README.txt");
     editor.quiet();
@@ -697,4 +731,107 @@ fn entradas_de_modelo_de_relatorio() {
     assert!(r.response_result.unwrap().is_null());
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// Códigos dos diagnósticos publicados, para conferir a troca de tipo pela chamada a uma função
+/// que só existe na tela (SEN052 fora dela).
+fn codes(params: &PublishDiagnosticsParams) -> Vec<String> {
+    params
+        .diagnostics
+        .iter()
+        .filter_map(|d| match &d.code {
+            Some(lsp_types::NumberOrString::String(code)) => Some(code.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+const TELA: &str = "AbrirTelaSGI(\"F000\");";
+
+#[test]
+fn arquivo_solto_com_a_linguagem_e_analisado_e_troca_de_tipo() {
+    let (mut editor, _) = Editor::start(None);
+    let solto = "untitled:Untitled-1";
+    editor.open(solto, 1, TELA);
+    assert_eq!(codes(&editor.diagnostics()), ["SEN052"]);
+
+    let tipo = editor.request("senior-lsp/tipoRegra", json!({ "uri": solto }));
+    assert_eq!(
+        tipo.response_result.unwrap(),
+        json!({ "tipo": "comum", "fixo": false })
+    );
+
+    let actions = editor.request(
+        lsp_types::request::CodeActionRequest::METHOD,
+        json!({ "textDocument": { "uri": solto },
+                "range": { "start": { "line": 0, "character": 0 },
+                           "end": { "line": 0, "character": 0 } },
+                "context": { "diagnostics": [] } }),
+    );
+    let actions = actions.response_result.unwrap();
+    let titles: Vec<_> = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["title"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        titles,
+        [
+            "Tratar como regra de tela SGI",
+            "Tratar como regra de modelo de relatório"
+        ]
+    );
+
+    let tela = actions[0]["arguments"].clone();
+    let response = editor.request(
+        lsp_types::request::ExecuteCommand::METHOD,
+        json!({ "command": "senior-lsp.tipoRegra", "arguments": tela }),
+    );
+    assert!(response.response_result.is_ok());
+    assert!(codes(&editor.diagnostics()).is_empty());
+
+    // A escolha vale nas mudanças e depois de reabrir.
+    editor.change(solto, 2, TELA);
+    assert!(codes(&editor.diagnostics()).is_empty());
+    editor.close(solto);
+    editor.diagnostics();
+    editor.open(solto, 3, TELA);
+    assert!(codes(&editor.diagnostics()).is_empty());
+    editor.stop();
+}
+
+#[test]
+fn tipo_padrao_vale_para_arquivo_solto_e_nao_para_rule_txt() {
+    let (editor, _) = Editor::start_with(None, json!({ "tipo_padrao": "tela" }));
+    editor.open("untitled:Untitled-1", 1, TELA);
+    assert!(codes(&editor.diagnostics()).is_empty());
+    editor.open(RULE, 1, TELA);
+    assert_eq!(codes(&editor.diagnostics()), ["SEN052"]);
+    editor.stop();
+}
+
+#[test]
+fn tipo_da_pasta_de_tela_nao_troca() {
+    let (mut editor, _) = Editor::start(None);
+    let tela = "file:///x/Formul%C3%A1rios%20SGI/F1/rule.txt";
+    editor.open(tela, 1, TELA);
+    assert!(codes(&editor.diagnostics()).is_empty());
+    let actions = editor.request(
+        lsp_types::request::CodeActionRequest::METHOD,
+        json!({ "textDocument": { "uri": tela },
+                "range": { "start": { "line": 0, "character": 0 },
+                           "end": { "line": 0, "character": 0 } },
+                "context": { "diagnostics": [] } }),
+    );
+    assert_eq!(actions.response_result.unwrap(), json!([]));
+    let response = editor.request(
+        lsp_types::request::ExecuteCommand::METHOD,
+        json!({ "command": "senior-lsp.tipoRegra", "arguments": [tela, "comum"] }),
+    );
+    assert_eq!(
+        response.response_result.unwrap_err().code,
+        ErrorCode::InvalidParams as i32
+    );
+    editor.stop();
 }

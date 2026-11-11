@@ -57,11 +57,18 @@ pub(crate) struct Documents {
 }
 
 impl Documents {
-    pub(crate) fn set(&mut self, uri: Uri, text: String, version: i32) -> Result<(), TextTooLarge> {
+    /// Guarda uma regra em texto. O contexto vem do servidor, porque num arquivo fora da
+    /// exportação ele é o que o editor escolheu.
+    pub(crate) fn set(
+        &mut self,
+        uri: Uri,
+        text: String,
+        version: i32,
+        context: Context,
+    ) -> Result<(), TextTooLarge> {
         let tree = crate::parse(&text)?;
         let symbols = Symbols::build(&tree, &text);
         let index = LineIndex::new(&text);
-        let context = Context::from_uri(uri.as_str());
         // As regras de cima são lidas do disco a cada mudança. Um formulário tem poucas.
         let mut inherited = match (context, crate::form::path_from_uri(uri.as_str())) {
             (Context::Sgi, Some(path)) => crate::form::inherited_functions(&path),
@@ -148,9 +155,9 @@ pub(crate) fn is_report(uri: &Uri) -> bool {
     Context::from_uri(uri.as_str()) == Context::Report
 }
 
-/// Diz se o endereço é de uma regra. O Claude Code associa o servidor pela extensão, e `.txt`
-/// pega todo arquivo de texto, então só o nome `Rule.txt`, sem diferenciar maiúsculas, é
-/// analisado.
+/// Diz se o endereço é de uma regra pelo nome, `Rule.txt` sem diferenciar maiúsculas. O Claude
+/// Code associa o servidor pela extensão, e `.txt` pega todo arquivo de texto. Os outros arquivos
+/// só são analisados quando o editor manda a linguagem `lsp-senior`.
 pub(crate) fn is_rule(uri: &Uri) -> bool {
     let s = uri.as_str();
     let end = s.find(['?', '#']).unwrap_or(s.len());

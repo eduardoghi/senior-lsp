@@ -6,8 +6,10 @@
 
 mod diagnostics;
 mod documents;
+mod kind;
 mod navigation;
 
+use std::collections::HashMap;
 use std::error::Error;
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
@@ -16,8 +18,8 @@ use lsp_types::notification::{
     Notification as LspNotification, PublishDiagnostics,
 };
 use lsp_types::request::{
-    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, PrepareRenameRequest,
-    References, Rename, Request as LspRequest,
+    CodeActionRequest, Completion, DocumentSymbolRequest, ExecuteCommand, GotoDefinition,
+    HoverRequest, PrepareRenameRequest, References, Rename, Request as LspRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -27,6 +29,7 @@ use lsp_types::{
     ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 
+use crate::builtins::Context;
 use crate::line_index::ColumnEncoding;
 use documents::{Documents, is_report, is_rule};
 
@@ -37,6 +40,7 @@ pub fn run(connection: Connection) -> Result<()> {
     let (id, params) = connection.initialize_start()?;
     let params: InitializeParams = serde_json::from_value(params)?;
     configure_dictionaries(&params);
+    let default_kind = default_kind(&params);
     let encoding = negotiate_encoding(&params);
     let result = InitializeResult {
         capabilities: ServerCapabilities {
@@ -54,6 +58,11 @@ pub fn run(connection: Connection) -> Result<()> {
                 prepare_provider: Some(true),
                 work_done_progress_options: Default::default(),
             })),
+            code_action_provider: Some(lsp_types::CodeActionProviderCapability::Simple(true)),
+            execute_command_provider: Some(lsp_types::ExecuteCommandOptions {
+                commands: vec![kind::COMMAND.to_owned()],
+                work_done_progress_options: Default::default(),
+            }),
             ..ServerCapabilities::default()
         },
         server_info: Some(ServerInfo {
@@ -67,6 +76,8 @@ pub fn run(connection: Connection) -> Result<()> {
         connection: &connection,
         documents: Documents::default(),
         encoding,
+        default_kind,
+        chosen: HashMap::new(),
     };
     for message in &connection.receiver {
         match message {
@@ -109,6 +120,18 @@ fn configure_dictionaries(params: &InitializeParams) {
     );
 }
 
+/// Tipo dos arquivos soltos que não se chamam `Rule.txt`, pela opção `tipo_padrao`. Sem ela, ou
+/// com um nome desconhecido, é regra comum.
+fn default_kind(params: &InitializeParams) -> Context {
+    params
+        .initialization_options
+        .as_ref()
+        .and_then(|o| o.get("tipo_padrao"))
+        .and_then(|v| v.as_str())
+        .and_then(kind::parse)
+        .unwrap_or(Context::Rule)
+}
+
 fn negotiate_encoding(params: &InitializeParams) -> ColumnEncoding {
     let offered = params
         .capabilities
@@ -125,6 +148,10 @@ struct Server<'a> {
     connection: &'a Connection,
     documents: Documents,
     encoding: ColumnEncoding,
+    default_kind: Context,
+    /// Tipo escolhido pelo editor para arquivos soltos. Fica depois de fechar o documento, para
+    /// valer de novo quando ele for reaberto.
+    chosen: HashMap<Uri, Context>,
 }
 
 impl Server<'_> {
@@ -213,6 +240,33 @@ impl Server<'_> {
                     }),
                 }
             }
+            CodeActionRequest::METHOD => {
+                let params: lsp_types::CodeActionParams = serde_json::from_value(request.params)?;
+                Ok(serde_json::to_value(
+                    self.kind_actions(&params.text_document.uri),
+                )?)
+            }
+            ExecuteCommand::METHOD => {
+                let params: lsp_types::ExecuteCommandParams =
+                    serde_json::from_value(request.params)?;
+                if let Err(message) = self.execute(&params) {
+                    let code = ErrorCode::InvalidParams as i32;
+                    let response = Response::new_err(id, code, message);
+                    self.connection.sender.send(response.into())?;
+                    return Ok(());
+                }
+                Ok(serde_json::Value::Null)
+            }
+            kind::REQUEST => {
+                let uri: Uri = serde_json::from_value(request.params["uri"].clone())?;
+                Ok(match self.documents.get(&uri) {
+                    Some(doc) => serde_json::json!({
+                        "tipo": kind::name(doc.context),
+                        "fixo": kind::fixed(uri.as_str()),
+                    }),
+                    None => serde_json::Value::Null,
+                })
+            }
             method => {
                 let response = Response::new_err(
                     id,
@@ -284,12 +338,14 @@ impl Server<'_> {
                 let params: DidOpenTextDocumentParams =
                     serde_json::from_value(notification.params)?;
                 let doc = params.text_document;
-                if is_rule(&doc.uri) {
-                    self.documents.set(doc.uri.clone(), doc.text, doc.version)?;
-                    self.publish(&doc.uri)?;
-                } else if is_report(&doc.uri) {
+                if is_report(&doc.uri) {
                     self.documents
                         .set_report(doc.uri.clone(), doc.text, doc.version)?;
+                    self.publish(&doc.uri)?;
+                } else if is_rule(&doc.uri) || doc.language_id == "lsp-senior" {
+                    let context = self.rule_context(&doc.uri);
+                    self.documents
+                        .set(doc.uri.clone(), doc.text, doc.version, context)?;
                     self.publish(&doc.uri)?;
                 }
             }
@@ -302,8 +358,11 @@ impl Server<'_> {
                 let Some(change) = params.content_changes.into_iter().last() else {
                     return Ok(());
                 };
-                if is_rule(&uri) {
-                    self.documents.set(uri.clone(), change.text, version)?;
+                // O didChange não traz a linguagem, então vale o que o didOpen aceitou.
+                if self.documents.get(&uri).is_some() {
+                    let context = self.rule_context(&uri);
+                    self.documents
+                        .set(uri.clone(), change.text, version, context)?;
                 } else if is_report(&uri) {
                     self.documents
                         .set_report(uri.clone(), change.text, version)?;
@@ -324,6 +383,79 @@ impl Server<'_> {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Tipo de uma regra em texto. Na pasta de tela é sempre tela. Fora dela vale o que o editor
+    /// escolheu, senão regra comum para `Rule.txt` e o tipo padrão para os outros arquivos.
+    fn rule_context(&self, uri: &Uri) -> Context {
+        if kind::fixed(uri.as_str()) {
+            return Context::Sgi;
+        }
+        if let Some(&context) = self.chosen.get(uri) {
+            return context;
+        }
+        if is_rule(uri) {
+            Context::Rule
+        } else {
+            self.default_kind
+        }
+    }
+
+    /// Ações que trocam o tipo de um arquivo solto, uma para cada tipo diferente do atual.
+    fn kind_actions(&self, uri: &Uri) -> Vec<lsp_types::CodeActionOrCommand> {
+        let Some(doc) = self.documents.get(uri) else {
+            return Vec::new();
+        };
+        if kind::fixed(uri.as_str()) {
+            return Vec::new();
+        }
+        kind::ALL
+            .into_iter()
+            .filter(|&c| c != doc.context)
+            .map(|c| {
+                lsp_types::CodeActionOrCommand::Command(lsp_types::Command {
+                    title: kind::action_title(c).to_owned(),
+                    command: kind::COMMAND.to_owned(),
+                    arguments: Some(vec![
+                        serde_json::to_value(uri).unwrap_or_default(),
+                        kind::name(c).into(),
+                    ]),
+                })
+            })
+            .collect()
+    }
+
+    /// Executa o comando que troca o tipo e analisa o documento de novo. O erro vira resposta de
+    /// parâmetro inválido.
+    fn execute(
+        &mut self,
+        params: &lsp_types::ExecuteCommandParams,
+    ) -> std::result::Result<(), String> {
+        if params.command != kind::COMMAND {
+            return Err(format!("comando desconhecido: {}", params.command));
+        }
+        let (uri, context) = match params.arguments.as_slice() {
+            [uri, name] => {
+                let uri: Uri = serde_json::from_value(uri.clone()).map_err(|e| e.to_string())?;
+                let name = name.as_str().unwrap_or_default();
+                let context =
+                    kind::parse(name).ok_or_else(|| format!("tipo desconhecido: {name}"))?;
+                (uri, context)
+            }
+            _ => return Err("o comando recebe o URI e o tipo".to_owned()),
+        };
+        if kind::fixed(uri.as_str()) {
+            return Err("o tipo deste arquivo vem da pasta da exportação".to_owned());
+        }
+        self.chosen.insert(uri.clone(), context);
+        let Some(doc) = self.documents.get(&uri) else {
+            return Ok(());
+        };
+        let (text, version) = (doc.text.clone(), doc.version);
+        self.documents
+            .set(uri.clone(), text, version, context)
+            .map_err(|e| e.to_string())?;
+        self.publish(&uri).map_err(|e| e.to_string())
     }
 
     fn publish(&self, uri: &Uri) -> Result<()> {

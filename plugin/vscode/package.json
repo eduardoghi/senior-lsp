@@ -50,6 +50,17 @@
                     "scope": "machine",
                     "description": "Caminho do executável senior-lsp. Vazio usa o binário do release do GitHub da versão da extensão."
                 },
+                "seniorLsp.tipoPadrao": {
+                    "type": "string",
+                    "enum": ["comum", "tela", "relatorio"],
+                    "enumDescriptions": [
+                        "Regra comum, como a de identificador e a de web service",
+                        "Regra de tela SGI",
+                        "Regra de modelo de relatório"
+                    ],
+                    "default": "comum",
+                    "description": "Tipo das regras em arquivos fora da exportação do gerenciador de artefatos, como um arquivo novo. Cada arquivo pode ter outro tipo pela barra de status."
+                },
                 "seniorLsp.tbsProducao": {
                     "type": "string",
                     "default": "",
@@ -65,6 +76,11 @@
             }
         },
         "commands": [
+            {
+                "command": "seniorLsp.escolherTipo",
+                "title": "Escolher o tipo da regra",
+                "category": "Senior LSP"
+            },
             {
                 "command": "seniorLsp.restart",
                 "title": "Reiniciar o servidor",
