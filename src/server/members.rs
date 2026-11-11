@@ -98,11 +98,9 @@ impl Context<'_> {
             }
             Some((DefKind::WebService, _)) => {
                 operations(&mut items, &["Executar"], "executa a porta");
-                items.push(field(
-                    "ErroExecucao",
-                    Some(VarType::Alfa),
-                    "mensagem de erro da execução",
-                ));
+                for (name, ty, detail) in super::webservice::IMPLICIT {
+                    items.push(field(name, Some(ty), detail));
+                }
                 if let Some(port) = self.webservice_params(base) {
                     for param in &port.params {
                         items.push(port_field(param));

@@ -617,7 +617,7 @@ impl Server<'_> {
         let Some(doc) = self.documents.get(uri) else {
             return Ok(());
         };
-        let diagnostics = diagnostics::diagnostics(
+        let mut diagnostics = diagnostics::diagnostics(
             &doc.text,
             &doc.tree,
             &doc.symbols,
@@ -626,6 +626,14 @@ impl Server<'_> {
             &doc.index,
             self.encoding,
         );
+        // Os parâmetros do web service vêm do Port.json no disco, fora da validação da regra.
+        let context = navigation::Context {
+            doc,
+            uri,
+            encoding: self.encoding,
+            embedding: None,
+        };
+        diagnostics.extend(context.webservice_diagnostics());
         self.send_diagnostics(uri.clone(), diagnostics, Some(doc.version))
     }
 

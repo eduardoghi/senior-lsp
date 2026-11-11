@@ -124,6 +124,36 @@ impl Context<'_> {
     }
 }
 
+/// Parâmetros que o ERP acrescenta a toda porta, com o tipo e a descrição que ele registra
+/// para cada uma. Não aparecem no `Port.json`.
+pub(crate) const IMPLICIT: [(&str, crate::symbols::VarType, &str); 5] = [
+    (
+        "Usuario",
+        crate::symbols::VarType::Alfa,
+        "usuário solicitante do serviço",
+    ),
+    (
+        "Senha",
+        crate::symbols::VarType::Alfa,
+        "senha do usuário solicitante do serviço",
+    ),
+    (
+        "Token",
+        crate::symbols::VarType::Alfa,
+        "token do usuário solicitante do serviço",
+    ),
+    (
+        "ModoExecucao",
+        crate::symbols::VarType::Numero,
+        "forma de execução do serviço",
+    ),
+    (
+        "ErroExecucao",
+        crate::symbols::VarType::Alfa,
+        "erro ocorrido no servidor ao executar o serviço, vazio quando deu certo",
+    ),
+];
+
 /// Porta lida do `Port.json` da exportação.
 pub(crate) struct Port {
     pub(crate) description: String,
@@ -194,4 +224,99 @@ fn child(dir: &Path, name: &str) -> Option<PathBuf> {
         .flatten()
         .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(name))
         .map(|e| e.path())
+}
+
+impl Context<'_> {
+    /// Membros de web service que não estão no `Port.json` da porta, como `ws.Campo` ou
+    /// `ws.conjunto.Coluna`. Sem a porta na exportação, nada é conferido.
+    pub(crate) fn webservice_diagnostics(&self) -> Vec<lsp_types::Diagnostic> {
+        let tree = &self.doc.tree;
+        let text = &self.doc.text;
+        let mut ports: std::collections::HashMap<String, Option<Port>> =
+            std::collections::HashMap::new();
+        let mut diagnostics = Vec::new();
+        let mut stack = vec![tree.root()];
+        while let Some(node) = stack.pop() {
+            stack.extend(tree.children(node));
+            if tree.kind(node) != SyntaxKind::FieldExpr {
+                continue;
+            }
+            let mut parts = tree.children(node);
+            let (Some(object), Some(member)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            if tree.kind(member) != SyntaxKind::NameRef {
+                continue;
+            }
+            let member_name = &text[tree.text_range(member)];
+            // `ws.Membro` ou `ws.conjunto.Coluna`, com ou sem índice no conjunto.
+            let set_access = match tree.kind(object) {
+                SyntaxKind::IndexExpr => tree.children(object).next(),
+                SyntaxKind::FieldExpr => Some(object),
+                _ => None,
+            }
+            .filter(|&o| tree.kind(o) == SyntaxKind::FieldExpr);
+            let (ws, set) = match set_access {
+                Some(inner) => {
+                    let mut inner_parts = tree.children(inner);
+                    let (Some(ws), Some(set)) = (inner_parts.next(), inner_parts.next()) else {
+                        continue;
+                    };
+                    (ws, Some(&text[tree.text_range(set)]))
+                }
+                None => (object, None),
+            };
+            if tree.kind(ws) != SyntaxKind::NameRef {
+                continue;
+            }
+            let ws_name = &text[tree.text_range(ws)];
+            if self.webservice_name(ws_name).is_none() {
+                continue;
+            }
+            let port = ports
+                .entry(ws_name.to_ascii_uppercase())
+                .or_insert_with(|| self.webservice_params(ws_name));
+            let Some(port) = port else {
+                continue;
+            };
+            let implicit: Vec<&str> = std::iter::once("Executar")
+                .chain(IMPLICIT.iter().map(|(name, _, _)| *name))
+                .collect();
+            let (known, fixed, place): (&[PortParam], &[&str], String) = match set {
+                None => (&port.params, &implicit, "da porta".to_owned()),
+                Some(set) => {
+                    let Some(param) = port
+                        .params
+                        .iter()
+                        .find(|p| p.is_set() && p.name.eq_ignore_ascii_case(set))
+                    else {
+                        continue;
+                    };
+                    (
+                        &param.columns,
+                        &["QtdLinhas", "LinhaAtual", "CriarLinha", "ExcluirLinha"],
+                        format!("do conjunto {}", param.name),
+                    )
+                }
+            };
+            let exists = known
+                .iter()
+                .any(|p| p.name.eq_ignore_ascii_case(member_name))
+                || fixed.iter().any(|f| f.eq_ignore_ascii_case(member_name));
+            if !exists {
+                diagnostics.push(lsp_types::Diagnostic {
+                    range: self.range(tree.text_range(member)),
+                    severity: Some(lsp_types::DiagnosticSeverity::WARNING),
+                    code: Some(lsp_types::NumberOrString::String("SEN069".to_owned())),
+                    source: Some("senior-lsp".to_owned()),
+                    message: format!(
+                        "{member_name} não é parâmetro {place} no Port.json da exportação."
+                    ),
+                    ..lsp_types::Diagnostic::default()
+                });
+            }
+        }
+        diagnostics.sort_by_key(|d| (d.range.start.line, d.range.start.character));
+        diagnostics
+    }
 }

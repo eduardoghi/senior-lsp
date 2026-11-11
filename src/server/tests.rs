@@ -1379,7 +1379,17 @@ fn parametros_da_porta_do_web_service() {
     };
     assert_eq!(
         labels(1, 3),
-        ["CodEmp", "ErroExecucao", "Executar", "PerCom", "tbItens"]
+        [
+            "CodEmp",
+            "ErroExecucao",
+            "Executar",
+            "ModoExecucao",
+            "PerCom",
+            "Senha",
+            "Token",
+            "Usuario",
+            "tbItens"
+        ]
     );
     assert_eq!(
         labels(2, 14),
@@ -1406,6 +1416,52 @@ fn parametros_da_porta_do_web_service() {
         "{value}"
     );
     assert!(value.contains("- `tbItens` (conjunto)"), "{value}");
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn parametro_que_nao_esta_na_porta() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-ws-diag-{}", std::process::id()));
+    let porta = base.join("Web Services/interno/com.empresa.vendas/Consultar");
+    std::fs::create_dir_all(&porta).unwrap();
+    std::fs::write(
+        porta.join("Port.json"),
+        "{\"params\":[{\"name\":\"CodEmp\",\"kind\":\"pkIn\",\"type\":\"ptInteger\"},\
+         {\"name\":\"tbItens\",\"kind\":\"pkOut\",\"type\":\"ptComplexSet\",\"columns\":[\
+         {\"name\":\"CodPro\",\"kind\":\"pkOut\",\"type\":\"ptString\"}]}]}",
+    )
+    .unwrap();
+    let regra = base.join("regras/R1.LSP/Rule.txt");
+    std::fs::create_dir_all(regra.parent().unwrap()).unwrap();
+    let regra_uri = crate::form::uri_from_path(&regra);
+
+    let (editor, _) = Editor::start(None);
+    let text = "Definir interno.com.empresa.vendas.Consultar ws;\n\
+                definir alfa a;\n\
+                ws.codemp = 1;\n\
+                ws.ModoExecucao = 1;\n\
+                ws.Executar();\n\
+                se (ws.ErroExecucao <> \"\") { a = \"x\"; }\n\
+                ws.CodRep = 2;\n\
+                a = ws.tbItens[1].CodPro;\n\
+                a = ws.tbItens[1].Nada;\n\
+                Mensagem(Retorna, a);";
+    editor.open(&regra_uri, 1, text);
+    let found: Vec<String> = editor
+        .diagnostics()
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(lsp_types::NumberOrString::String("SEN069".into())))
+        .map(|d| format!("{} {}", d.range.start.line, d.message))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            "6 CodRep não é parâmetro da porta no Port.json da exportação.",
+            "8 Nada não é parâmetro do conjunto tbItens no Port.json da exportação.",
+        ]
+    );
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }

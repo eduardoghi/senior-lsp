@@ -15,7 +15,8 @@ O servidor oferece:
 - ir da definição de um web service interno (`Definir interno.com.x.Servico.Porta ws;`) para o
   `Rule.txt` da porta, na pasta `Web Services` da mesma exportação
 - os parâmetros da porta do web service, lidos do `Port.json` da exportação, no hover do nome
-  qualificado e no completar depois de `ws.`, junto com `Executar` e `ErroExecucao`. Depois de
+  qualificado e no completar depois de `ws.`, junto com `Executar` e os parâmetros que o ERP
+  acrescenta a toda porta (`Usuario`, `Senha`, `Token`, `ModoExecucao` e `ErroExecucao`). Depois de
   `ws.conjunto.` ou `ws.conjunto[i].` vêm as colunas do conjunto e `QtdLinhas`, `LinhaAtual`,
   `CriarLinha` e `ExcluirLinha`
 - destacar as outras ocorrências do nome que está no cursor
@@ -259,6 +260,7 @@ Cada diagnóstico tem um código fixo.
 | SEN066 | aviso | SQL nativo sem `SQL_UsarAbrangencia(x, 0)`, que para na execução |
 | SEN067 | aviso | coluna do `SQL_Retornar*` que não está no SELECT, que para na execução |
 | SEN068 | dica | variável, cursor, lista, tabela ou web service definido e nunca usado, só na regra comum |
+| SEN069 | aviso | membro de web service que não é parâmetro da porta no `Port.json` da exportação, nem um dos implícitos (`Usuario`, `Senha`, `Token`, `ModoExecucao`, `ErroExecucao`) |
 
 O SEN068 sai como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
 conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da
