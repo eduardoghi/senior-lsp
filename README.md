@@ -289,11 +289,17 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN068 | dica | variável, cursor, lista, tabela ou web service definido e nunca usado, só na regra comum |
 | SEN069 | aviso | membro de web service que não é parâmetro da porta no `Port.json` da exportação, nem um dos implícitos (`Usuario`, `Senha`, `Token`, `ModoExecucao`, `ErroExecucao`) |
 | SEN070 | dica | função definida e nunca chamada, só na regra comum |
+| SEN071 | aviso | instruções depois de `Pare`, `Cancel` ou `VaPara` no mesmo bloco, que nunca executam |
 
 O SEN068 e o SEN070 saem como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
 conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da
 variável num texto para uma função preencher. Na tela e no relatório o aviso não sai, porque as
 regras seguintes podem usar o nome.
+
+O SEN071 cobre da primeira instrução depois do comando até a última do bloco, e o editor esmaece
+o trecho. Um rótulo (`nome:`) no meio do bloco volta a tornar o código alcançável, porque um
+`VaPara` pode chegar nele. Um `Pare`, `Cancel` ou `VaPara` dentro de um `se` só afeta o resto do
+bloco do `se`. O `Continue` e o `Cancelar` ainda não geram o aviso.
 
 ## Dicionário de dados
 

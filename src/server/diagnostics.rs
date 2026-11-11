@@ -72,8 +72,8 @@ pub(crate) fn diagnostics_with(
             code: Some(NumberOrString::String(code.to_owned())),
             source: Some("senior-lsp".to_owned()),
             message,
-            // O editor esmaece o nome sem uso, como faz com código morto.
-            tags: matches!(code, "SEN068" | "SEN070")
+            // O editor esmaece o nome sem uso e o código que não executa.
+            tags: matches!(code, "SEN068" | "SEN070" | "SEN071")
                 .then(|| vec![lsp_types::DiagnosticTag::UNNECESSARY]),
             ..Diagnostic::default()
         })
@@ -306,6 +306,10 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                 &text[check.range]
             ),
         ),
+        CheckKind::Unreachable => (
+            "SEN071",
+            format!("Código depois de {name} não é executado."),
+        ),
         CheckKind::UnusedFunction => (
             "SEN070",
             format!("A função {name} nunca é chamada neste arquivo."),
@@ -439,6 +443,35 @@ mod tests {
             ]
         );
         assert!(d[0].message.contains("função f."));
+    }
+
+    #[test]
+    fn codigo_inalcancavel_e_aviso_esmaecido() {
+        let text = "Pare;\nx = 1;\ny = 2;\nCancel(1);";
+        let tree = crate::parse(text).unwrap();
+        let d = diagnostics(
+            text,
+            &tree,
+            &Symbols::build(&tree, text),
+            Context::Rule,
+            &Inherited::default(),
+            &LineIndex::new(text),
+            ColumnEncoding::Utf16,
+        );
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].code, Some(NumberOrString::String("SEN071".to_owned())));
+        assert_eq!(d[0].severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(d[0].message, "Código depois de Pare não é executado.");
+        assert_eq!(d[0].tags, Some(vec![lsp_types::DiagnosticTag::UNNECESSARY]));
+        // Do começo da primeira instrução ao fim da última antes do fim do bloco.
+        assert_eq!(
+            (
+                d[0].range.start.line,
+                d[0].range.end.line,
+                d[0].range.end.character
+            ),
+            (1, 3, 10)
+        );
     }
 
     #[test]

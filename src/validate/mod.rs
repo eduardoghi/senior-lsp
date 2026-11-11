@@ -73,6 +73,8 @@ pub enum CheckKind {
     Unused,
     /// Função definida e nunca chamada, na regra comum, pelo mesmo motivo.
     UnusedFunction,
+    /// Instruções depois de `Pare`, `Cancel` ou `VaPara` no mesmo bloco, que nunca executam.
+    Unreachable,
 }
 
 impl CheckKind {
@@ -176,7 +178,11 @@ pub fn validate(
                     });
                 }
             }
-            FuncImpl => function(tree, node, &mut checks),
+            FuncImpl => {
+                function(tree, node, &mut checks);
+                unreachable(tree, node, &mut checks);
+            }
+            Block | SourceFile => unreachable(tree, node, &mut checks),
             _ => {}
         }
         let first = stack.len();
@@ -454,13 +460,7 @@ fn function(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
     if !body.next().is_some_and(|c| tree.kind(c) == Block) {
         return;
     }
-    let is_definition = |c: NodeId| {
-        matches!(
-            tree.kind(c),
-            VarDef | CursorDef | ListDef | TableDef | FuncDecl | WsDef
-        )
-    };
-    if let Some(after) = body.find(|&c| !is_definition(c)) {
+    if let Some(after) = body.find(|&c| !is_definition(tree, c)) {
         checks.push(Check {
             kind: CheckKind::CodeAfterFunctionBlock,
             range: tree.text_range(after),
@@ -468,6 +468,81 @@ fn function(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
             label: None,
         });
     }
+}
+
+/// Definições não executam.
+fn is_definition(tree: &Tree, node: NodeId) -> bool {
+    matches!(
+        tree.kind(node),
+        VarDef | CursorDef | ListDef | TableDef | FuncDecl | WsDef
+    )
+}
+
+/// Comando que desvia o fluxo para fora do resto do bloco, com o nome que a mensagem cita.
+/// `Cancel` vale com e sem parênteses. `Continue` e `Cancelar` ainda não foram conferidos no
+/// compilador e ficam de fora.
+fn flow_stop(tree: &Tree, node: NodeId) -> Option<&'static str> {
+    match tree.kind(node) {
+        Break => Some("Pare"),
+        Goto => Some("VaPara"),
+        KeywordStmt if operator(tree, node) == Some(CancelKw) => Some("Cancel"),
+        // O `Cancel(...)` é uma chamada, e o nome fica num `NameRef`.
+        CallStmt => tree
+            .children(node)
+            .find(|&c| tree.kind(c) == CallExpr)
+            .and_then(|call| tree.children(call).next())
+            .filter(|&name| {
+                tree.kind(name) == NameRef
+                    && tree.tokens().kind(tree.token_range(name).start) == CancelKw
+            })
+            .map(|_| "Cancel"),
+        _ => None,
+    }
+}
+
+/// Rótulo em `node` ou abaixo dele (fora de funções), que um `VaPara` pode alcançar.
+fn contains_label(tree: &Tree, node: NodeId) -> bool {
+    let mut stack = vec![node];
+    while let Some(n) = stack.pop() {
+        match tree.kind(n) {
+            Label => return true,
+            FuncImpl => {}
+            _ => stack.extend(tree.children(n)),
+        }
+    }
+    false
+}
+
+/// Instruções depois de `Pare`, `Cancel` ou `VaPara` no mesmo bloco, até um rótulo ou o fim do
+/// bloco. O rótulo pode ser alvo de um `VaPara` e volta a tornar o código alcançável. Uma
+/// instrução que guarda um rótulo por dentro também encerra o trecho, pelo mesmo motivo. O que
+/// vem antes de uma `funcao` não entra, porque o compilador trata esse caso à parte (SEN061).
+fn unreachable(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
+    let mut stopper = None;
+    let mut dead: Option<TextRange> = None;
+    let mut flush = |stopper: &mut Option<&'static str>, dead: &mut Option<TextRange>| {
+        if let (Some(cmd), Some(range)) = (stopper.take(), dead.take()) {
+            checks.push(Check {
+                kind: CheckKind::Unreachable,
+                range,
+                name: None,
+                label: Some(cmd.to_owned()),
+            });
+        }
+    };
+    for child in tree.children(node) {
+        if stopper.is_none() {
+            stopper = flow_stop(tree, child);
+            continue;
+        }
+        if matches!(tree.kind(child), Label | FuncImpl) || contains_label(tree, child) {
+            flush(&mut stopper, &mut dead);
+        } else if !is_definition(tree, child) {
+            let range = tree.text_range(child);
+            dead = Some(dead.map_or(range, |d| d.cover(range)));
+        }
+    }
+    flush(&mut stopper, &mut dead);
 }
 
 /// Primeiro token entre os filhos que não é trivia, que numa expressão é o operador.
@@ -563,6 +638,106 @@ mod tests {
             .map(|(_, n)| n)
             .collect();
         assert_eq!(sobra, ["Sobra"]);
+    }
+
+    #[test]
+    fn codigo_depois_de_pare_cancel_e_vapara() {
+        // A regra conferida no ERP. Rodam o 2, o 4 e o 6, e o 3, o 5 e o 8 não.
+        let text = "nI = 0;\n\
+                    enquanto (nI < 3) {\n\
+                    nI++;\n\
+                    se (nI = 2) {\n\
+                    Mensagem(Retorna, \"2\");\n\
+                    Pare;\n\
+                    Mensagem(Retorna, \"3\");\n\
+                    }\n\
+                    }\n\
+                    Mensagem(Retorna, \"4\");\n\
+                    vapara pulo;\n\
+                    Mensagem(Retorna, \"5\");\n\
+                    pulo:\n\
+                    Mensagem(Retorna, \"6\");\n\
+                    Cancel(1);\n\
+                    Mensagem(Retorna, \"8\");";
+        assert_eq!(
+            checks(text),
+            [
+                (Unreachable, "Mensagem(Retorna, \"3\");"),
+                (Unreachable, "Mensagem(Retorna, \"5\");"),
+                (Unreachable, "Mensagem(Retorna, \"8\");"),
+            ]
+        );
+    }
+
+    #[test]
+    fn faixa_do_codigo_inalcancavel_vai_ate_o_fim_do_bloco() {
+        let text = "Pare;\na = 1;\n@ comentário @\nb = 2;\nc = 3;";
+        assert_eq!(
+            checks(text),
+            [(Unreachable, "a = 1;\n@ comentário @\nb = 2;\nc = 3;")]
+        );
+        // Depois do fim do bloco o código volta a executar.
+        let text = "enquanto (a < 1) { Pare; x = 1; y = 2; }\nz = 3;";
+        assert_eq!(checks(text), [(Unreachable, "x = 1; y = 2;")]);
+    }
+
+    #[test]
+    fn rotulo_no_meio_volta_a_ser_alcancavel() {
+        let text =
+            "vapara saida;\nx = 1;\ny = 2;\nmeio:\nz = 3;\nCancel(2);\nw = 4;\nsaida:\nv = 5;";
+        assert_eq!(
+            checks(text),
+            [(Unreachable, "x = 1;\ny = 2;"), (Unreachable, "w = 4;")]
+        );
+        // Rótulo logo depois do comando, sem nada entre os dois.
+        assert!(checks("vapara saida;\nsaida:\nx = 1;").is_empty());
+        // Rótulo dentro de um bloco inalcançável ainda pode ser alvo do VaPara de fora.
+        assert!(checks("Pare;\n{ x = 1; alvo: y = 2; }\nvapara alvo;").is_empty());
+    }
+
+    #[test]
+    fn comando_dentro_do_se_nao_afeta_o_que_vem_depois() {
+        let text = "se (a = 1) {\nPare;\n}\nx = 1;\nse (b = 2) { Cancel(1); }\ny = 2;\n\
+                    se (c = 3) { vapara saida; } senao { z = 3; }\nw = 4;\nsaida:";
+        assert!(checks(text).is_empty());
+        // Dentro do próprio bloco do se, o que vem depois do comando não executa.
+        assert_eq!(
+            checks("se (a = 1) { Pare; x = 1; }\ny = 2;"),
+            [(Unreachable, "x = 1;")]
+        );
+    }
+
+    #[test]
+    fn bloco_vazio_depois_do_comando() {
+        assert!(checks("Pare;").is_empty());
+        assert!(checks("enquanto (a < 1) { Pare; }").is_empty());
+        assert!(checks("Cancel(1);\n").is_empty());
+        // Só definições depois do comando, que não executam.
+        assert_eq!(
+            checks("Cancel(1);\ndefinir alfa aX;\naX = \"\";"),
+            [(Unreachable, "aX = \"\";")]
+        );
+        assert!(checks("vapara saida;\nsaida:").is_empty());
+    }
+
+    #[test]
+    fn cancel_sem_parenteses_e_outros_comandos() {
+        assert_eq!(checks("cancel;\nx = 1;"), [(Unreachable, "x = 1;")]);
+        assert_eq!(checks("Cancel(1);\nx = 1;"), [(Unreachable, "x = 1;")]);
+        // O retorna e o ExecSql não desviam o fluxo para fora do bloco nesta verificação, e o
+        // Continue e o Cancelar não foram conferidos.
+        assert!(checks("ExecSql \"UPDATE T SET A = 1\";\nx = 1;").is_empty());
+        assert!(checks("enquanto (a < 1) { continue; x = 1; }").is_empty());
+        assert!(checks("Cancelar(1);\nx = 1;").is_empty());
+    }
+
+    #[test]
+    fn codigo_inalcancavel_dentro_de_funcao() {
+        let text = "Definir Funcao F();\nF();\nfuncao F(); {\nPare;\nx = 1;\n}";
+        assert_eq!(checks(text), [(Unreachable, "x = 1;")]);
+        // O comando antes de uma funcao não faz as funcoes seguintes inalcançáveis.
+        let text = "Definir Funcao F();\nF();\nCancel(1);\nfuncao F(); {\nx = 1;\n}";
+        assert!(checks(text).is_empty());
     }
 
     #[test]
