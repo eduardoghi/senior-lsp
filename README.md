@@ -16,6 +16,7 @@ O servidor oferece:
   SGI, as outras regras) e as funções da regra que ela chama
 - ir da definição de um web service interno (`Definir interno.com.x.Servico.Porta ws;`) para o
   `Rule.txt` da porta, na pasta `Web Services` da mesma exportação
+- no JSON de modelo com as regras separadas, o `"lines": "regras/..."` vira link para o arquivo da regra
 - os parâmetros da porta do web service, lidos do `Port.json` da exportação, no hover do nome
   qualificado e no completar depois de `ws.`, junto com `Executar` e os parâmetros que o ERP
   acrescenta a toda porta (`Usuario`, `Senha`, `Token`, `ModoExecucao` e `ErroExecucao`). Depois de

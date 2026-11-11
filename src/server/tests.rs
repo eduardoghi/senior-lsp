@@ -1673,3 +1673,31 @@ fn selecao_expandida() {
     assert!(steps.iter().any(|s| s == "linhas 1-3"), "{steps:?}");
     editor.stop();
 }
+
+#[test]
+fn link_do_json_para_a_regra_separada() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-link-{}", std::process::id()));
+    let model = base.join("Modelos/M1.GER");
+    std::fs::create_dir_all(model.join("regras")).unwrap();
+    let json = "{ \"before_print\": { \"rule\": {\n    \"prop_name\": \"SOnBeforePrint\",\n    \"lines\": \"regras/Cabecalho.SOnBeforePrint.txt\"\n} } }";
+    let path = model.join("Cabecalho.json");
+    std::fs::write(&path, json).unwrap();
+    let uri = crate::form::uri_from_path(&path);
+    let (mut editor, _) = Editor::start(None);
+    editor.open_as(&uri, "json", 1, json);
+    editor.diagnostics();
+    let response = editor.request(
+        lsp_types::request::DocumentLinkRequest::METHOD,
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    let links: Vec<lsp_types::DocumentLink> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].range.start, lsp_types::Position::new(2, 14));
+    assert_eq!(
+        links[0].target.as_ref().unwrap().as_str(),
+        crate::form::uri_from_path(&model.join("regras/Cabecalho.SOnBeforePrint.txt"))
+    );
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}

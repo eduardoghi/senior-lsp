@@ -13,6 +13,7 @@ mod implementation;
 mod inlay;
 mod kind;
 mod lens;
+mod links;
 mod members;
 mod navigation;
 mod quickfix;
@@ -32,7 +33,7 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare,
-    CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
+    CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest, DocumentLinkRequest,
     DocumentSymbolRequest, ExecuteCommand, FoldingRangeRequest, GotoDefinition, GotoImplementation,
     HoverRequest, InlayHintRequest, PrepareRenameRequest, References, Rename,
     Request as LspRequest, SelectionRangeRequest, SemanticTokensFullRequest, SignatureHelpRequest,
@@ -71,6 +72,10 @@ pub fn run(connection: Connection) -> Result<()> {
                 true,
             )),
             document_highlight_provider: Some(OneOf::Left(true)),
+            document_link_provider: Some(lsp_types::DocumentLinkOptions {
+                resolve_provider: Some(false),
+                work_done_progress_options: Default::default(),
+            }),
             selection_range_provider: Some(lsp_types::SelectionRangeProviderCapability::Simple(
                 true,
             )),
@@ -364,6 +369,14 @@ impl Server<'_> {
                         };
                         serde_json::to_value(context.code_lenses())?
                     }
+                    None => serde_json::Value::Null,
+                })
+            }
+            DocumentLinkRequest::METHOD => {
+                let params: lsp_types::DocumentLinkParams = serde_json::from_value(request.params)?;
+                let uri = &params.text_document.uri;
+                Ok(match self.documents.report(uri) {
+                    Some(report) => serde_json::to_value(links::links(report, uri, self.encoding))?,
                     None => serde_json::Value::Null,
                 })
             }
