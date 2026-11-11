@@ -11,6 +11,7 @@ mod directives;
 mod documents;
 mod folding;
 mod highlight;
+mod ignore;
 mod implementation;
 mod inlay;
 mod kind;
@@ -486,11 +487,16 @@ impl Server<'_> {
                         encoding: self.encoding,
                         embedding: None,
                     };
+                    let shown = self
+                        .diagnostics_of(&self.documents, uri)
+                        .map(|(diagnostics, _)| diagnostics)
+                        .unwrap_or_default();
                     actions.extend(
                         context
                             .define_actions(params.range.start)
                             .into_iter()
                             .chain(context.check_fixes(params.range))
+                            .chain(context.ignore_actions(params.range, &shown))
                             .map(lsp_types::CodeActionOrCommand::CodeAction),
                     );
                 }

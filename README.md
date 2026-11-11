@@ -10,7 +10,7 @@ O servidor oferece:
 - erros de sintaxe e de tipo, com o texto do compilador entre parênteses para quem já conhece a
   mensagem do ERP
 - avisos de código que compila mas faz outra coisa do que parece
-- [diretivas em comentário](#esconder-diagnósticos) e um arquivo `senior-lsp.json` que escondem diagnósticos por código ou mudam o nível deles
+- [diretivas em comentário](#esconder-diagnósticos) e um arquivo `senior-lsp.json` que escondem diagnósticos por código ou mudam o nível deles, com a correção rápida "Ignorar SENxxx nesta linha"
 - ir para a definição e achar as referências de variáveis, funções, parâmetros e rótulos
 - ir para a implementação, do `definir funcao` ou da chamada para a `funcao`, e da `funcao` de volta
 - hierarquia de chamadas, com quem chama a função (outras funções, o corpo da regra e, numa tela
@@ -364,6 +364,10 @@ O `senior-lsp.json` muda o nível de cada código para uma pasta inteira. O serv
 - A configuração vale nos arquivos abertos e na análise da pasta inteira. Quando o editor avisa que um `senior-lsp.json` mudou (o VS Code avisa), o servidor lê de novo e publica os diagnósticos outra vez. Nos editores que não avisam, como o Kate, a leitura é refeita ao abrir qualquer arquivo.
 
 No VS Code, a extensão traz o esquema do arquivo, então o editor completa os códigos e os níveis.
+
+### Ignorar pela correção rápida
+
+Em cada diagnóstico que se pode esconder, a ação de código "Ignorar SENxxx nesta linha" põe um `@ senior-lsp-disable-next-line SENxxx @` na linha de cima, com a indentação da linha do diagnóstico. Se a linha de cima já é um `senior-lsp-disable-next-line` dessa linha, o código entra no fim da lista dele. A ação não aparece dentro das regras de um JSON de modelo, onde o texto da regra é uma string escapada do JSON.
 
 ## Dicionário de dados
 

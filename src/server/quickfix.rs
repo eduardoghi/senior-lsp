@@ -441,12 +441,12 @@ impl Context<'_> {
     }
 }
 
-fn newline(text: &str) -> &'static str {
+pub(super) fn newline(text: &str) -> &'static str {
     if text.contains("\r\n") { "\r\n" } else { "\n" }
 }
 
 /// Espaços e tabulações entre o começo da linha e `at`.
-fn indentation(text: &str, at: TextSize) -> &str {
+pub(super) fn indentation(text: &str, at: TextSize) -> &str {
     let at = usize::from(at);
     let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
     let indent = &text[line_start..at];

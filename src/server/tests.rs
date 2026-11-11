@@ -2346,3 +2346,87 @@ fn configuracao_vale_na_analise_da_pasta_e_limpa_o_que_ficou() {
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+/// Títulos das ações "Ignorar" oferecidas na posição.
+fn ignore_titles(editor: &mut Editor, line: u32, character: u32) -> Vec<String> {
+    let response = editor.request(
+        lsp_types::request::CodeActionRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "range": { "start": { "line": line, "character": character },
+                           "end": { "line": line, "character": character } },
+                "context": { "diagnostics": [] } }),
+    );
+    let actions: Vec<lsp_types::CodeActionOrCommand> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    actions
+        .into_iter()
+        .filter_map(|a| match a {
+            lsp_types::CodeActionOrCommand::CodeAction(a) if a.title.starts_with("Ignorar") => {
+                Some(a.title)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn correcao_rapida_insere_e_acrescenta_a_diretiva() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "se (1 = 1) {\n    Pare;\n    x = 2 e -3;\n}";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    // O SEN071 começa na linha 2, e a diretiva entra acima, com a indentação dela.
+    let fixed = apply_fix(&mut editor, text, 2, 4, "Ignorar SEN071");
+    assert_eq!(
+        fixed,
+        "se (1 = 1) {\n    Pare;\n    @ senior-lsp-disable-next-line SEN071 @\n    x = 2 e -3;\n}"
+    );
+
+    // Com a diretiva na linha de cima, o outro código entra nela.
+    editor.change(RULE, 2, &fixed);
+    let d = editor.diagnostics();
+    assert_eq!(codes(&d), ["SEN060"]);
+    let at = d.diagnostics[0].range.start;
+    let again = apply_fix(&mut editor, &fixed, at.line, at.character, "Ignorar SEN060");
+    assert_eq!(
+        again,
+        "se (1 = 1) {\n    Pare;\n    @ senior-lsp-disable-next-line SEN071, SEN060 @\n    x = 2 e -3;\n}"
+    );
+    editor.change(RULE, 3, &again);
+    assert!(editor.diagnostics().diagnostics.is_empty());
+    editor.stop();
+}
+
+#[test]
+fn correcao_rapida_so_para_o_que_se_pode_esconder() {
+    let (mut editor, _) = Editor::start(None);
+    // O SEN021 é erro de sintaxe, e o SEN073 é aviso sobre a própria diretiva.
+    let text = "x = ;\n@ senior-lsp-disable-next-line SEN048 @\ny = 1;";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    assert!(ignore_titles(&mut editor, 0, 4).is_empty());
+    assert!(ignore_titles(&mut editor, 1, 35).is_empty());
+    // Fora de qualquer diagnóstico, nada.
+    assert!(ignore_titles(&mut editor, 2, 0).is_empty());
+    editor.stop();
+}
+
+#[test]
+fn correcao_rapida_oferece_uma_acao_por_codigo_e_respeita_crlf() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "Pare;\r\nx = 2 e -3;";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let mut titles = ignore_titles(&mut editor, 1, 8);
+    titles.sort();
+    assert_eq!(
+        titles,
+        ["Ignorar SEN060 nesta linha", "Ignorar SEN071 nesta linha"]
+    );
+    let fixed = apply_fix(&mut editor, text, 1, 8, "Ignorar SEN071");
+    assert_eq!(
+        fixed,
+        "Pare;\r\n@ senior-lsp-disable-next-line SEN071 @\r\nx = 2 e -3;"
+    );
+    editor.stop();
+}
