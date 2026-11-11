@@ -77,6 +77,9 @@ impl Context<'_> {
 
     pub(crate) fn definition(&self, position: Position) -> Vec<Location> {
         let offset = self.offset(position);
+        if let Some(port) = self.webservice_definition(offset) {
+            return vec![port];
+        }
         let symbols = &self.doc.symbols;
         let Some(targets) = symbols.at(offset) else {
             return self.inherited_definition(offset).into_iter().collect();

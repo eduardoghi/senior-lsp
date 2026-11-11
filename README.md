@@ -11,6 +11,8 @@ O servidor oferece:
   mensagem do ERP
 - avisos de código que compila mas faz outra coisa do que parece
 - ir para a definição e achar as referências de variáveis, funções, parâmetros e rótulos
+- ir da definição de um web service interno (`Definir interno.com.x.Servico.Porta ws;`) para o
+  `Rule.txt` da porta, na pasta `Web Services` da mesma exportação
 - destacar as outras ocorrências do nome que está no cursor
 - contagem de referências em cima de cada `funcao`, que abre a lista das chamadas no VS Code. Nos
   outros editores, o clique chama o comando `senior-lsp.mostrarReferencias`, que o editor precisa

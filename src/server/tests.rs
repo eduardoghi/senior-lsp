@@ -1284,3 +1284,35 @@ fn contagem_de_referencias_das_funcoes() {
     );
     editor.stop();
 }
+
+#[test]
+fn ir_para_a_regra_da_porta_do_web_service() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-ws-{}", std::process::id()));
+    let porta = base.join("Web Services/interno/com.empresa.vendas/Calcular");
+    std::fs::create_dir_all(&porta).unwrap();
+    std::fs::write(porta.join("Rule.txt"), "").unwrap();
+    let regra = base.join("regras/R1.LSP/Rule.txt");
+    std::fs::create_dir_all(regra.parent().unwrap()).unwrap();
+    let regra_uri = crate::form::uri_from_path(&regra);
+
+    let (mut editor, _) = Editor::start(None);
+    editor.open(&regra_uri, 1, "Definir interno.com.empresa.vendas.Calcular ws;\nDefinir interno.com.empresa.vendas.Outra ws2;");
+    editor.diagnostics();
+    let mut go = |line: u32, character: u32| {
+        let response = editor.request(
+            GotoDefinition::METHOD,
+            json!({ "textDocument": { "uri": regra_uri },
+                    "position": { "line": line, "character": character } }),
+        );
+        response.response_result.unwrap()
+    };
+    let found = go(0, 20);
+    assert_eq!(
+        found[0]["uri"],
+        crate::form::uri_from_path(&porta.join("Rule.txt"))
+    );
+    // Porta que não está na exportação.
+    assert_eq!(go(1, 20), json!([]));
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}

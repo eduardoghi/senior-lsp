@@ -16,6 +16,7 @@ mod navigation;
 mod quickfix;
 mod semantic;
 mod signature;
+mod webservice;
 
 use std::collections::HashMap;
 use std::error::Error;
