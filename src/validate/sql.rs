@@ -11,7 +11,6 @@
 //! objeto sem conferência.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -25,6 +24,7 @@ use super::{Check, CheckKind};
 use crate::dictionary::Dictionaries;
 use crate::symbols::{DefKind, Symbols, VarType};
 use crate::{NodeId, SyntaxKind, Tree};
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Operações do cursor, que não são colunas. São as únicas que aparecem nas regras.
 const CURSOR_OPERATIONS: [&str; 6] = [
@@ -105,7 +105,7 @@ type SharedDictionary = Option<Arc<crate::tbs::Dictionary>>;
 #[derive(Default)]
 struct Cache {
     dictionaries: (SharedDictionary, SharedDictionary),
-    entries: HashMap<String, Rc<Analysis>>,
+    entries: FxHashMap<String, Rc<Analysis>>,
     bytes: usize,
 }
 
@@ -121,8 +121,10 @@ fn same_dictionary(a: &SharedDictionary, b: &SharedDictionary) -> bool {
     }
 }
 
-/// Resultado das conferências do SQL, calculado na primeira vez e lembrado depois.
-pub(super) fn analysis(sql: &str, dictionaries: &Dictionaries) -> Rc<Analysis> {
+/// Resultado das conferências do SQL de um literal de string (com as aspas, como está no texto da
+/// regra), calculado na primeira vez e lembrado depois. A chave é o literal, e não o SQL que sai
+/// dele, para a consulta ao cache não montar o SQL de novo.
+pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysis> {
     let cached = CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let (production, test) = &cache.dictionaries;
@@ -134,24 +136,25 @@ pub(super) fn analysis(sql: &str, dictionaries: &Dictionaries) -> Rc<Analysis> {
                 ..Cache::default()
             };
         }
-        cache.entries.get(sql).cloned()
+        cache.entries.get(literal).cloned()
     });
     if let Some(hit) = cached {
         return hit;
     }
-    let statements = Parser::parse_sql(&OracleDialect {}, sql).ok();
+    let sql = string_value(literal);
+    let statements = Parser::parse_sql(&OracleDialect {}, &sql).ok();
     let analysis = Rc::new(Analysis {
         constants: statements.as_deref().map(constants_of).unwrap_or_default(),
         columns: statements.and_then(|s| select_columns(&s, dictionaries)),
     });
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if cache.bytes + sql.len() > CACHE_LIMIT {
+        if cache.bytes + literal.len() > CACHE_LIMIT {
             cache.entries.clear();
             cache.bytes = 0;
         }
-        cache.bytes += sql.len();
-        cache.entries.insert(sql.to_owned(), analysis.clone());
+        cache.bytes += literal.len();
+        cache.entries.insert(literal.to_owned(), analysis.clone());
     });
     analysis
 }
@@ -323,7 +326,13 @@ pub fn cursor_columns(
 ) -> Option<Vec<(String, Option<VarType>)>> {
     let sources = Sources::build(tree, symbols, text, dictionaries);
     let columns = sources.cursors.get(&cursor.to_uppercase())?.as_ref()?;
-    Some(columns.iter().map(|c| (c.name.clone(), c.ty)).collect())
+    Some(
+        columns
+            .list
+            .iter()
+            .map(|c| (c.name.clone(), c.ty))
+            .collect(),
+    )
 }
 
 /// Campo de `cur.CAMPO` e os literais de todos os `cur.SQL "..."` do mesmo cursor no arquivo, para
@@ -364,8 +373,34 @@ pub(crate) fn cursor_sql_literals<'t>(
 /// `None` é cursor ou objeto sem conferência.
 #[derive(Default)]
 pub(super) struct Sources {
-    cursors: HashMap<String, Option<Vec<Column>>>,
-    objects: HashMap<String, Option<Vec<Column>>>,
+    cursors: FxHashMap<String, Option<ColumnSet>>,
+    objects: FxHashMap<String, Option<ColumnSet>>,
+}
+
+/// Colunas conhecidas de um cursor ou objeto, na ordem em que apareceram, com a posição de cada
+/// nome para a consulta não percorrer a lista.
+#[derive(Default)]
+struct ColumnSet {
+    list: Vec<Column>,
+    by_name: FxHashMap<String, usize>,
+}
+
+impl ColumnSet {
+    /// Acrescenta a coluna. O mesmo nome com tipos diferentes fica sem tipo.
+    fn add(&mut self, column: &Column) {
+        match self.by_name.get(&column.name) {
+            Some(&i) if self.list[i].ty != column.ty => self.list[i].ty = None,
+            Some(_) => {}
+            None => {
+                self.by_name.insert(column.name.clone(), self.list.len());
+                self.list.push(column.clone());
+            }
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<&Column> {
+        self.by_name.get(name).map(|&i| &self.list[i])
+    }
 }
 
 impl Sources {
@@ -395,7 +430,7 @@ impl Sources {
                         .children(node)
                         .nth(1)
                         .and_then(|value| string_literal(tree, value))
-                        .map(|lit| analysis(&string_value(&text[lit]), dictionaries));
+                        .map(|lit| analysis(&text[lit], dictionaries));
                     let columns = analysis.as_ref().and_then(|a| a.columns.as_deref());
                     merge(&mut sources.cursors, cursor, columns);
                 }
@@ -413,7 +448,7 @@ impl Sources {
                         continue;
                     }
                     let analysis = string_literal(tree, *command)
-                        .map(|lit| analysis(&string_value(&text[lit]), dictionaries));
+                        .map(|lit| analysis(&text[lit], dictionaries));
                     let columns = analysis.as_ref().and_then(|a| a.columns.as_deref());
                     let object = text[tree.text_range(*object)].to_uppercase();
                     merge(&mut sources.objects, object, columns);
@@ -435,7 +470,7 @@ impl Sources {
         let (cursor, field) = cursor_field(tree, symbols, text, node)?;
         let columns = self.cursors.get(&cursor)?.as_ref()?;
         let field = field.to_uppercase();
-        columns.iter().find(|c| c.name == field)?.ty
+        columns.get(&field)?.ty
     }
 
     /// `cur.CAMPO` com um campo que não é coluna do SQL do cursor nem operação.
@@ -457,7 +492,7 @@ impl Sources {
         let Some(Some(columns)) = self.cursors.get(&cursor) else {
             return;
         };
-        if columns.iter().any(|c| c.name == field) {
+        if columns.get(&field).is_some() {
             return;
         }
         if let Some(name) = tree.children(node).nth(1) {
@@ -501,7 +536,7 @@ impl Sources {
             return;
         };
         let name = string_value(&text[literal]).trim().to_uppercase();
-        if !columns.iter().any(|c| c.name == name) {
+        if columns.get(&name).is_none() {
             checks.push(Check {
                 kind: CheckKind::ReturnedColumnNotInSelect,
                 range: literal,
@@ -514,18 +549,14 @@ impl Sources {
 
 /// Junta as colunas de mais um SQL às que o cursor ou objeto já tem. Um SQL desconhecido deixa
 /// tudo desconhecido, e o mesmo nome com tipos diferentes fica sem tipo.
-fn merge(map: &mut HashMap<String, Option<Vec<Column>>>, key: String, columns: Option<&[Column]>) {
-    let entry = map.entry(key).or_insert_with(|| Some(Vec::new()));
+fn merge(map: &mut FxHashMap<String, Option<ColumnSet>>, key: String, columns: Option<&[Column]>) {
+    let entry = map.entry(key).or_insert_with(|| Some(ColumnSet::default()));
     let (Some(known), Some(columns)) = (entry.as_mut(), columns) else {
         *entry = None;
         return;
     };
     for column in columns {
-        match known.iter_mut().find(|c| c.name == column.name) {
-            Some(existing) if existing.ty != column.ty => existing.ty = None,
-            Some(_) => {}
-            None => known.push(column.clone()),
-        }
+        known.add(column);
     }
 }
 
@@ -607,7 +638,7 @@ pub(super) fn cursor_sql(
     else {
         return;
     };
-    for constant in &analysis(&string_value(&text[range]), dictionaries).constants {
+    for constant in &analysis(&text[range], dictionaries).constants {
         checks.push(Check {
             kind: CheckKind::CursorConstantColumn,
             range,
@@ -623,7 +654,7 @@ pub(super) fn cursor_sql(
 #[derive(Default)]
 pub(super) struct NativeSql {
     native: Vec<(String, text_size::TextRange)>,
-    without_scope: HashSet<String>,
+    without_scope: FxHashSet<String>,
 }
 
 impl NativeSql {
@@ -687,8 +718,15 @@ mod tests {
         assert_eq!(string_value("\"x \\\r\nyz\""), "x  yz");
     }
 
+    /// O SQL como literal de string, que é o que o cache recebe.
+    fn literal(sql: &str) -> String {
+        format!("\"{sql}\"")
+    }
+
     fn constant_columns(sql: &str) -> Vec<String> {
-        analysis(sql, &Dictionaries::default()).constants.clone()
+        analysis(&literal(sql), &Dictionaries::default())
+            .constants
+            .clone()
     }
 
     #[test]
@@ -719,11 +757,11 @@ mod tests {
         let names = |a: Rc<Analysis>| -> Vec<String> {
             a.columns.iter().flatten().map(|c| c.name.clone()).collect()
         };
-        let sql = "SELECT * FROM T";
-        assert_eq!(names(analysis(sql, &one)), ["A"]);
-        assert_eq!(names(analysis(sql, &one)), ["A"]);
-        assert_eq!(names(analysis(sql, &other)), ["B"]);
-        assert!(names(analysis(sql, &Dictionaries::default())).is_empty());
+        let sql = literal("SELECT * FROM T");
+        assert_eq!(names(analysis(&sql, &one)), ["A"]);
+        assert_eq!(names(analysis(&sql, &one)), ["A"]);
+        assert_eq!(names(analysis(&sql, &other)), ["B"]);
+        assert!(names(analysis(&sql, &Dictionaries::default())).is_empty());
     }
 
     #[test]
