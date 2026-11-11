@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE language>
+<!-- Regras LSP do ERP Senior. O nome do modo liga os arquivos ao senior-lsp no cliente LSP do Kate. -->
+<language name="LSP Senior" section="Sources" version="1" kateversion="5.0" extensions="Rule.txt;rule.txt" casesensitive="0" author="Eduardo Hillesheim" license="MIT">
+    <highlighting>
+        <list name="controle">
+            <item>cancel</item>
+            <item>cancelar</item>
+            <item>continue</item>
+            <item>e</item>
+            <item>end</item>
+            <item>enquanto</item>
+            <item>fim</item>
+            <item>inicio</item>
+            <item>ou</item>
+            <item>para</item>
+            <item>pare</item>
+            <item>regra</item>
+            <item>se</item>
+            <item>senao</item>
+            <item>vapara</item>
+        </list>
+        <list name="tipos">
+            <item>alfa</item>
+            <item>cursor</item>
+            <item>data</item>
+            <item>decimal</item>
+            <item>definir</item>
+            <item>funcao</item>
+            <item>int</item>
+            <item>lista</item>
+            <item>numero</item>
+            <item>tabela</item>
+            <item>webservice</item>
+        </list>
+        <list name="comandos">
+            <item>abrir</item>
+            <item>atualizar</item>
+            <item>atualizarcampos</item>
+            <item>chamarfuncao</item>
+            <item>desabilitarbotao</item>
+            <item>desabilitarcampo</item>
+            <item>desabilitartodos</item>
+            <item>desfazertransacao</item>
+            <item>escondercampo</item>
+            <item>excluir</item>
+            <item>execsql</item>
+            <item>execsqlex</item>
+            <item>fechar</item>
+            <item>finalizartransacao</item>
+            <item>formatar</item>
+            <item>gravar</item>
+            <item>gravarnl</item>
+            <item>gravarnleol</item>
+            <item>habilitarbotao</item>
+            <item>habilitarcampo</item>
+            <item>habilitartodos</item>
+            <item>iniciartransacao</item>
+            <item>inserir</item>
+            <item>insirir</item>
+            <item>ler</item>
+            <item>lernl</item>
+            <item>mensagem</item>
+            <item>select</item>
+            <item>unico</item>
+            <item>usar</item>
+            <item>valret</item>
+            <item>valstr</item>
+            <item>vaparacampo</item>
+            <item>vaparapagina</item>
+        </list>
+        <contexts>
+            <context name="Normal" attribute="Normal Text" lineEndContext="#stay">
+                <keyword attribute="Keyword" context="#stay" String="controle"/>
+                <keyword attribute="Data Type" context="#stay" String="tipos"/>
+                <keyword attribute="Function" context="#stay" String="comandos"/>
+                <DetectChar attribute="Comment" context="LineComment" char="@"/>
+                <Detect2Chars attribute="Comment" context="BlockComment" char="/" char1="*" beginRegion="Comment"/>
+                <DetectChar attribute="String" context="String" char="&quot;"/>
+                <Float attribute="Number" context="#stay"/>
+                <Int attribute="Number" context="#stay"/>
+                <DetectChar attribute="Symbol" context="#stay" char="{" beginRegion="Bloco"/>
+                <DetectChar attribute="Symbol" context="#stay" char="}" endRegion="Bloco"/>
+                <AnyChar attribute="Symbol" context="#stay" String="()[];,=&lt;&gt;+-*/"/>
+            </context>
+            <!-- @ ... @ só vale numa linha. -->
+            <context name="LineComment" attribute="Comment" lineEndContext="#pop">
+                <DetectChar attribute="Comment" context="#pop" char="@"/>
+            </context>
+            <context name="BlockComment" attribute="Comment" lineEndContext="#stay">
+                <Detect2Chars attribute="Comment" context="#pop" char="*" char1="/" endRegion="Comment"/>
+            </context>
+            <!-- Barra no fim da linha continua o texto na linha seguinte, como no SQL das regras. -->
+            <context name="String" attribute="String" lineEndContext="#pop">
+                <LineContinue attribute="String" context="#stay"/>
+                <Detect2Chars attribute="String Char" context="#stay" char="\" char1="&quot;"/>
+                <DetectChar attribute="String" context="#pop" char="&quot;"/>
+            </context>
+        </contexts>
+        <itemDatas>
+            <itemData name="Normal Text" defStyleNum="dsNormal"/>
+            <itemData name="Keyword" defStyleNum="dsControlFlow"/>
+            <itemData name="Data Type" defStyleNum="dsDataType"/>
+            <itemData name="Function" defStyleNum="dsKeyword"/>
+            <itemData name="Comment" defStyleNum="dsComment"/>
+            <itemData name="String" defStyleNum="dsString"/>
+            <itemData name="String Char" defStyleNum="dsSpecialChar"/>
+            <itemData name="Number" defStyleNum="dsDecVal"/>
+            <itemData name="Symbol" defStyleNum="dsOperator"/>
+        </itemDatas>
+    </highlighting>
+    <general>
+        <comments>
+            <comment name="singleLine" start="@" end="@"/>
+            <comment name="multiLine" start="/*" end="*/" region="Comment"/>
+        </comments>
+        <keywords casesensitive="0"/>
+    </general>
+</language>

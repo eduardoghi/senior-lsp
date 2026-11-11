@@ -93,6 +93,47 @@ claude plugin install senior-lsp@senior-lsp
 O Claude Code lê o plugin direto desta pasta, então depois de um `cargo build --release` basta
 recarregar.
 
+## Usar no Kate
+
+O cliente LSP do Kate escolhe o servidor pelo modo de destaque do documento, e não pela extensão.
+A definição de sintaxe em `plugin/kate/lsp-senior.xml` cria o modo "LSP Senior" para os arquivos
+`Rule.txt` e `rule.txt` e colore as palavras reservadas, os comentários e os textos. Copie para a pasta de
+sintaxes do usuário:
+
+```sh
+mkdir -p ~/.local/share/org.kde.syntax-highlighting/syntax
+cp plugin/kate/lsp-senior.xml ~/.local/share/org.kde.syntax-highlighting/syntax/
+```
+
+No Windows, a pasta é `%USERPROFILE%\AppData\Local\org.kde.syntax-highlighting\syntax`.
+
+Depois, em Configurações → Configurar o Kate → Cliente LSP → Configurações do servidor do
+usuário, acrescente o servidor:
+
+```json
+{
+    "servers": {
+        "lsp-senior": {
+            "command": ["/caminho/do/senior-lsp"],
+            "url": "https://github.com/eduardoghi/senior-lsp",
+            "highlightingModeRegex": "^LSP Senior$",
+            "initializationOptions": {
+                "tbs_producao": "/caminho/do/sapiens.tbs",
+                "tbs_teste": "/caminho/do/sapiens-teste.tbs"
+            }
+        }
+    }
+}
+```
+
+O `command` aceita só o nome (`senior-lsp`) quando o executável está no `PATH`. As duas opções de
+`initializationOptions` são os dicionários descritos em [Dicionário de dados](#dicionário-de-dados)
+e podem ficar de fora. Os JSON das telas SGI não passam pelo servidor no Kate, porque ligar o
+servidor no modo JSON faria ele abrir todos os arquivos JSON.
+
+Se um `Rule.txt` abrir em outro modo, escolha Ferramentas → Modo → Fontes → LSP Senior. As
+mensagens do servidor aparecem na aba Saída do cliente LSP.
+
 ## Diagnósticos
 
 Cada diagnóstico tem um código fixo.
