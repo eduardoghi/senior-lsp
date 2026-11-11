@@ -19,6 +19,7 @@ mod quickfix;
 mod semantic;
 mod signature;
 mod webservice;
+mod workspace;
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -55,6 +56,7 @@ pub fn run(connection: Connection) -> Result<()> {
     let params: InitializeParams = serde_json::from_value(params)?;
     configure_dictionaries(&params);
     let default_kind = default_kind(&params);
+    let workspace = workspace_folders(&params);
     let encoding = negotiate_encoding(&params);
     let result = InitializeResult {
         capabilities: ServerCapabilities {
@@ -121,7 +123,10 @@ pub fn run(connection: Connection) -> Result<()> {
         encoding,
         default_kind,
         chosen: HashMap::new(),
+        workspace,
     };
+    // O `initialize_finish` já esperou o `initialized`, então o editor está pronto.
+    server.analyze_workspace()?;
     for message in &connection.receiver {
         match message {
             Message::Request(request) => {
@@ -175,6 +180,29 @@ fn default_kind(params: &InitializeParams) -> Context {
         .unwrap_or(Context::Rule)
 }
 
+/// Pastas do workspace para a análise da pasta inteira, só com a opção `analisar_pasta`.
+#[allow(deprecated)]
+fn workspace_folders(params: &InitializeParams) -> Option<Vec<std::path::PathBuf>> {
+    let enabled = params
+        .initialization_options
+        .as_ref()
+        .and_then(|o| o.get("analisar_pasta"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !enabled {
+        return None;
+    }
+    let uris: Vec<&Uri> = match &params.workspace_folders {
+        Some(folders) => folders.iter().map(|f| &f.uri).collect(),
+        None => params.root_uri.iter().collect(),
+    };
+    Some(
+        uris.into_iter()
+            .filter_map(|u| crate::form::path_from_uri(u.as_str()))
+            .collect(),
+    )
+}
+
 fn negotiate_encoding(params: &InitializeParams) -> ColumnEncoding {
     let offered = params
         .capabilities
@@ -192,6 +220,8 @@ struct Server<'a> {
     documents: Documents,
     encoding: ColumnEncoding,
     default_kind: Context,
+    /// Pastas do workspace, quando a opção `analisar_pasta` está ligada.
+    workspace: Option<Vec<std::path::PathBuf>>,
     /// Tipo escolhido pelo editor para arquivos soltos. Fica depois de fechar o documento, para
     /// valer de novo quando ele for reaberto.
     chosen: HashMap<Uri, Context>,
@@ -535,8 +565,33 @@ impl Server<'_> {
                     serde_json::from_value(notification.params)?;
                 let uri = params.text_document.uri;
                 if self.documents.remove(&uri) {
-                    // Sem isso, os erros do documento fechado continuam no editor.
-                    self.send_diagnostics(uri, Vec::new(), None)?;
+                    // Com a pasta inteira analisada, volta a valer o arquivo do disco. Senão, os
+                    // erros do documento fechado continuariam no editor.
+                    match crate::form::path_from_uri(uri.as_str()) {
+                        Some(path) if self.analyzes(&path) && path.is_file() => {
+                            self.analyze_disk(&path)?;
+                        }
+                        _ => self.send_diagnostics(uri, Vec::new(), None)?,
+                    }
+                }
+            }
+            lsp_types::notification::DidChangeWatchedFiles::METHOD => {
+                let params: lsp_types::DidChangeWatchedFilesParams =
+                    serde_json::from_value(notification.params)?;
+                for change in params.changes {
+                    let Some(path) = crate::form::path_from_uri(change.uri.as_str()) else {
+                        continue;
+                    };
+                    if !self.analyzes(&path) {
+                        continue;
+                    }
+                    if change.typ == lsp_types::FileChangeType::DELETED {
+                        if self.documents.get(&change.uri).is_none() {
+                            self.send_diagnostics(change.uri, Vec::new(), None)?;
+                        }
+                    } else {
+                        self.analyze_disk(&path)?;
+                    }
                 }
             }
             _ => {}
@@ -618,7 +673,22 @@ impl Server<'_> {
     }
 
     fn publish(&self, uri: &Uri) -> Result<()> {
-        if let Some(report) = self.documents.report(uri) {
+        match self.diagnostics_of(&self.documents, uri) {
+            Some((diagnostics, version)) => {
+                self.send_diagnostics(uri.clone(), diagnostics, version)
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Diagnósticos de um documento guardado em `documents`, que pode ser o dos abertos ou um
+    /// montado só para analisar um arquivo do disco.
+    fn diagnostics_of(
+        &self,
+        documents: &Documents,
+        uri: &Uri,
+    ) -> Option<(Vec<lsp_types::Diagnostic>, Option<i32>)> {
+        if let Some(report) = documents.report(uri) {
             let mut all = Vec::new();
             for rule in &report.rules {
                 let to_range = |range: text_size::TextRange| {
@@ -639,11 +709,9 @@ impl Server<'_> {
                     &to_range,
                 ));
             }
-            return self.send_diagnostics(uri.clone(), all, Some(report.version));
+            return Some((all, Some(report.version)));
         }
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(());
-        };
+        let doc = documents.get(uri)?;
         let mut diagnostics = diagnostics::diagnostics(
             &doc.text,
             &doc.tree,
@@ -661,7 +729,7 @@ impl Server<'_> {
             embedding: None,
         };
         diagnostics.extend(context.webservice_diagnostics());
-        self.send_diagnostics(uri.clone(), diagnostics, Some(doc.version))
+        Some((diagnostics, Some(doc.version)))
     }
 
     fn send_diagnostics(

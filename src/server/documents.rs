@@ -99,15 +99,28 @@ impl Documents {
     ) -> Result<(), TextTooLarge> {
         let path = crate::form::path_from_uri(uri.as_str()).unwrap_or_default();
         let model = crate::report::model(&path, &json);
-        let mut inherited = Inherited::from_model(&model);
-        inherited.dictionaries = crate::dictionary::current();
-        let inherited = Arc::new(inherited);
+        let inherited = model_inherited(&model);
+        self.set_report_in(uri, json, version, &model, inherited)
+    }
+
+    /// Guarda o JSON de um modelo já montado, para analisar vários JSON do mesmo modelo sem ler
+    /// a pasta de novo para cada um.
+    pub(crate) fn set_report_in(
+        &mut self,
+        uri: Uri,
+        json: String,
+        version: i32,
+        model: &crate::report::Model,
+        inherited: Arc<Inherited>,
+    ) -> Result<(), TextTooLarge> {
+        let path = crate::form::path_from_uri(uri.as_str()).unwrap_or_default();
         let json: Arc<str> = json.into();
         let mut rules = Vec::new();
-        for (rule_path, embedded) in model.rules {
-            if rule_path != path {
+        for (rule_path, embedded) in &model.rules {
+            if *rule_path != path {
                 continue;
             }
+            let embedded = embedded.clone();
             let text = embedded.rule.text.clone();
             let tree = crate::parse(&text)?;
             let symbols = Symbols::build(&tree, &text);
@@ -148,6 +161,13 @@ impl Documents {
     pub(crate) fn remove(&mut self, uri: &Uri) -> bool {
         self.open.remove(uri).is_some() | self.reports.remove(uri).is_some()
     }
+}
+
+/// Funções, variáveis e entradas de todas as regras do modelo, que valem em cada uma delas.
+pub(crate) fn model_inherited(model: &crate::report::Model) -> Arc<Inherited> {
+    let mut inherited = Inherited::from_model(model);
+    inherited.dictionaries = crate::dictionary::current();
+    Arc::new(inherited)
 }
 
 /// Diz se o endereço é de um JSON de modelo de relatório, na pasta `Modelos`.

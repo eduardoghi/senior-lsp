@@ -61,6 +61,11 @@
                     "default": "comum",
                     "description": "Tipo das regras em arquivos fora da exportação do gerenciador de artefatos, como um arquivo novo. Cada arquivo pode ter outro tipo pela barra de status."
                 },
+                "seniorLsp.analisarPasta": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Analisa todas as regras da pasta aberta ao iniciar, e não só os arquivos abertos, e mostra os problemas de todas no painel Problemas."
+                },
                 "seniorLsp.tbsProducao": {
                     "type": "string",
                     "default": "",

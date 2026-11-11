@@ -54,10 +54,16 @@ impl Editor {
             }),
             ..ClientCapabilities::default()
         };
-        let response = editor.request(
-            Initialize::METHOD,
-            json!({ "capabilities": capabilities, "initializationOptions": options }),
-        );
+        let mut params = json!({ "capabilities": capabilities, "initializationOptions": options });
+        // `workspaceFolders` dentro das opções vira parâmetro do initialize, para os testes da
+        // análise da pasta.
+        if let Some(folders) = params["initializationOptions"]
+            .get("workspaceFolders")
+            .cloned()
+        {
+            params["workspaceFolders"] = folders;
+        }
+        let response = editor.request(Initialize::METHOD, params);
         let result: InitializeResult =
             serde_json::from_value(response.response_result.unwrap()).unwrap();
         editor.notify(Initialized::METHOD, json!({}));
@@ -1527,4 +1533,52 @@ fn hierarquia_de_chamadas() {
     assert_eq!(incoming.len(), 1);
     assert_eq!(incoming[0].from.kind, lsp_types::SymbolKind::FILE);
     editor.stop();
+}
+
+#[test]
+fn analisa_a_pasta_inteira_quando_ligado() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-pasta-{}", std::process::id()));
+    let com_erro = base.join("regras/R1.LSP/Rule.txt");
+    let certa = base.join("regras/R2.LSP/Rule.txt");
+    std::fs::create_dir_all(com_erro.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(certa.parent().unwrap()).unwrap();
+    std::fs::write(&com_erro, "x = ;").unwrap();
+    std::fs::write(&certa, "definir alfa a;\na = \"x\";\nMensagem(Retorna, a);").unwrap();
+    std::fs::write(base.join("regras/LEIAME.txt"), "x = ;").unwrap();
+    let folder = crate::form::uri_from_path(&base);
+    let erro_uri = crate::form::uri_from_path(&com_erro);
+
+    // Desligado, nada é publicado sem abrir.
+    let (editor, _) = Editor::start_with(
+        None,
+        json!({ "workspaceFolders": [{ "uri": folder, "name": "x" }] }),
+    );
+    editor.quiet();
+    editor.stop();
+
+    let (editor, _) = Editor::start_with(
+        None,
+        json!({ "analisar_pasta": true, "workspaceFolders": [{ "uri": folder, "name": "x" }] }),
+    );
+    // Só o arquivo com problema é publicado. O que não tem nada não manda lista vazia.
+    let d = editor.diagnostics();
+    assert_eq!(d.uri.as_str(), erro_uri);
+    assert!(!d.diagnostics.is_empty());
+    editor.quiet();
+
+    // Fechar um arquivo aberto volta aos diagnósticos do disco.
+    editor.open(&erro_uri, 1, "x = 1;");
+    assert!(editor.diagnostics().diagnostics.is_empty());
+    editor.close(&erro_uri);
+    assert!(!editor.diagnostics().diagnostics.is_empty());
+
+    // O arquivo mudou no disco.
+    std::fs::write(&com_erro, "x = 1;").unwrap();
+    editor.notify(
+        lsp_types::notification::DidChangeWatchedFiles::METHOD,
+        json!({ "changes": [{ "uri": erro_uri, "type": 2 }] }),
+    );
+    assert!(editor.diagnostics().diagnostics.is_empty());
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
 }

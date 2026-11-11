@@ -27,6 +27,7 @@ O servidor oferece:
   tratar
 - correção rápida que cria o `definir` de um nome usado sem definição, com o tipo deduzido do uso
   (texto atribuído, parâmetro da função do ERP que recebe o nome ou a letra inicial, como `aTexto`)
+- diagnósticos da pasta inteira, opcionais, sem abrir cada regra
 - correções rápidas que apagam a definição sem uso (SEN068), põem a comparação entre parênteses
   (SEN041), trocam o apóstrofo por maiúscula (SEN064), acrescentam o `SQL_UsarAbrangencia(obj, 0)`
   que falta (SEN066) e declaram a função chamada que não existe (SEN052), com o `Definir Funcao`
@@ -70,6 +71,18 @@ caractere. Os totais valem como números, e as fórmulas também, porque o compi
 o nome sem `definir`. Memorando e código de barras imprimem a variável de mesmo nome que a regra
 define. O nome das entradas e desses controles não se renomeia pela regra, porque vem do cadastro
 do modelo.
+
+### Pasta inteira
+
+Com a opção `analisar_pasta` ligada, o servidor procura ao iniciar todas as regras das pastas do
+workspace, os `Rule.txt` e os JSON de `Modelos`, e publica os diagnósticos de todas, sem precisar
+abrir cada arquivo. Só vão os arquivos com algum diagnóstico. Quando o editor avisa que um arquivo
+mudou no disco (`workspace/didChangeWatchedFiles`), ele é analisado de novo, e um arquivo fechado
+volta a mostrar os diagnósticos do disco. Numa exportação com cerca de 1.400 regras e 24 mil
+JSON de modelo, a primeira análise leva alguns segundos, quase tudo nos modelos.
+
+A opção fica desligada por padrão porque o Claude Code coloca os diagnósticos na conversa. No VS
+Code ela é a configuração `seniorLsp.analisarPasta`.
 
 ### Arquivos fora da exportação
 

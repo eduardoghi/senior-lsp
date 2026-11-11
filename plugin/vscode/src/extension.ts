@@ -111,6 +111,12 @@ async function start(context: vscode.ExtensionContext, output: vscode.LogOutputC
             tbs_producao: config.get<string>("tbsProducao", ""),
             tbs_teste: config.get<string>("tbsTeste", ""),
             tipo_padrao: config.get<string>("tipoPadrao", "comum"),
+            analisar_pasta: config.get<boolean>("analisarPasta", false),
+        },
+        // Com a pasta inteira analisada, o servidor precisa saber das regras que mudam no disco
+        // sem estar abertas, como depois de um git pull.
+        synchronize: {
+            fileEvents: vscode.workspace.createFileSystemWatcher("**/*.{txt,TXT,json}"),
         },
         outputChannel: output,
         middleware: {

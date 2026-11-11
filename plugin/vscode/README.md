@@ -12,6 +12,7 @@ x86_64. Em outro sistema, compile o servidor e informe o caminho em `seniorLsp.s
 Configurações:
 
 - `seniorLsp.server.path` é o executável do servidor. Vazio usa o do release.
+- `seniorLsp.analisarPasta` analisa todas as regras da pasta aberta, e não só as abertas no editor, e mostra os problemas no painel Problemas.
 - `seniorLsp.tipoPadrao` é o tipo da regra num arquivo fora da exportação, como um arquivo novo.
 - `seniorLsp.tbsProducao` e `seniorLsp.tbsTeste` são os dicionários de dados do ERP
   (`sapiens.tbs`), opcionais. Veja a seção Dicionário de dados no README do repositório.
