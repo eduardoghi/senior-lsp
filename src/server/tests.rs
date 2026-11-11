@@ -1637,3 +1637,39 @@ fn regras_de_relatorio_separadas_do_json() {
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn selecao_expandida() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "definir numero n;\nse (n > 1) {\n    n = n + 1;\n}";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let response = editor.request(
+        lsp_types::request::SelectionRangeRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "positions": [{ "line": 2, "character": 9 }] }),
+    );
+    let ranges: Vec<lsp_types::SelectionRange> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut steps = Vec::new();
+    let mut current = Some(&ranges[0]);
+    while let Some(r) = current {
+        let (s, e) = (r.range.start, r.range.end);
+        let piece = if s.line == e.line {
+            lines[s.line as usize][s.character as usize..e.character as usize].to_owned()
+        } else {
+            format!("linhas {}-{}", s.line, e.line)
+        };
+        steps.push(piece);
+        current = r.parent.as_deref();
+    }
+    assert_eq!(steps[0], "n");
+    assert_eq!(steps[1], "n + 1");
+    assert!(
+        steps.contains(&"n = n + 1;".to_owned()) || steps.contains(&"n = n + 1".to_owned()),
+        "{steps:?}"
+    );
+    assert!(steps.iter().any(|s| s == "linhas 1-3"), "{steps:?}");
+    editor.stop();
+}

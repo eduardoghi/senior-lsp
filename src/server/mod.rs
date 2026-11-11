@@ -16,6 +16,7 @@ mod lens;
 mod members;
 mod navigation;
 mod quickfix;
+mod selection;
 mod semantic;
 mod signature;
 mod webservice;
@@ -34,7 +35,7 @@ use lsp_types::request::{
     CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
     DocumentSymbolRequest, ExecuteCommand, FoldingRangeRequest, GotoDefinition, GotoImplementation,
     HoverRequest, InlayHintRequest, PrepareRenameRequest, References, Rename,
-    Request as LspRequest, SemanticTokensFullRequest, SignatureHelpRequest,
+    Request as LspRequest, SelectionRangeRequest, SemanticTokensFullRequest, SignatureHelpRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -70,6 +71,9 @@ pub fn run(connection: Connection) -> Result<()> {
                 true,
             )),
             document_highlight_provider: Some(OneOf::Left(true)),
+            selection_range_provider: Some(lsp_types::SelectionRangeProviderCapability::Simple(
+                true,
+            )),
             call_hierarchy_provider: Some(lsp_types::CallHierarchyServerCapability::Simple(true)),
             code_lens_provider: Some(lsp_types::CodeLensOptions {
                 resolve_provider: Some(false),
@@ -359,6 +363,23 @@ impl Server<'_> {
                             embedding: None,
                         };
                         serde_json::to_value(context.code_lenses())?
+                    }
+                    None => serde_json::Value::Null,
+                })
+            }
+            SelectionRangeRequest::METHOD => {
+                let params: lsp_types::SelectionRangeParams =
+                    serde_json::from_value(request.params)?;
+                let uri = &params.text_document.uri;
+                Ok(match self.documents.get(uri) {
+                    Some(doc) => {
+                        let context = navigation::Context {
+                            doc,
+                            uri,
+                            encoding: self.encoding,
+                            embedding: None,
+                        };
+                        serde_json::to_value(context.selection_ranges(&params.positions))?
                     }
                     None => serde_json::Value::Null,
                 })

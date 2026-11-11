@@ -40,6 +40,7 @@ O servidor oferece:
 - o nome do parâmetro antes de cada argumento da chamada, como `IntParaAlfa(Origem: n, end
   Retorno: aTxt)`, sem mudar o texto, menos nas funções de um parâmetro e no argumento com o mesmo
   nome do parâmetro
+- seleção expandida, que aumenta a seleção do nome para a expressão, o comando, o bloco e a função
 - recolher cada `funcao`, os blocos, os comentários `/* */` e a sequência de `definir` do começo
 - destaque semântico, que colore cada nome pelo que ele é: função do ERP ou da regra, variável,
   parâmetro, campo depois do ponto, tabela e web service
