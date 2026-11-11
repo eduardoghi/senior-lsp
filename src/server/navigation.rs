@@ -71,7 +71,7 @@ impl Context<'_> {
         }
     }
 
-    fn location(&self, range: TextRange) -> Location {
+    pub(crate) fn location(&self, range: TextRange) -> Location {
         Location::new(self.uri.clone(), self.range(range))
     }
 

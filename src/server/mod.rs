@@ -8,6 +8,7 @@ mod diagnostics;
 mod documents;
 mod folding;
 mod highlight;
+mod implementation;
 mod inlay;
 mod kind;
 mod lens;
@@ -28,9 +29,9 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
-    DocumentSymbolRequest, ExecuteCommand, FoldingRangeRequest, GotoDefinition, HoverRequest,
-    InlayHintRequest, PrepareRenameRequest, References, Rename, Request as LspRequest,
-    SemanticTokensFullRequest, SignatureHelpRequest,
+    DocumentSymbolRequest, ExecuteCommand, FoldingRangeRequest, GotoDefinition, GotoImplementation,
+    HoverRequest, InlayHintRequest, PrepareRenameRequest, References, Rename,
+    Request as LspRequest, SemanticTokensFullRequest, SignatureHelpRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -61,6 +62,9 @@ pub fn run(connection: Connection) -> Result<()> {
             }),
             text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
             definition_provider: Some(OneOf::Left(true)),
+            implementation_provider: Some(lsp_types::ImplementationProviderCapability::Simple(
+                true,
+            )),
             document_highlight_provider: Some(OneOf::Left(true)),
             code_lens_provider: Some(lsp_types::CodeLensOptions {
                 resolve_provider: Some(false),
@@ -199,6 +203,16 @@ impl Server<'_> {
                 let at = params.text_document_position_params;
                 self.with(&at.text_document.uri, Some(at.position), |c| {
                     serde_json::to_value(GotoDefinitionResponse::Array(c.definition(at.position)))
+                })
+            }
+            GotoImplementation::METHOD => {
+                let params: lsp_types::request::GotoImplementationParams =
+                    serde_json::from_value(request.params)?;
+                let at = params.text_document_position_params;
+                self.with(&at.text_document.uri, Some(at.position), |c| {
+                    serde_json::to_value(GotoDefinitionResponse::Array(
+                        c.implementation(at.position),
+                    ))
                 })
             }
             References::METHOD => {

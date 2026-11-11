@@ -1316,3 +1316,30 @@ fn ir_para_a_regra_da_porta_do_web_service() {
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn ir_para_a_implementacao_e_de_volta() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "Definir Funcao Soma(Numero A);\n\
+                Definir Funcao SemChamada();\n\
+                Soma(1);\n\
+                funcao Soma(Numero A); { A = 1; }\n\
+                funcao SemChamada(); { }";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let mut go = |line: u32, character: u32| -> Vec<u32> {
+        let response = editor.request(
+            lsp_types::request::GotoImplementation::METHOD,
+            json!({ "textDocument": { "uri": RULE },
+                    "position": { "line": line, "character": character } }),
+        );
+        let locations: Vec<lsp_types::Location> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        locations.iter().map(|l| l.range.start.line).collect()
+    };
+    assert_eq!(go(0, 16), [3], "da declaração para a funcao");
+    assert_eq!(go(2, 1), [3], "da chamada para a funcao");
+    assert_eq!(go(3, 8), [0], "da funcao de volta");
+    assert_eq!(go(1, 16), [4], "sem chamada nenhuma");
+    editor.stop();
+}

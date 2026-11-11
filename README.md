@@ -11,6 +11,7 @@ O servidor oferece:
   mensagem do ERP
 - avisos de código que compila mas faz outra coisa do que parece
 - ir para a definição e achar as referências de variáveis, funções, parâmetros e rótulos
+- ir para a implementação, do `definir funcao` ou da chamada para a `funcao`, e da `funcao` de volta
 - ir da definição de um web service interno (`Definir interno.com.x.Servico.Porta ws;`) para o
   `Rule.txt` da porta, na pasta `Web Services` da mesma exportação
 - destacar as outras ocorrências do nome que está no cursor
