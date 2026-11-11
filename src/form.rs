@@ -5,7 +5,7 @@
 //! como pastas, cada regra num `rule.txt`, com a raiz dois níveis abaixo da pasta
 //! `Formulários SGI` (`Formulários SGI/interface/<formulário>`).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -39,13 +39,14 @@ pub struct InheritedDef {
     pub embedded: Option<Arc<crate::report::Embedded>>,
 }
 
-/// Funções e variáveis de outras regras, pelo nome em maiúsculas. A regra mais próxima vence.
+/// Funções e variáveis de outras regras, pelo nome em maiúsculas. A regra mais próxima vence. Os
+/// mapas são ordenados para o completar listar sempre na mesma ordem.
 /// Variáveis aqui são tudo que um `definir` cria fora de função, como variável, cursor, lista,
 /// tabela e web service.
 #[derive(Debug, Clone, Default)]
 pub struct Inherited {
-    functions: HashMap<String, InheritedDef>,
-    variables: HashMap<String, InheritedDef>,
+    functions: BTreeMap<String, InheritedDef>,
+    variables: BTreeMap<String, InheritedDef>,
     /// Nomes das entradas e dos controles do relatório, em maiúsculas, mesmo os que uma regra
     /// também define.
     entries: std::collections::HashSet<String>,
@@ -200,7 +201,7 @@ impl Inherited {
                 let entry = inherited.functions.entry(key);
                 // Na mesma regra, o `definir funcao` dá os parâmetros e a `funcao` dá o lugar.
                 let existing = match entry {
-                    std::collections::hash_map::Entry::Occupied(e) => {
+                    std::collections::btree_map::Entry::Occupied(e) => {
                         let f = e.into_mut();
                         let same_rule = f.path == path && Arc::ptr_eq(&f.text, &text);
                         if !same_rule {
@@ -212,7 +213,7 @@ impl Inherited {
                         }
                         f
                     }
-                    std::collections::hash_map::Entry::Vacant(e) => e.insert(InheritedDef {
+                    std::collections::btree_map::Entry::Vacant(e) => e.insert(InheritedDef {
                         kind: DefKind::Function,
                         path: path.clone(),
                         text: text.clone(),

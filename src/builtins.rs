@@ -60,6 +60,8 @@ pub struct Builtin {
 
 struct Table {
     builtins: Vec<Builtin>,
+    /// Contexto de cada função de `builtins`, na mesma posição, ou `None` quando existe em todos.
+    contexts: Vec<Option<Context>>,
     /// Nome em maiúsculas para o índice em `builtins` e o contexto em que ela existe, ou `None`
     /// quando existe em todos.
     index: FxHashMap<String, (usize, Option<Context>)>,
@@ -68,6 +70,7 @@ struct Table {
 static TABLE: LazyLock<Table> = LazyLock::new(|| {
     let mut table = Table {
         builtins: Vec::new(),
+        contexts: Vec::new(),
         index: FxHashMap::default(),
     };
     for (source, only) in [
@@ -84,13 +87,13 @@ static TABLE: LazyLock<Table> = LazyLock::new(|| {
             if !table.index.contains_key(&key) {
                 table.index.insert(key, (table.builtins.len(), only));
                 table.builtins.push(builtin);
+                table.contexts.push(only);
             }
         }
     }
     table
 });
 
-/// Todas as funções do ERP do contexto, sem ordem definida.
 /// Variáveis do sistema, como `DatSis` e `NomUsu`, pelo nome em maiúsculas. O ERP registra todas
 /// juntas quando cria o ambiente das regras, sem depender de onde a regra roda. O arquivo traz uma
 /// por linha como `definir`, com o tipo que o compilador recebe.
@@ -122,12 +125,15 @@ pub fn system_variable(name: &str, context: Context) -> Option<VarType> {
     SYSTEM_VARIABLES.get(&upper).copied()
 }
 
+/// Todas as funções do ERP do contexto, na ordem dos arquivos de declaração. Percorrer o índice
+/// daria uma ordem que muda com o espalhamento, e o completar ficaria diferente a cada execução.
 pub fn all(context: Context) -> impl Iterator<Item = &'static Builtin> {
     TABLE
-        .index
-        .values()
-        .filter(move |&&(_, only)| only.is_none_or(|c| c == context))
-        .map(|&(i, _)| &TABLE.builtins[i])
+        .builtins
+        .iter()
+        .zip(&TABLE.contexts)
+        .filter(move |&(_, only)| only.is_none_or(|c| c == context))
+        .map(|(builtin, _)| builtin)
 }
 
 /// Função do ERP com esse nome no contexto, sem diferença de caixa.
@@ -226,6 +232,21 @@ pub(crate) fn percent_decode(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lista_as_funcoes_na_ordem_dos_arquivos() {
+        let nomes: Vec<&str> = all(Context::Rule).take(3).map(|b| b.name).collect();
+        assert_eq!(
+            nomes,
+            [
+                "ExecutaRegraRecursiva",
+                "ConverteDataToDB",
+                "ConverteDataBanco"
+            ]
+        );
+        assert!(all(Context::Rule).all(|b| lookup(b.name, Context::Rule).is_some()));
+        assert!(all(Context::Rule).count() < all(Context::Sgi).count());
+    }
 
     #[test]
     fn le_todas_as_declaracoes() {
