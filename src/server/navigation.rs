@@ -489,10 +489,10 @@ impl Context<'_> {
             .map_or(0, |i| {
                 i + before[i..].chars().next().map_or(1, char::len_utf8)
             });
-        if before[..start].trim_end().ends_with('.') {
-            return Vec::new();
-        }
         let prefix = &before[start..];
+        if before[..start].trim_end().ends_with('.') {
+            return self.member_completion(&before[..start], prefix);
+        }
         let matches = |name: &str| {
             name.len() >= prefix.len()
                 && name.is_char_boundary(prefix.len())

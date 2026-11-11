@@ -241,6 +241,20 @@ impl From {
     }
 }
 
+/// Colunas do SELECT do cursor `cursor`, com o tipo quando o dicionário diz, para o completar
+/// depois de `cur.`. `None` quando o cursor não tem SQL conhecido.
+pub fn cursor_columns(
+    tree: &Tree,
+    symbols: &Symbols,
+    text: &str,
+    dictionaries: &Dictionaries,
+    cursor: &str,
+) -> Option<Vec<(String, Option<VarType>)>> {
+    let sources = Sources::build(tree, symbols, text, dictionaries);
+    let columns = sources.cursors.get(&cursor.to_uppercase())?.as_ref()?;
+    Some(columns.iter().map(|c| (c.name.clone(), c.ty)).collect())
+}
+
 /// Colunas de cada cursor e de cada objeto de `SQL_DefinirComando`, pelo nome em maiúsculas.
 /// `None` é cursor ou objeto sem conferência.
 #[derive(Default)]

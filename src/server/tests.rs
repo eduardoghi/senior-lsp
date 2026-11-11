@@ -1116,3 +1116,51 @@ fn trechos_para_recolher() {
     );
     editor.stop();
 }
+
+/// Rótulos do completar no ponto.
+fn completion_labels(editor: &mut Editor, line: u32, character: u32) -> Vec<String> {
+    let response = editor.request(
+        lsp_types::request::Completion::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "position": { "line": line, "character": character } }),
+    );
+    let items: Vec<lsp_types::CompletionItem> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    let mut labels: Vec<String> = items.into_iter().map(|i| i.label).collect();
+    labels.sort();
+    labels
+}
+
+#[test]
+fn completar_depois_do_ponto() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "definir cursor cur;\n\
+                definir lista lst;\n\
+                cur.SQL \"SELECT E070EMP.CodEmp, E070EMP.NomEmp FROM E070EMP\";\n\
+                lst.AdicionarCampo(\"Email\", alfa);\n\
+                cur.\n\
+                lst.Pri\n\
+                lst.Em\n\
+                x.";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let cursor = completion_labels(&mut editor, 4, 4);
+    for esperado in [
+        "AbrirCursor",
+        "Achou",
+        "CODEMP",
+        "NOMEMP",
+        "SQL",
+        "UsaAbrangencia",
+    ] {
+        assert!(
+            cursor.contains(&esperado.to_owned()),
+            "{esperado} em {cursor:?}"
+        );
+    }
+    assert!(!cursor.contains(&"AdicionarCampo".to_owned()));
+    assert_eq!(completion_labels(&mut editor, 5, 7), ["Primeiro"]);
+    assert_eq!(completion_labels(&mut editor, 6, 6), ["Email"]);
+    assert!(completion_labels(&mut editor, 7, 2).is_empty());
+    editor.stop();
+}

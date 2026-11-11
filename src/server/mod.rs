@@ -10,6 +10,7 @@ mod folding;
 mod highlight;
 mod inlay;
 mod kind;
+mod members;
 mod navigation;
 mod quickfix;
 mod semantic;
@@ -63,7 +64,11 @@ pub fn run(connection: Connection) -> Result<()> {
             references_provider: Some(OneOf::Left(true)),
             hover_provider: Some(HoverProviderCapability::Simple(true)),
             document_symbol_provider: Some(OneOf::Left(true)),
-            completion_provider: Some(lsp_types::CompletionOptions::default()),
+            completion_provider: Some(lsp_types::CompletionOptions {
+                // Depois do ponto vêm os membros do cursor, da lista e da tabela.
+                trigger_characters: Some(vec![".".to_owned()]),
+                ..lsp_types::CompletionOptions::default()
+            }),
             rename_provider: Some(OneOf::Right(lsp_types::RenameOptions {
                 prepare_provider: Some(true),
                 work_done_progress_options: Default::default(),

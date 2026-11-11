@@ -28,6 +28,9 @@ O servidor oferece:
 - a lista de variáveis e funções do arquivo
 - completar nomes num editor, com as variáveis e funções do arquivo, as do ERP e as palavras da
   linguagem
+- completar depois do ponto, com as operações e as colunas do SELECT do cursor, as operações e os
+  campos criados com `AdicionarCampo` na lista, os campos de uma `definir tabela` e, com o
+  dicionário de dados, os campos da tabela do ERP
 - renomear num editor, trocando só o símbolo certo, nos outros arquivos do formulário SGI inclusive
 
 A exportação guarda o código de cada regra num arquivo `Rule.txt` ou `rule.txt`, menos nos modelos
