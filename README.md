@@ -38,7 +38,10 @@ O servidor oferece:
 - dentro do SQL de um texto (`cur.SQL "..."`, `ExecSql` e `SQL_DefinirComando`), o `:variavel` vai para o
   `definir` e mostra a linha dele no hover, e `TABELA.Campo` e o nome de uma tabela mostram a
   descrição do dicionário de dados. O hover de tabela só vale em textos que começam com `SELECT`,
-  `UPDATE`, `INSERT`, `DELETE` ou `WITH`, e o apelido da tabela no `FROM` não é resolvido
+  `UPDATE`, `INSERT`, `DELETE` ou `WITH`. O apelido declarado no `FROM`, no `JOIN` ou no `UPDATE`
+  do mesmo texto (`FROM e070emp e`, `JOIN e075pro AS p`) mostra o campo da tabela dele e, sobre o
+  próprio apelido, a descrição da tabela. Ir para a definição do apelido leva à declaração. Uma
+  subconsulta enxerga os apelidos de fora e pode declarar os seus
 - ir de `cur.COLUNA` para a coluna na lista do `SELECT` do `cur.SQL`, pelo nome do campo ou pelo
   apelido (`AS`). Com `SELECT *` ou uma expressão sem apelido, não há para onde ir
 - as funções que o ERP já traz, como `IntParaAlfa`, com a declaração no hover e a conferência dos
