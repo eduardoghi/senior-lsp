@@ -1,7 +1,7 @@
 name: Release
 
-# Publica os binários que o script do plugin baixa. A tag tem que ser v seguido da versão do
-# Cargo.toml, como v0.1.0.
+# Publica os binários que o script do plugin e a extensão do VS Code baixam, e o pacote da
+# extensão. A tag tem que ser v seguido da versão do Cargo.toml, como v0.1.0.
 on:
   push:
     tags: ['v*']
@@ -58,6 +58,16 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Gera o pacote da extensão do VS Code
+        working-directory: plugin/vscode
+        run: |
+          test "$(jq -r .version package.json)" = "${GITHUB_REF_NAME#v}"
+          npm ci
+          npm run compile
+          npx vsce package --out "../../dist/senior-lsp-${GITHUB_REF_NAME#v}.vsix"
       - name: Publica o release
         env:
           GH_TOKEN: ${{ github.token }}

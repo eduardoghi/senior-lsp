@@ -15,3 +15,21 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
       - run: shellcheck plugin/claude-code/server/senior-lsp
+
+  vscode:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugin/vscode
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Confere a versão da extensão com o Cargo.toml
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --manifest-path ../../Cargo.toml | jq -r '.packages[0].version')
+          test "$(jq -r .version package.json)" = "$version"
+      - run: npm ci
+      - run: npm run compile
+      - run: npx vsce package

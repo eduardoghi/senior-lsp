@@ -93,6 +93,30 @@ claude plugin install senior-lsp@senior-lsp
 O Claude Code lê o plugin direto desta pasta, então depois de um `cargo build --release` basta
 recarregar.
 
+## Usar no VS Code
+
+A extensão fica em `plugin/vscode`. Ela abre os `Rule.txt` e `rule.txt` na linguagem LSP Senior,
+com destaque de sintaxe, e manda também os JSON da pasta `Modelos` para o servidor, sem mudar a
+linguagem deles. Na primeira vez, baixa o binário do release da mesma versão da extensão e confere
+o SHA-256, como o plugin do Claude Code.
+
+Para gerar e instalar o pacote:
+
+```sh
+cd plugin/vscode
+npm ci
+npm run compile
+npm run package
+code --install-extension senior-lsp-*.vsix
+```
+
+As configurações são `seniorLsp.server.path`, para usar outro executável, e `seniorLsp.tbsProducao`
+e `seniorLsp.tbsTeste`, com os dicionários descritos em [Dicionário de dados](#dicionário-de-dados).
+Mudar qualquer uma reinicia o servidor.
+
+Para desenvolver, abra `plugin/vscode` no VS Code e rode com F5. Rodando de dentro do clone, a
+extensão usa o `target/release` em vez de baixar.
+
 ## Usar no Kate
 
 O cliente LSP do Kate escolhe o servidor pelo modo de destaque do documento, e não pela extensão.

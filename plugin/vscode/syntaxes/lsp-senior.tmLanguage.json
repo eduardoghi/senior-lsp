@@ -1,0 +1,58 @@
+{
+    "name": "LSP Senior",
+    "scopeName": "source.lsp-senior",
+    "patterns": [
+        {
+            "include": "#comentarios"
+        },
+        {
+            "include": "#textos"
+        },
+        {
+            "name": "keyword.control.lsp-senior",
+            "match": "(?i)\\b(cancelar|continue|enquanto|vapara|inicio|cancel|senao|regra|para|pare|end|fim|ou|se|e)\\b"
+        },
+        {
+            "name": "storage.type.lsp-senior",
+            "match": "(?i)\\b(webservice|definir|decimal|numero|tabela|cursor|funcao|lista|data|alfa|int)\\b"
+        },
+        {
+            "name": "support.function.lsp-senior",
+            "match": "(?i)\\b(finalizartransacao|desfazertransacao|desabilitarcampo|desabilitartodos|desabilitarbotao|iniciartransacao|atualizarcampos|habilitarcampo|habilitartodos|habilitarbotao|escondercampo|vaparapagina|chamarfuncao|vaparacampo|gravarnleol|atualizar|execsqlex|gravarnl|formatar|mensagem|insirir|inserir|excluir|execsql|fechar|valret|valstr|select|gravar|abrir|lernl|unico|usar|ler)\\b"
+        },
+        {
+            "name": "constant.numeric.lsp-senior",
+            "match": "\\b\\d+(\\.\\d+)?\\b"
+        }
+    ],
+    "repository": {
+        "comentarios": {
+            "patterns": [
+                {
+                    "name": "comment.line.lsp-senior",
+                    "match": "@[^@\\n]*@?"
+                },
+                {
+                    "name": "comment.block.lsp-senior",
+                    "begin": "/\\*",
+                    "end": "\\*/"
+                }
+            ]
+        },
+        "textos": {
+            "name": "string.quoted.double.lsp-senior",
+            "begin": "\"",
+            "end": "\"|(?<!\\\\)$",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.lsp-senior",
+                    "match": "\\\\\""
+                },
+                {
+                    "name": "constant.character.escape.lsp-senior",
+                    "match": "\\\\$"
+                }
+            ]
+        }
+    }
+}

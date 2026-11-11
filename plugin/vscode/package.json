@@ -1,0 +1,89 @@
+{
+    "name": "senior-lsp",
+    "displayName": "Senior LSP",
+    "description": "Servidor de linguagem para as regras LSP do ERP Senior (regras, telas SGI, web services e modelos de relatório)",
+    "version": "0.4.0",
+    "publisher": "eduardoghi",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/eduardoghi/senior-lsp"
+    },
+    "engines": {
+        "vscode": "^1.91.0"
+    },
+    "categories": [
+        "Programming Languages",
+        "Linters"
+    ],
+    "main": "./out/extension.js",
+    "activationEvents": [
+        "workspaceContains:**/Modelos/**/*.json"
+    ],
+    "contributes": {
+        "languages": [
+            {
+                "id": "lsp-senior",
+                "aliases": [
+                    "LSP Senior"
+                ],
+                "filenames": [
+                    "Rule.txt",
+                    "rule.txt"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "lsp-senior",
+                "scopeName": "source.lsp-senior",
+                "path": "./syntaxes/lsp-senior.tmLanguage.json"
+            }
+        ],
+        "configuration": {
+            "title": "Senior LSP",
+            "properties": {
+                "seniorLsp.server.path": {
+                    "type": "string",
+                    "default": "",
+                    "scope": "machine",
+                    "description": "Caminho do executável senior-lsp. Vazio usa o binário do release do GitHub da versão da extensão."
+                },
+                "seniorLsp.tbsProducao": {
+                    "type": "string",
+                    "default": "",
+                    "scope": "machine",
+                    "description": "Caminho do sapiens.tbs de produção. Dá o tipo dos campos de tabela nas regras. Pode ficar vazio."
+                },
+                "seniorLsp.tbsTeste": {
+                    "type": "string",
+                    "default": "",
+                    "scope": "machine",
+                    "description": "Caminho do sapiens.tbs da base de teste. Com os dois configurados, o servidor avisa quando uma regra usa um campo que só existe no de teste. Pode ficar vazio."
+                }
+            }
+        },
+        "commands": [
+            {
+                "command": "seniorLsp.restart",
+                "title": "Reiniciar o servidor",
+                "category": "Senior LSP"
+            }
+        ]
+    },
+    "scripts": {
+        "compile": "tsc -p .",
+        "watch": "tsc -watch -p .",
+        "package": "vsce package"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^11.0.0"
+    },
+    "devDependencies": {
+        "@types/node": "^20.0.0",
+        "@types/vscode": "~1.91.0",
+        "@vscode/vsce": "^4.1.0",
+        "typescript": "^7.0.2"
+    }
+}
