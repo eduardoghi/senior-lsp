@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE language>
 <!-- Regras LSP do ERP Senior. O nome do modo liga os arquivos ao senior-lsp no cliente LSP do Kate. -->
-<language name="LSP Senior" section="Sources" version="1" kateversion="5.0" extensions="Rule.txt;rule.txt;*.SOnPrint.txt;*.SOnBeforePrint.txt;*.SOnAfterPrint.txt;*.SOnExpression.txt;*.SPreambleSelect.txt;*.SSelection.txt;*.SInitialization.txt;*.SFinalization.txt;*.SFunctionRule.txt;*.SPrintPage.txt" casesensitive="0" author="Eduardo Hillesheim" license="MIT">
+<language name="LSP Senior" section="Sources" version="2" kateversion="5.62" extensions="Rule.txt;rule.txt;*.SOnPrint.txt;*.SOnBeforePrint.txt;*.SOnAfterPrint.txt;*.SOnExpression.txt;*.SPreambleSelect.txt;*.SSelection.txt;*.SInitialization.txt;*.SFinalization.txt;*.SFunctionRule.txt;*.SPrintPage.txt" casesensitive="0" author="Eduardo Hillesheim" license="MIT">
     <highlighting>
         <list name="controle">
             <item>cancel</item>
@@ -76,6 +76,7 @@
                 <keyword attribute="Function" context="#stay" String="comandos"/>
                 <DetectChar attribute="Comment" context="LineComment" char="@"/>
                 <Detect2Chars attribute="Comment" context="BlockComment" char="/" char1="*" beginRegion="Comment"/>
+                <RegExpr attribute="String" context="SqlString" String="&quot;(?=\s*(select|update|insert|delete|with)\b)" insensitive="true"/>
                 <DetectChar attribute="String" context="String" char="&quot;"/>
                 <Float attribute="Number" context="#stay"/>
                 <Int attribute="Number" context="#stay"/>
@@ -94,7 +95,19 @@
             <context name="String" attribute="String" lineEndContext="#pop">
                 <LineContinue attribute="String" context="#stay"/>
                 <Detect2Chars attribute="String Char" context="#stay" char="\" char1="&quot;"/>
+                <Detect2Chars attribute="String Char" context="#stay" char="\" char1="\"/>
                 <DetectChar attribute="String" context="#pop" char="&quot;"/>
+            </context>
+            <!-- Texto que começa com SELECT, UPDATE, INSERT, DELETE ou WITH, colorido pelas regras da
+                 sintaxe SQL. Fim do texto e continuação com barra vêm antes das regras do SQL. O
+                 comentário de linha do SQL para na aspa, porque o texto da regra acaba nela. -->
+            <context name="SqlString" attribute="Normal Text" lineEndContext="#pop">
+                <LineContinue attribute="String Char" context="#stay"/>
+                <Detect2Chars attribute="String Char" context="#stay" char="\" char1="&quot;"/>
+                <Detect2Chars attribute="String Char" context="#stay" char="\" char1="\"/>
+                <DetectChar attribute="String" context="#pop" char="&quot;"/>
+                <RegExpr attribute="Comment" context="#stay" String="--[^&quot;\\]*"/>
+                <IncludeRules context="Normal##SQL" includeAttrib="true"/>
             </context>
         </contexts>
         <itemDatas>

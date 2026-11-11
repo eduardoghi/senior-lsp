@@ -41,7 +41,10 @@
             {
                 "language": "lsp-senior",
                 "scopeName": "source.lsp-senior",
-                "path": "./syntaxes/lsp-senior.tmLanguage.json"
+                "path": "./syntaxes/lsp-senior.tmLanguage.json",
+                "embeddedLanguages": {
+                    "meta.embedded.block.sql": "sql"
+                }
             }
         ],
         "configuration": {

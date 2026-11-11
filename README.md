@@ -163,7 +163,8 @@ recarregar.
 
 A extensão fica em `plugin/vscode`. Ela abre os `Rule.txt` e `rule.txt` na linguagem LSP Senior,
 com destaque de sintaxe, e manda também os JSON da pasta `Modelos` para o servidor, sem mudar a
-linguagem deles. Na primeira vez, baixa o binário do release da mesma versão da extensão e confere
+linguagem deles. Os textos que começam com `SELECT`, `UPDATE`, `INSERT`, `DELETE` ou `WITH` são
+coloridos como SQL, pela gramática `source.sql` que o VS Code já traz. Na primeira vez, baixa o binário do release da mesma versão da extensão e confere
 o SHA-256, como o plugin do Claude Code.
 
 Para gerar e instalar o pacote:
@@ -193,8 +194,9 @@ extensão usa o `target/release` em vez de baixar.
 
 O cliente LSP do Kate escolhe o servidor pelo modo de destaque do documento, e não pela extensão.
 A definição de sintaxe em `plugin/kate/lsp-senior.xml` cria o modo "LSP Senior" para os arquivos
-`Rule.txt` e `rule.txt` e para as regras de relatório separadas (`*.SOnPrint.txt` e os outros eventos) e colore as palavras reservadas, os comentários e os textos. Copie para a pasta de
-sintaxes do usuário:
+`Rule.txt` e `rule.txt` e para as regras de relatório separadas (`*.SOnPrint.txt` e os outros eventos) e colore as palavras reservadas, os comentários e os textos. Os textos que começam com `SELECT`,
+`UPDATE`, `INSERT`, `DELETE` ou `WITH` seguem as regras da sintaxe SQL que o Kate já traz. Copie para a
+pasta de sintaxes do usuário:
 
 ```sh
 mkdir -p ~/.local/share/org.kde.syntax-highlighting/syntax

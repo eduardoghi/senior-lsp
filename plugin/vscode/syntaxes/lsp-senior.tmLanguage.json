@@ -6,6 +6,9 @@
             "include": "#comentarios"
         },
         {
+            "include": "#textos-sql"
+        },
+        {
             "include": "#textos"
         },
         {
@@ -39,18 +42,50 @@
                 }
             ]
         },
-        "textos": {
-            "name": "string.quoted.double.lsp-senior",
-            "begin": "\"",
-            "end": "\"|(?<!\\\\)$",
+        "textos-sql": {
+            "contentName": "meta.embedded.block.sql",
+            "begin": "(?i)\"(?=\\s*(?:select|update|insert|delete|with)\\b)",
+            "beginCaptures": {
+                "0": {
+                    "name": "string.quoted.double.lsp-senior"
+                }
+            },
+            "end": "\"|(?=\\n)",
+            "endCaptures": {
+                "0": {
+                    "name": "string.quoted.double.lsp-senior"
+                }
+            },
             "patterns": [
                 {
                     "name": "constant.character.escape.lsp-senior",
-                    "match": "\\\\\""
+                    "match": "\\\\[\"\\\\]"
                 },
                 {
                     "name": "constant.character.escape.lsp-senior",
-                    "match": "\\\\$"
+                    "match": "\\\\.*\\n"
+                },
+                {
+                    "name": "comment.line.double-dash.sql",
+                    "match": "--[^\"\\\\\\n]*"
+                },
+                {
+                    "include": "source.sql"
+                }
+            ]
+        },
+        "textos": {
+            "name": "string.quoted.double.lsp-senior",
+            "begin": "\"",
+            "end": "\"|(?=\\n)",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.lsp-senior",
+                    "match": "\\\\[\"\\\\]"
+                },
+                {
+                    "name": "constant.character.escape.lsp-senior",
+                    "match": "\\\\.*\\n"
                 }
             ]
         }
