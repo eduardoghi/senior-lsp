@@ -21,6 +21,7 @@ mod related;
 mod selection;
 mod semantic;
 mod signature;
+mod sql;
 mod webservice;
 mod workspace;
 

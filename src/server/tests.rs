@@ -343,6 +343,53 @@ fn definicao_referencias_hover_e_simbolos() {
 }
 
 #[test]
+fn variavel_dentro_do_sql_vai_para_o_definir() {
+    let text = "definir numero nCodEmp;\n\
+                definir funcao Busca(numero pCod);\n\
+                ExecSql \"UPDATE T SET A = 1 WHERE B = :ncodemp \\\n\
+                \x20 AND C = :pCod\";\n\
+                funcao Busca(numero pCod); {\n\
+                \x20 ExecSql \"UPDATE T SET A = :pcod WHERE B = :nCodEmp AND C = :nNada\";\n\
+                }";
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let at = |line: u32, character: u32| json!({ "textDocument": { "uri": RULE }, "position": { "line": line, "character": character } });
+    let lines = |v: &serde_json::Value| -> Vec<u64> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["range"]["start"]["line"].as_u64().unwrap())
+            .collect()
+    };
+
+    // O parâmetro vale dentro da própria função e a variável em qualquer lugar.
+    let r = editor.request(GotoDefinition::METHOD, at(5, 29));
+    assert_eq!(lines(&r.response_result.unwrap()), [1, 4]);
+    let r = editor.request(GotoDefinition::METHOD, at(5, 50));
+    assert_eq!(lines(&r.response_result.unwrap()), [0]);
+    let r = editor.request(GotoDefinition::METHOD, at(2, 41));
+    assert_eq!(lines(&r.response_result.unwrap()), [0]);
+    // Nome sem `definir`, e o parâmetro de uma função vista de fora dela, não levam a lugar nenhum.
+    let r = editor.request(GotoDefinition::METHOD, at(5, 64));
+    assert!(lines(&r.response_result.unwrap()).is_empty());
+    let r = editor.request(GotoDefinition::METHOD, at(3, 13));
+    assert!(lines(&r.response_result.unwrap()).is_empty());
+
+    let r = editor.request(HoverRequest::METHOD, at(2, 41));
+    let hover = r.response_result.unwrap();
+    let value = hover["contents"]["value"].as_str().unwrap();
+    assert!(value.contains("definir numero nCodEmp;"), "{value}");
+    assert!(value.ends_with("Variável definida na linha 1"), "{value}");
+    // O hover cobre só o nome, sem os dois pontos.
+    assert_eq!(hover["range"]["start"]["character"], 39);
+    assert_eq!(hover["range"]["end"]["character"], 46);
+    let r = editor.request(HoverRequest::METHOD, at(5, 64));
+    assert!(r.response_result.unwrap().is_null());
+    editor.stop();
+}
+
+#[test]
 fn pedido_em_documento_fechado_responde_null() {
     let (mut editor, _) = Editor::start(None);
     let params =

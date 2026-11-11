@@ -35,6 +35,10 @@ O servidor oferece:
   junto dos outros `definir` e a `funcao` vazia no fim do arquivo
 - hover com a linha do `definir` e, com o dicionário de dados do ERP configurado, o tipo, a
   descrição, as chaves, os relacionamentos e a busca dos campos de tabela
+- dentro do SQL de um texto (`cur.SQL "..."`, `ExecSql` e `SQL_DefinirComando`), o `:variavel` vai para o
+  `definir` e mostra a linha dele no hover, e `TABELA.Campo` e o nome de uma tabela mostram a
+  descrição do dicionário de dados. O hover de tabela só vale em textos que começam com `SELECT`,
+  `UPDATE`, `INSERT`, `DELETE` ou `WITH`, e o apelido da tabela no `FROM` não é resolvido
 - as funções que o ERP já traz, como `IntParaAlfa`, com a declaração no hover e a conferência dos
   parâmetros na chamada
 - ajuda de assinatura, com a declaração da função e o parâmetro atual enquanto se digita a chamada

@@ -232,6 +232,26 @@ impl Symbols {
             .map(|i| i as u32)
     }
 
+    /// Definições que `name` alcançaria como valor dentro de `function`, a `funcao` em volta se
+    /// houver. Serve para nomes que a árvore não vê, como o `:nome` do SQL dentro de um texto.
+    /// Parâmetro de outra função não conta.
+    pub fn value_targets(
+        &self,
+        tree: &Tree,
+        text: &str,
+        name: &str,
+        function: Option<NodeId>,
+    ) -> Vec<usize> {
+        let candidates: Vec<usize> = (0..self.definitions.len())
+            .filter(|&i| text[self.definitions[i].name].eq_ignore_ascii_case(name))
+            .collect();
+        let current = function.and_then(|f| self.function_index(tree, text, f));
+        match self.pick(&candidates, Namespace::Value, current) {
+            (targets, false) => targets,
+            _ => Vec::new(),
+        }
+    }
+
     /// Referência que cobre exatamente `range`. As referências estão em ordem de texto.
     pub fn reference_at(&self, range: TextRange) -> Option<&Reference> {
         let i = self

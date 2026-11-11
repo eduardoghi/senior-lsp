@@ -61,7 +61,7 @@ impl Context<'_> {
 
     /// Lugar de uma definição de outra regra, no arquivo dela. Uma regra de modelo de relatório
     /// leva a posição ao JSON pelo mapa dela.
-    fn def_location(&self, def: &InheritedDef, range: TextRange) -> Option<Location> {
+    pub(super) fn def_location(&self, def: &InheritedDef, range: TextRange) -> Option<Location> {
         match &def.embedded {
             Some(e) => {
                 let json_range = e.rule.range_to_json(range);
@@ -79,6 +79,9 @@ impl Context<'_> {
         let offset = self.offset(position);
         if let Some(port) = self.webservice_definition(offset) {
             return vec![port];
+        }
+        if let Some(locations) = self.sql_definition(offset) {
+            return locations;
         }
         let symbols = &self.doc.symbols;
         let Some(targets) = symbols.at(offset) else {
@@ -336,6 +339,9 @@ impl Context<'_> {
         if let Some(hover) = self.webservice_hover(offset) {
             return Some(hover);
         }
+        if let Some(hover) = self.sql_hover(offset) {
+            return Some(hover);
+        }
         if let Some(hover) = self.dictionary_hover(offset) {
             return Some(hover);
         }
@@ -348,7 +354,13 @@ impl Context<'_> {
             .iter()
             .find(|r| r.range.contains_inclusive(offset))
             .map_or_else(|| symbols.definitions[targets[0]].name, |r| r.range);
-        // Um bloco só, com a primeira definição. Um parâmetro mostra a assinatura da função.
+        Some(self.symbol_hover(range, &targets))
+    }
+
+    /// Hover de um nome definido no arquivo, com `range` como trecho destacado. Um bloco só, com a
+    /// primeira definição. Um parâmetro mostra a assinatura da função.
+    pub(super) fn symbol_hover(&self, range: TextRange, targets: &[usize]) -> Hover {
+        let symbols = &self.doc.symbols;
         let first = &symbols.definitions[targets[0]];
         let node = match first.kind {
             DefKind::Parameter(_) => self
@@ -370,13 +382,17 @@ impl Context<'_> {
             let others: Vec<_> = targets[1..].iter().map(|&t| line(t).to_string()).collect();
             value.push_str(&format!(", também na linha {}", others.join(", ")));
         }
-        Some(Hover {
+        self.markup(range, value)
+    }
+
+    pub(super) fn markup(&self, range: TextRange, value: String) -> Hover {
+        Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
                 value,
             }),
             range: Some(self.range(range)),
-        })
+        }
     }
 
     /// Trecho do nome que pode ser renomeado na posição. `None` quando ali não há nome definido
@@ -585,26 +601,30 @@ impl Context<'_> {
             node,
         )?;
         let range = tree.text_range(node);
+        Some(self.field_hover(&found, &self.doc.text[range], range))
+    }
+
+    /// Hover de um campo do dicionário, com `label` como `TABELA.Campo` do jeito que está no texto.
+    pub(super) fn field_hover(
+        &self,
+        found: &crate::dictionary::Found,
+        label: &str,
+        range: TextRange,
+    ) -> Hover {
         let origin = if found.only_in_test {
             "Campo que só existe no dicionário de teste"
         } else {
             "Campo do dicionário de dados"
         };
         let mut value = format!(
-            "```lsp\n{} {}\n```\n{}\n\n{origin}",
-            found.field.ty, &self.doc.text[range], found.field.description
+            "```lsp\n{} {label}\n```\n{}\n\n{origin}",
+            found.field.ty, found.field.description
         );
-        for line in field_links(&found) {
+        for line in field_links(found) {
             value.push_str("\n\n");
             value.push_str(&line);
         }
-        Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value,
-            }),
-            range: Some(self.range(range)),
-        })
+        self.markup(range, value)
     }
 
     fn builtin_hover(&self, offset: TextSize) -> Option<Hover> {
@@ -621,31 +641,30 @@ impl Context<'_> {
             )
         } else {
             let (range, def) = self.inherited_at(offset)?;
-            let line = self
-                .def_location(def, def.name)
-                .map_or(0, |l| l.range.start.line + 1);
-            let what = match def.entry {
-                Some(crate::report::EntryKind::Entrance) => "Entrada do relatório".to_owned(),
-                Some(crate::report::EntryKind::Field) => "Campo da tela".to_owned(),
-                Some(crate::report::EntryKind::Control(c)) => {
-                    format!("Controle de {} do relatório", c.label())
-                }
-                None => describe(def.kind).to_owned(),
-            };
-            let value = format!(
-                "```lsp\n{}\n```\n{what} em {}, linha {line}",
-                def.decl,
-                def.path.display()
-            );
-            (range, value)
+            return Some(self.inherited_hover(range, def));
         };
-        Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value,
-            }),
-            range: Some(self.range(range)),
-        })
+        Some(self.markup(range, value))
+    }
+
+    /// Hover de uma função ou variável que vem de outra regra do formulário SGI ou do modelo.
+    pub(super) fn inherited_hover(&self, range: TextRange, def: &InheritedDef) -> Hover {
+        let line = self
+            .def_location(def, def.name)
+            .map_or(0, |l| l.range.start.line + 1);
+        let what = match def.entry {
+            Some(crate::report::EntryKind::Entrance) => "Entrada do relatório".to_owned(),
+            Some(crate::report::EntryKind::Field) => "Campo da tela".to_owned(),
+            Some(crate::report::EntryKind::Control(c)) => {
+                format!("Controle de {} do relatório", c.label())
+            }
+            None => describe(def.kind).to_owned(),
+        };
+        let value = format!(
+            "```lsp\n{}\n```\n{what} em {}, linha {line}",
+            def.decl,
+            def.path.display()
+        );
+        self.markup(range, value)
     }
 
     /// Primeira linha da definição, sem o `{` que abre o corpo de uma função.
