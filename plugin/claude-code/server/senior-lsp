@@ -12,14 +12,21 @@ VERSION=0.3.0
 REPO=eduardoghi/senior-lsp
 
 # pwd -P resolve o caminho real, para achar o clone também quando o plugin é ligado por symlink.
+ext=
+case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*) ext=.exe ;;
+esac
+
 here=$(cd "$(dirname "$0")" && pwd -P)
-local_build="$here/../../../target/release/senior-lsp"
+local_build="$here/../../../target/release/senior-lsp$ext"
 if [ -x "$local_build" ]; then
     exec "$local_build" "$@"
 fi
 
 case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) target=x86_64-unknown-linux-musl ;;
+    # Git Bash e MSYS2 no Windows.
+    MINGW*-x86_64 | MSYS*-x86_64 | CYGWIN*-x86_64) target=x86_64-pc-windows-msvc ;;
     *)
         echo "senior-lsp: não há binário pronto para $(uname -s) $(uname -m)." \
             "Compile com cargo build --release num clone do repositório." >&2
@@ -28,10 +35,10 @@ case "$(uname -s)-$(uname -m)" in
 esac
 
 data=${CLAUDE_PLUGIN_DATA:-${XDG_CACHE_HOME:-$HOME/.cache}/senior-lsp}
-binary="$data/senior-lsp-$VERSION"
+binary="$data/senior-lsp-$VERSION$ext"
 if [ ! -x "$binary" ]; then
     mkdir -p "$data"
-    url="https://github.com/$REPO/releases/download/v$VERSION/senior-lsp-$target"
+    url="https://github.com/$REPO/releases/download/v$VERSION/senior-lsp-$target$ext"
     tmp=$(mktemp "$data/download.XXXXXX")
     trap 'rm -f "$tmp" "$tmp.sha256"' EXIT
     fetch() {

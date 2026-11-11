@@ -76,8 +76,9 @@ claude plugin install senior-lsp@senior-lsp
 
 Numa sessão aberta, `/reload-plugins --force` carrega o plugin. Na primeira vez que o servidor
 inicia, o plugin baixa o binário da versão instalada do release do GitHub, confere o SHA-256 e
-guarda na pasta de dados do plugin. Há binário pronto para Linux x86_64. Em outro sistema,
-instale a partir de um clone.
+guarda na pasta de dados do plugin. Há binário pronto para Linux x86_64 e para Windows x86_64,
+que o plugin baixa quando o Claude Code roda o script pelo Git Bash. Em outro sistema, instale a
+partir de um clone.
 
 ### A partir de um clone
 

@@ -1,6 +1,6 @@
 name: Release
 
-# Publica o binário que o script do plugin baixa. A tag tem que ser v seguido da versão do
+# Publica os binários que o script do plugin baixa. A tag tem que ser v seguido da versão do
 # Cargo.toml, como v0.1.0.
 on:
   push:
@@ -10,10 +10,23 @@ permissions:
   contents: write
 
 jobs:
-  linux:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            ext: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: .exe
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     env:
-      TARGET: x86_64-unknown-linux-musl
+      TARGET: ${{ matrix.target }}
+      EXT: ${{ matrix.ext }}
     steps:
       - uses: actions/checkout@v4
       - name: Confere a tag com o Cargo.toml
@@ -21,14 +34,31 @@ jobs:
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
           test "$GITHUB_REF_NAME" = "v$version"
       - run: rustup target add "$TARGET"
-      - run: cargo test --locked
+      # Os testes rodam no Linux, como no CI.
+      - if: runner.os == 'Linux'
+        run: cargo test --locked
       - run: cargo build --release --locked --target "$TARGET"
+      - name: Separa o binário e o SHA-256
+        run: |
+          mkdir dist
+          name="senior-lsp-$TARGET$EXT"
+          cp "target/$TARGET/release/senior-lsp$EXT" "dist/$name"
+          (cd dist && sha256sum "$name" > "$name.sha256")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
       - name: Publica o release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir dist
-          name="senior-lsp-$TARGET"
-          cp "target/$TARGET/release/senior-lsp" "dist/$name"
-          (cd dist && sha256sum "$name" > "$name.sha256")
-          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
