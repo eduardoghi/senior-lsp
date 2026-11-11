@@ -6,7 +6,9 @@
 
 mod diagnostics;
 mod documents;
+mod folding;
 mod highlight;
+mod inlay;
 mod kind;
 mod navigation;
 mod quickfix;
@@ -23,8 +25,8 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     CodeActionRequest, Completion, DocumentHighlightRequest, DocumentSymbolRequest, ExecuteCommand,
-    GotoDefinition, HoverRequest, PrepareRenameRequest, References, Rename, Request as LspRequest,
-    SemanticTokensFullRequest, SignatureHelpRequest,
+    FoldingRangeRequest, GotoDefinition, HoverRequest, InlayHintRequest, PrepareRenameRequest,
+    References, Rename, Request as LspRequest, SemanticTokensFullRequest, SignatureHelpRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -56,6 +58,8 @@ pub fn run(connection: Connection) -> Result<()> {
             text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
             definition_provider: Some(OneOf::Left(true)),
             document_highlight_provider: Some(OneOf::Left(true)),
+            folding_range_provider: Some(lsp_types::FoldingRangeProviderCapability::Simple(true)),
+            inlay_hint_provider: Some(OneOf::Left(true)),
             references_provider: Some(OneOf::Left(true)),
             hover_provider: Some(HoverProviderCapability::Simple(true)),
             document_symbol_provider: Some(OneOf::Left(true)),
@@ -260,6 +264,30 @@ impl Server<'_> {
                         serde_json::to_value(DocumentSymbolResponse::Nested(c.document_symbols()))
                     }),
                 }
+            }
+            InlayHintRequest::METHOD => {
+                let params: lsp_types::InlayHintParams = serde_json::from_value(request.params)?;
+                let uri = &params.text_document.uri;
+                Ok(match self.documents.get(uri) {
+                    Some(doc) => {
+                        let context = navigation::Context {
+                            doc,
+                            uri,
+                            encoding: self.encoding,
+                            embedding: None,
+                        };
+                        serde_json::to_value(context.inlay_hints(params.range))?
+                    }
+                    None => serde_json::Value::Null,
+                })
+            }
+            FoldingRangeRequest::METHOD => {
+                let params: lsp_types::FoldingRangeParams = serde_json::from_value(request.params)?;
+                // Nos JSON de modelo, as linhas da regra não são as linhas do arquivo.
+                Ok(match self.documents.get(&params.text_document.uri) {
+                    Some(doc) => serde_json::to_value(folding::ranges(doc, self.encoding))?,
+                    None => serde_json::Value::Null,
+                })
             }
             DocumentHighlightRequest::METHOD => {
                 let params: lsp_types::DocumentHighlightParams =

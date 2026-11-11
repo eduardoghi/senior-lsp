@@ -86,7 +86,7 @@ fn name_before(text: &str, paren: usize) -> &str {
 
 /// Parâmetros de uma declaração como `Funcao F(Alfa A, Numero End B);`, separados pelas vírgulas
 /// de dentro dos parênteses.
-fn params_of(decl: &str) -> Vec<&str> {
+pub(crate) fn params_of(decl: &str) -> Vec<&str> {
     let (Some(open), Some(close)) = (decl.find('('), decl.rfind(')')) else {
         return Vec::new();
     };
@@ -127,7 +127,7 @@ impl Context<'_> {
 
     /// Declaração da função, procurada no arquivo, nas regras de cima da tela ou nas outras do
     /// modelo, e nas funções do ERP, nessa ordem.
-    fn declaration(&self, name: &str) -> Option<String> {
+    pub(crate) fn declaration(&self, name: &str) -> Option<String> {
         let text = &self.doc.text;
         let local = self
             .doc

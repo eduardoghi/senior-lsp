@@ -1033,3 +1033,86 @@ fn correcao_cria_o_definir_com_o_tipo_do_uso() {
     assert_eq!(fix(&mut editor, 1), None, "já definida");
     editor.stop();
 }
+
+#[test]
+fn nomes_dos_parametros_na_chamada() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "Definir Funcao Soma(Numero A, Numero B);\n\
+                definir alfa aTxt; definir numero Origem;\n\
+                IntParaAlfa(1, aTxt);\n\
+                IntParaAlfa(Origem, aTxt);\n\
+                Soma(1, 2);\n\
+                AlfaParaInt(aTxt, Origem);";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let response = editor.request(
+        lsp_types::request::InlayHintRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "range": { "start": { "line": 0, "character": 0 },
+                           "end": { "line": 99, "character": 0 } } }),
+    );
+    let hints: Vec<lsp_types::InlayHint> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    let found: Vec<String> = hints
+        .iter()
+        .map(|h| {
+            let lsp_types::InlayHintLabel::String(label) = &h.label else {
+                unreachable!()
+            };
+            format!("{}:{} {label}", h.position.line, h.position.character)
+        })
+        .collect();
+    // O argumento com o mesmo nome do parâmetro fica sem dica.
+    assert_eq!(
+        found,
+        [
+            "2:12 Origem:",
+            "2:15 end Retorno:",
+            "3:20 end Retorno:",
+            "4:5 A:",
+            "4:8 B:",
+            "5:12 Origem:",
+            "5:18 end Retorno:",
+        ]
+    );
+    editor.stop();
+}
+
+#[test]
+fn trechos_para_recolher() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "Definir Funcao F();\n\
+                definir alfa a;\n\
+                definir numero n;\n\
+                /* comentário\n\
+                   de duas linhas */\n\
+                se (n = 1) {\n\
+                  a = \"x\";\n\
+                }\n\
+                funcao F(); {\n\
+                  n = 2;\n\
+                }\n";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let response = editor.request(
+        lsp_types::request::FoldingRangeRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE } }),
+    );
+    let ranges: Vec<lsp_types::FoldingRange> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    let found: Vec<String> = ranges
+        .iter()
+        .map(|r| format!("{}-{} {:?}", r.start_line, r.end_line, r.kind))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            "0-2 Some(Imports)",
+            "3-4 Some(Comment)",
+            "5-6 None",
+            "8-10 None",
+            "8-9 None",
+        ]
+    );
+    editor.stop();
+}
