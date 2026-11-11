@@ -46,7 +46,7 @@ use lsp_types::{
 
 use crate::builtins::Context;
 use crate::line_index::ColumnEncoding;
-use documents::{Documents, is_report, is_rule};
+use documents::{Documents, is_report, is_report_rule, is_rule};
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -531,7 +531,10 @@ impl Server<'_> {
                     self.documents
                         .set_report(doc.uri.clone(), doc.text, doc.version)?;
                     self.publish(&doc.uri)?;
-                } else if is_rule(&doc.uri) || doc.language_id == "lsp-senior" {
+                } else if is_rule(&doc.uri)
+                    || is_report_rule(&doc.uri)
+                    || doc.language_id == "lsp-senior"
+                {
                     let context = self.rule_context(&doc.uri);
                     self.documents
                         .set(doc.uri.clone(), doc.text, doc.version, context)?;
@@ -602,6 +605,9 @@ impl Server<'_> {
     /// Tipo de uma regra em texto. Na pasta de tela é sempre tela. Fora dela vale o que o editor
     /// escolheu, senão regra comum para `Rule.txt` e o tipo padrão para os outros arquivos.
     fn rule_context(&self, uri: &Uri) -> Context {
+        if is_report_rule(uri) {
+            return Context::Report;
+        }
         if kind::fixed(uri.as_str()) {
             return Context::Sgi;
         }

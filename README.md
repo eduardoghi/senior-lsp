@@ -62,6 +62,8 @@ e isso muda as funções do ERP que ela pode chamar:
 | `Web Services` | `Rule.txt` | regra de web service, com as mesmas funções da regra comum |
 | `Modelos` | os `.json` de cada modelo | regra de relatório, que ganha as funções de relatório, as entradas e os controles do modelo e as funções e variáveis definidas nas outras regras dele |
 
+O código de uma regra de relatório também pode ficar fora do JSON, num arquivo `Modelos/<modelo>/regras/<json>.<evento>.txt`, com o `lines` da regra no JSON apontando para ele (`"lines": "regras/..."`). Esse formato serve para versionar os relatórios com o código das regras em texto. O servidor trata esse arquivo como regra de relatório, com as entradas e os controles do modelo e as funções e variáveis das outras regras dele, estejam elas em arquivo separado ou dentro de um JSON.
+
 O servidor reconhece as pastas `Formulários SGI` e `Modelos`. Qualquer outro arquivo de regra conta
 como regra comum, então renomear a pasta `Regras` não muda nada. Os outros tipos de
 artefato não exportam regra. Num modelo de relatório, as referências e o renomear atravessam todas
@@ -189,7 +191,7 @@ extensão usa o `target/release` em vez de baixar.
 
 O cliente LSP do Kate escolhe o servidor pelo modo de destaque do documento, e não pela extensão.
 A definição de sintaxe em `plugin/kate/lsp-senior.xml` cria o modo "LSP Senior" para os arquivos
-`Rule.txt` e `rule.txt` e colore as palavras reservadas, os comentários e os textos. Copie para a pasta de
+`Rule.txt` e `rule.txt` e para as regras de relatório separadas (`*.SOnPrint.txt` e os outros eventos) e colore as palavras reservadas, os comentários e os textos. Copie para a pasta de
 sintaxes do usuário:
 
 ```sh

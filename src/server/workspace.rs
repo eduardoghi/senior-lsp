@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use lsp_types::Uri;
 
-use super::documents::{Documents, is_report, is_rule};
+use super::documents::{Documents, is_report, is_report_rule, is_rule};
 use super::{Result, Server};
 
 /// Pastas que nunca têm regra e só custam tempo.
@@ -33,10 +33,16 @@ impl Server<'_> {
             let Ok(uri) = crate::form::uri_from_path(&path).parse::<Uri>() else {
                 continue;
             };
-            if is_report(&uri) {
-                if let Some(dir) = path.parent() {
-                    models.entry(dir.to_path_buf()).or_default().push(path);
-                }
+            // A regra separada fica em `regras`, um nível abaixo da pasta do modelo.
+            let model_dir = if is_report(&uri) {
+                path.parent()
+            } else if is_report_rule(&uri) {
+                path.parent().and_then(|p| p.parent())
+            } else {
+                None
+            };
+            if let Some(dir) = model_dir {
+                models.entry(dir.to_path_buf()).or_default().push(path);
             } else if is_rule(&uri) {
                 self.analyze_rule(&path, &uri, false)?;
             }
@@ -47,7 +53,7 @@ impl Server<'_> {
         Ok(())
     }
 
-    /// Os JSON de um modelo, com o modelo montado uma vez.
+    /// Os JSON e as regras separadas de um modelo, com o modelo montado uma vez.
     fn analyze_model(&self, paths: &[PathBuf]) -> Result<()> {
         let Some(first) = paths.first() else {
             return Ok(());
@@ -61,14 +67,22 @@ impl Server<'_> {
             let Ok(uri) = crate::form::uri_from_path(path).parse::<Uri>() else {
                 continue;
             };
-            if self.documents.report(&uri).is_some() {
+            if self.documents.report(&uri).is_some() || self.documents.get(&uri).is_some() {
                 continue;
             }
-            let Some(json) = read(path, false) else {
-                continue;
-            };
             let mut documents = Documents::default();
-            documents.set_report_in(uri.clone(), json, 0, &model, inherited.clone())?;
+            if is_report_rule(&uri) {
+                let Some(text) = read(path, true) else {
+                    continue;
+                };
+                let context = crate::builtins::Context::Report;
+                documents.set_with(uri.clone(), text, 0, context, inherited.clone())?;
+            } else {
+                let Some(json) = read(path, false) else {
+                    continue;
+                };
+                documents.set_report_in(uri.clone(), json, 0, &model, inherited.clone())?;
+            }
             self.send_disk(&documents, uri, false)?;
         }
         Ok(())
@@ -113,7 +127,7 @@ impl Server<'_> {
             let mut documents = Documents::default();
             documents.set_report(uri.clone(), json, 0)?;
             self.send_disk(&documents, uri, true)
-        } else if is_rule(&uri) {
+        } else if is_rule(&uri) || is_report_rule(&uri) {
             self.analyze_rule(path, &uri, true)
         } else {
             Ok(())
@@ -125,7 +139,7 @@ impl Server<'_> {
         self.workspace.is_some()
             && crate::form::uri_from_path(path)
                 .parse::<Uri>()
-                .is_ok_and(|u| is_rule(&u) || is_report(&u))
+                .is_ok_and(|u| is_rule(&u) || is_report(&u) || is_report_rule(&u))
     }
 }
 
@@ -146,7 +160,8 @@ fn collect(dir: &Path, files: &mut Vec<PathBuf>) {
             }
             Ok(t) if t.is_file() => {
                 let candidate = name.eq_ignore_ascii_case("rule.txt")
-                    || name.to_ascii_lowercase().ends_with(".json");
+                    || name.to_ascii_lowercase().ends_with(".json")
+                    || crate::report::is_rule_file(&path);
                 if candidate {
                     files.push(path);
                 }

@@ -31,6 +31,9 @@
                     "Rule.txt",
                     "rule.txt"
                 ],
+                "filenamePatterns": [
+                    "**/Modelos/*/regras/*.txt"
+                ],
                 "configuration": "./language-configuration.json"
             }
         ],

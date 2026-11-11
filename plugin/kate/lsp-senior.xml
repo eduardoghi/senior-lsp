@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE language>
 <!-- Regras LSP do ERP Senior. O nome do modo liga os arquivos ao senior-lsp no cliente LSP do Kate. -->
-<language name="LSP Senior" section="Sources" version="1" kateversion="5.0" extensions="Rule.txt;rule.txt" casesensitive="0" author="Eduardo Hillesheim" license="MIT">
+<language name="LSP Senior" section="Sources" version="1" kateversion="5.0" extensions="Rule.txt;rule.txt;*.SOnPrint.txt;*.SOnBeforePrint.txt;*.SOnAfterPrint.txt;*.SOnExpression.txt;*.SPreambleSelect.txt;*.SSelection.txt;*.SInitialization.txt;*.SFinalization.txt;*.SFunctionRule.txt;*.SPrintPage.txt" casesensitive="0" author="Eduardo Hillesheim" license="MIT">
     <highlighting>
         <list name="controle">
             <item>cancel</item>

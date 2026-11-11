@@ -18,7 +18,7 @@ pub enum Context {
     Rule,
     /// Regra de tela SGI, na pasta `Formulários SGI`.
     Sgi,
-    /// Regra de modelo de relatório, nos JSON da pasta `Modelos`.
+    /// Regra de modelo de relatório, nos JSON da pasta `Modelos` ou separada em `regras/*.txt`.
     Report,
 }
 
@@ -33,7 +33,8 @@ impl Context {
         {
             Context::Sgi
         } else if segments.any(|s| s.eq_ignore_ascii_case("Modelos"))
-            && path.to_ascii_lowercase().ends_with(".json")
+            && (path.to_ascii_lowercase().ends_with(".json")
+                || crate::report::is_rule_file(std::path::Path::new(&path)))
         {
             Context::Report
         } else {

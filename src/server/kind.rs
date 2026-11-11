@@ -38,10 +38,11 @@ pub(crate) fn action_title(context: Context) -> &'static str {
     }
 }
 
-/// O tipo vem da pasta e não pode ser trocado. Só a pasta `Formulários SGI` decide, porque os
-/// JSON de `Modelos` são tratados à parte e as outras pastas valem como regra comum.
+/// O tipo vem da pasta e não pode ser trocado. A pasta `Formulários SGI` dá tela e a pasta
+/// `Modelos` dá relatório (os JSON e as regras separadas em `regras`). As outras valem como regra
+/// comum.
 pub(crate) fn fixed(uri: &str) -> bool {
-    Context::from_uri(uri) == Context::Sgi
+    Context::from_uri(uri) != Context::Rule
 }
 
 #[cfg(test)]

@@ -167,11 +167,35 @@ pub fn model_rules(
     model(json_path, current).rules
 }
 
-/// Regras e entradas de todos os JSON do modelo de `json_path`, a pasta dele. O arquivo aberto no
-/// editor entra com `current`, e os outros são lidos do disco, em UTF-8 ou cp1252.
+/// Diz se o arquivo é uma regra de relatório separada do JSON, em `Modelos/<modelo>/regras/*.txt`.
+/// Quem versiona os relatórios pode tirar o código das regras do JSON para esses arquivos, e o
+/// JSON fica com uma referência no `lines`, que o leitor ignora por não ser uma lista.
+pub fn is_rule_file(path: &std::path::Path) -> bool {
+    let txt = path
+        .extension()
+        .is_some_and(|x| x.eq_ignore_ascii_case("txt"));
+    let in_rules = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .is_some_and(|n| n.eq_ignore_ascii_case("regras"));
+    let in_models = path.ancestors().any(|a| {
+        a.file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case("Modelos"))
+    });
+    txt && in_rules && in_models
+}
+
+/// Regras e entradas de todos os JSON do modelo de `json_path`, a pasta dele, e das regras
+/// separadas na pasta `regras`. `json_path` pode ser um JSON ou uma regra separada. O arquivo aberto
+/// no editor entra com `current`, e os outros são lidos do disco, em UTF-8 ou cp1252.
 pub fn model(json_path: &std::path::Path, current: &str) -> Model {
     let mut out = Model::default();
-    let Some(dir) = json_path.parent() else {
+    let dir = if is_rule_file(json_path) {
+        json_path.parent().and_then(|p| p.parent())
+    } else {
+        json_path.parent()
+    };
+    let Some(dir) = dir else {
         return out;
     };
     let mut files: Vec<_> = std::fs::read_dir(dir)
@@ -213,7 +237,82 @@ pub fn model(json_path: &std::path::Path, current: &str) -> Model {
             out.entries.push((path.clone(), json.clone(), entry));
         }
     }
+    let rules_dir = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .find(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("regras")
+                && e.path().is_dir()
+        });
+    let mut separated: Vec<_> = rules_dir
+        .map(|d| std::fs::read_dir(d.path()).into_iter().flatten().flatten())
+        .into_iter()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| is_rule_file(p))
+        .collect();
+    separated.sort();
+    for path in separated {
+        let text = if path == json_path {
+            Some(current.to_owned())
+        } else {
+            std::fs::read(&path)
+                .ok()
+                .and_then(|b| match String::from_utf8(b) {
+                    Ok(t) => Some(t),
+                    Err(e) => crate::cp1252::decode(e.as_bytes()),
+                })
+        };
+        let Some(text) = text else {
+            continue;
+        };
+        // O evento é a última parte do nome, como `SOnPrint` em `Detalhe.Campo01.SOnPrint.txt`.
+        let prop = path
+            .file_stem()
+            .map(|s| s.to_string_lossy())
+            .and_then(|s| s.rsplit('.').next().map(str::to_owned))
+            .unwrap_or_default();
+        let rule = from_text(prop, &text);
+        if rule.text.trim().is_empty() {
+            continue;
+        }
+        let embedded = Embedded {
+            json: text.into(),
+            rule,
+        };
+        out.rules.push((path, std::sync::Arc::new(embedded)));
+    }
     out
+}
+
+/// Regra de um arquivo de texto. O "JSON" dela é o próprio arquivo, e cada linha anda junto com
+/// o texto da regra, sem escapes. Só o fim de linha muda, porque o texto usa `\n` e o arquivo
+/// pode ter CRLF.
+pub fn from_text(prop: String, file: &str) -> EmbeddedRule {
+    let mut text = String::new();
+    let mut runs = Vec::new();
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    for (i, line) in file.split('\n').enumerate() {
+        let content = line.strip_suffix('\r').unwrap_or(line);
+        if i > 0 {
+            text.push('\n');
+        }
+        let base = text.len() as u32;
+        runs.push((base, start as u32, content.len() as u32));
+        text.push_str(content);
+        lines.push((start as u32, (start + content.len()) as u32));
+        start += line.len() + 1;
+    }
+    EmbeddedRule {
+        prop,
+        text,
+        runs,
+        lines,
+    }
 }
 
 /// Todas as regras com código do JSON, na ordem do texto.

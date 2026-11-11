@@ -1582,3 +1582,58 @@ fn analisa_a_pasta_inteira_quando_ligado() {
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn regras_de_relatorio_separadas_do_json() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-separadas-{}", std::process::id()));
+    let model = base.join("Modelos/M1.GER");
+    let regras = model.join("regras");
+    std::fs::create_dir_all(&regras).unwrap();
+    std::fs::write(
+        model.join("Base_Structure.json"),
+        r#"{ "entrance": [
+  { "sytem_varName": "ECodEmp", "description": "Empresa", "type_var": 1, "size": 0 }
+], "function_rule": { "rule": { "prop_name": "SFunctionRule", "lines": "regras/Base_Structure.SFunctionRule.txt" } } }"#,
+    )
+    .unwrap();
+    let funcoes = regras.join("Base_Structure.SFunctionRule.txt");
+    std::fs::write(
+        &funcoes,
+        "Definir Funcao Dobro(Numero end N);\r\nfuncao Dobro(Numero end N); { N = N * 2; }\r\n",
+    )
+    .unwrap();
+    std::fs::write(
+        model.join("Cabecalho.json"),
+        r#"{ "children": [ { "name": "Campo01", "rule": { "prop_name": "SOnPrint", "lines": "regras/Cabecalho.Campo01.SOnPrint.txt" } } ] }"#,
+    )
+    .unwrap();
+    let campo = regras.join("Cabecalho.Campo01.SOnPrint.txt");
+    let texto = "Definir Numero nValor;\r\nnValor = ECodEmp;\r\nDobro(nValor);\r\nNaoExiste();\r\n";
+    std::fs::write(&campo, texto).unwrap();
+    let uri = crate::form::uri_from_path(&campo);
+
+    let (mut editor, _) = Editor::start(None);
+    editor.open(&uri, 1, texto);
+    // Só a função inexistente. A entrada e a função da outra regra do modelo valem aqui.
+    let codes: Vec<_> = codes(&editor.diagnostics());
+    assert_eq!(codes, ["SEN052"]);
+
+    let r = editor.request(
+        GotoDefinition::METHOD,
+        json!({ "textDocument": { "uri": uri }, "position": { "line": 2, "character": 1 } }),
+    );
+    let locations = r.response_result.unwrap();
+    assert_eq!(
+        locations[0]["uri"],
+        crate::form::uri_from_path(&funcoes).as_str()
+    );
+
+    // O tipo vem da pasta e não troca.
+    let tipo = editor.request("senior-lsp/tipoRegra", json!({ "uri": uri }));
+    assert_eq!(
+        tipo.response_result.unwrap(),
+        json!({ "tipo": "relatorio", "fixo": true })
+    );
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}

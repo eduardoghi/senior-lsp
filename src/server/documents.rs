@@ -66,16 +66,34 @@ impl Documents {
         version: i32,
         context: Context,
     ) -> Result<(), TextTooLarge> {
-        let tree = crate::parse(&text)?;
-        let symbols = Symbols::build(&tree, &text);
-        let index = LineIndex::new(&text);
         // As regras de cima são lidas do disco a cada mudança. Um formulário tem poucas.
         let mut inherited = match (context, crate::form::path_from_uri(uri.as_str())) {
             (Context::Sgi, Some(path)) => crate::form::inherited_functions(&path),
+            // Regra de relatório separada do JSON. As regras e as entradas do modelo valem nela,
+            // a própria inclusive, como no JSON, para uma função definida em mais de uma regra
+            // ficar em dúvida do mesmo jeito.
+            (Context::Report, Some(path)) if crate::report::is_rule_file(&path) => {
+                Inherited::from_model(&crate::report::model(&path, &text))
+            }
             _ => Inherited::default(),
         };
         inherited.dictionaries = crate::dictionary::current();
-        let inherited = Arc::new(inherited);
+        self.set_with(uri, text, version, context, Arc::new(inherited))
+    }
+
+    /// Guarda uma regra em texto com as definições de fora já montadas, como as de um modelo de
+    /// relatório analisado de uma vez.
+    pub(crate) fn set_with(
+        &mut self,
+        uri: Uri,
+        text: String,
+        version: i32,
+        context: Context,
+        inherited: Arc<Inherited>,
+    ) -> Result<(), TextTooLarge> {
+        let tree = crate::parse(&text)?;
+        let symbols = Symbols::build(&tree, &text);
+        let index = LineIndex::new(&text);
         let doc = Document {
             text,
             version,
@@ -172,7 +190,12 @@ pub(crate) fn model_inherited(model: &crate::report::Model) -> Arc<Inherited> {
 
 /// Diz se o endereço é de um JSON de modelo de relatório, na pasta `Modelos`.
 pub(crate) fn is_report(uri: &Uri) -> bool {
-    Context::from_uri(uri.as_str()) == Context::Report
+    Context::from_uri(uri.as_str()) == Context::Report && !is_report_rule(uri)
+}
+
+/// Diz se o endereço é de uma regra de relatório separada do JSON, em `Modelos/<modelo>/regras`.
+pub(crate) fn is_report_rule(uri: &Uri) -> bool {
+    crate::form::path_from_uri(uri.as_str()).is_some_and(|p| crate::report::is_rule_file(&p))
 }
 
 /// Diz se o endereço é de uma regra pelo nome, `Rule.txt` sem diferenciar maiúsculas. O Claude
