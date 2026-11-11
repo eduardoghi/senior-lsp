@@ -85,12 +85,22 @@ async function start(context: vscode.ExtensionContext, output: vscode.LogOutputC
             // O servidor esquece a escolha quando reinicia, então ela é mandada de novo ao abrir.
             didOpen: async (document, next) => {
                 await next(document);
-                const tipo = chosen(context)[document.uri.toString()];
-                if (tipo && client) {
-                    await client.sendRequest("workspace/executeCommand", {
-                        command: SERVER_COMMAND,
-                        arguments: [document.uri.toString(), tipo],
-                    });
+                const uri = document.uri.toString();
+                const saved = chosen(context);
+                const tipo = saved[uri];
+                // Um tipo que o servidor não conhece mais, de uma versão anterior, é descartado.
+                if (tipo && !KINDS.some((k) => k.tipo === tipo)) {
+                    delete saved[uri];
+                    await context.workspaceState.update(CHOSEN_KEY, saved);
+                } else if (tipo && client) {
+                    try {
+                        await client.sendRequest("workspace/executeCommand", {
+                            command: SERVER_COMMAND,
+                            arguments: [uri, tipo],
+                        });
+                    } catch (err) {
+                        output.warn(`tipo ${tipo} não aplicado em ${uri} (${String(err)})`);
+                    }
                 }
                 if (document === vscode.window.activeTextEditor?.document) {
                     void updateStatusBar();
