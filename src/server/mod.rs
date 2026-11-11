@@ -48,9 +48,9 @@ use lsp_types::request::{
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
-    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, OneOf,
-    PositionEncodingKind, PublishDiagnosticsParams, ReferenceParams, ServerCapabilities,
-    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    HoverParams, HoverProviderCapability, InitializeResult, OneOf, PositionEncodingKind,
+    PublishDiagnosticsParams, ReferenceParams, ServerCapabilities, ServerInfo,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 
 use crate::builtins::Context;
@@ -62,10 +62,13 @@ pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 /// Atende o editor pela conexão até o `shutdown` e o `exit`.
 pub fn run(connection: Connection) -> Result<()> {
     let (id, params) = connection.initialize_start()?;
-    let params: InitializeParams = serde_json::from_value(params)?;
+    // Só os campos de que o servidor precisa são lidos, e um que falte ou venha fora do formato
+    // vale como ausente. Um cliente que manda capacidades incompletas (um `semanticTokens` sem
+    // `tokenTypes`, por exemplo) não derruba o `initialize`.
+    let params = ClientInit::read(&params);
     configure_dictionaries(&params);
     let default_kind = default_kind(&params);
-    let folders = workspace_folders(&params);
+    let folders = params.folders.clone();
     let analyze_folders = analyze_folders(&params);
     let encoding = negotiate_encoding(&params);
     let result = InitializeResult {
@@ -134,6 +137,22 @@ pub fn run(connection: Connection) -> Result<()> {
         }),
     };
     connection.initialize_finish(id, serde_json::to_value(result)?)?;
+    // As opções são escritas à mão na configuração do editor. Uma fora do formato é ignorada como
+    // as capacidades, mas sem aviso a pessoa não saberia por que o dicionário ou a análise da pasta
+    // não ligaram.
+    for message in option_warnings(&params) {
+        let params = lsp_types::LogMessageParams {
+            typ: lsp_types::MessageType::WARNING,
+            message,
+        };
+        connection.sender.send(
+            Notification::new(
+                lsp_types::notification::LogMessage::METHOD.to_owned(),
+                params,
+            )
+            .into(),
+        )?;
+    }
 
     let mut server = Server {
         connection: &connection,
@@ -164,17 +183,92 @@ pub fn run(connection: Connection) -> Result<()> {
     Ok(())
 }
 
-/// UTF-8 se o editor anunciar, porque dispensa a conversão das colunas. Senão UTF-16, que é o
-/// padrão do protocolo.
+/// O que o servidor lê do `initialize` do editor.
+struct ClientInit<'a> {
+    options: Option<&'a serde_json::Value>,
+    /// Pastas do workspace, onde ficam as regras da análise da pasta inteira e da busca de
+    /// símbolos. Sem `workspaceFolders`, vale o `rootUri`.
+    folders: Vec<std::path::PathBuf>,
+    /// O editor aceita colunas em UTF-8.
+    utf8: bool,
+}
+
+impl<'a> ClientInit<'a> {
+    fn read(params: &'a serde_json::Value) -> ClientInit<'a> {
+        let uris: Vec<&str> = match params.get("workspaceFolders").and_then(|f| f.as_array()) {
+            Some(folders) => folders
+                .iter()
+                .filter_map(|f| f.get("uri")?.as_str())
+                .collect(),
+            None => params
+                .get("rootUri")
+                .and_then(|u| u.as_str())
+                .into_iter()
+                .collect(),
+        };
+        let utf8 = params
+            .pointer("/capabilities/general/positionEncodings")
+            .and_then(|e| e.as_array())
+            .is_some_and(|kinds| kinds.iter().any(|k| k.as_str() == Some("utf-8")));
+        ClientInit {
+            options: params.get("initializationOptions"),
+            folders: uris
+                .into_iter()
+                .filter_map(crate::form::path_from_uri)
+                .collect(),
+            utf8,
+        }
+    }
+
+    fn option(&self, key: &str) -> Option<&serde_json::Value> {
+        self.options?.get(key)
+    }
+}
+
+/// Avisos sobre as opções de inicialização que o servidor ignorou por estarem fora do formato, com
+/// nome desconhecido ou com um tipo de regra que não existe.
+fn option_warnings(params: &ClientInit) -> Vec<String> {
+    let Some(options) = params.options.filter(|o| !o.is_null()) else {
+        return Vec::new();
+    };
+    let Some(options) = options.as_object() else {
+        return vec![
+            "senior-lsp: as opções de inicialização não são um objeto JSON e foram ignoradas."
+                .to_owned(),
+        ];
+    };
+    let mut warnings = Vec::new();
+    for (key, value) in options {
+        if value.is_null() {
+            continue;
+        }
+        let problem = match key.as_str() {
+            "tbs_producao" | "tbs_teste" if !value.is_string() => Some("deveria ser texto"),
+            "analisar_pasta" if !value.is_boolean() => Some("deveria ser true ou false"),
+            "tipo_padrao" => match value.as_str() {
+                None => Some("deveria ser texto"),
+                Some(name) if kind::parse(name).is_none() => {
+                    Some("não é comum, tela nem relatorio, e vale regra comum")
+                }
+                Some(_) => None,
+            },
+            "tbs_producao" | "tbs_teste" | "analisar_pasta" => None,
+            _ => Some("não é uma opção do senior-lsp"),
+        };
+        if let Some(problem) = problem {
+            warnings.push(format!("senior-lsp: a opção {key} = {value} {problem}."));
+        }
+    }
+    warnings
+}
+
 /// Caminhos do `.tbs` de produção e do de teste, pelas opções de inicialização do editor
 /// (`tbs_producao` e `tbs_teste`) ou pelas variáveis `SENIOR_LSP_TBS_PRODUCAO` e
 /// `SENIOR_LSP_TBS_TESTE`. As opções do editor valem primeiro.
-fn configure_dictionaries(params: &InitializeParams) {
+fn configure_dictionaries(params: &ClientInit) {
     let option = |key: &str, var: &str| {
         let from_editor = params
-            .initialization_options
-            .as_ref()
-            .and_then(|o| o.get(key))
+            .option(key)
             .and_then(|v| v.as_str())
             .map(str::to_owned);
         from_editor
@@ -192,47 +286,29 @@ fn configure_dictionaries(params: &InitializeParams) {
 
 /// Tipo dos arquivos soltos que não se chamam `Rule.txt`, pela opção `tipo_padrao`. Sem ela, ou
 /// com um nome desconhecido, é regra comum.
-fn default_kind(params: &InitializeParams) -> Context {
+fn default_kind(params: &ClientInit) -> Context {
     params
-        .initialization_options
-        .as_ref()
-        .and_then(|o| o.get("tipo_padrao"))
+        .option("tipo_padrao")
         .and_then(|v| v.as_str())
         .and_then(kind::parse)
         .unwrap_or(Context::Rule)
 }
 
-/// Pastas do workspace, onde ficam as regras da análise da pasta inteira e da busca de símbolos.
-#[allow(deprecated)]
-fn workspace_folders(params: &InitializeParams) -> Vec<std::path::PathBuf> {
-    let uris: Vec<&Uri> = match &params.workspace_folders {
-        Some(folders) => folders.iter().map(|f| &f.uri).collect(),
-        None => params.root_uri.iter().collect(),
-    };
-    uris.into_iter()
-        .filter_map(|u| crate::form::path_from_uri(u.as_str()))
-        .collect()
-}
-
 /// Opção `analisar_pasta`, que liga os diagnósticos da pasta inteira.
-fn analyze_folders(params: &InitializeParams) -> bool {
+fn analyze_folders(params: &ClientInit) -> bool {
     params
-        .initialization_options
-        .as_ref()
-        .and_then(|o| o.get("analisar_pasta"))
+        .option("analisar_pasta")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
 }
 
-fn negotiate_encoding(params: &InitializeParams) -> ColumnEncoding {
-    let offered = params
-        .capabilities
-        .general
-        .as_ref()
-        .and_then(|g| g.position_encodings.as_ref());
-    match offered {
-        Some(kinds) if kinds.contains(&PositionEncodingKind::UTF8) => ColumnEncoding::Utf8,
-        _ => ColumnEncoding::Utf16,
+/// UTF-8 se o editor anunciar, porque dispensa a conversão das colunas. Senão UTF-16, que é o
+/// padrão do protocolo.
+fn negotiate_encoding(params: &ClientInit) -> ColumnEncoding {
+    if params.utf8 {
+        ColumnEncoding::Utf8
+    } else {
+        ColumnEncoding::Utf16
     }
 }
 

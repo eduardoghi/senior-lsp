@@ -58,8 +58,8 @@ impl Editor {
         // `workspaceFolders` dentro das opções vira parâmetro do initialize, para os testes da
         // análise da pasta.
         if let Some(folders) = params["initializationOptions"]
-            .get("workspaceFolders")
-            .cloned()
+            .as_object_mut()
+            .and_then(|o| o.remove("workspaceFolders"))
         {
             params["workspaceFolders"] = folders;
         }
@@ -195,6 +195,90 @@ fn com_utf8_oferecido_usa_utf8() {
     let (editor, encoding) = Editor::start(Some(offered));
     assert_eq!(encoding, PositionEncodingKind::UTF8);
     editor.stop();
+}
+
+#[test]
+fn avisa_das_opcoes_fora_do_formato() {
+    let (editor, _) = Editor::start_with(
+        None,
+        json!({
+            "tbs_producao": 5,
+            "tbs_teste": null,
+            "analisar_pasta": "sim",
+            "tipo_padrao": "identificador",
+            "tbs_produção": "/tmp/sapiens.tbs"
+        }),
+    );
+    let mut avisos = Vec::new();
+    while avisos.len() < 4 {
+        if let Message::Notification(n) = editor.recv()
+            && n.method == lsp_types::notification::LogMessage::METHOD
+        {
+            avisos.push(n.params["message"].as_str().unwrap().to_owned());
+        }
+    }
+    avisos.sort();
+    assert_eq!(
+        avisos,
+        [
+            "senior-lsp: a opção analisar_pasta = \"sim\" deveria ser true ou false.",
+            "senior-lsp: a opção tbs_producao = 5 deveria ser texto.",
+            "senior-lsp: a opção tbs_produção = \"/tmp/sapiens.tbs\" não é uma opção do senior-lsp.",
+            "senior-lsp: a opção tipo_padrao = \"identificador\" não é comum, tela nem relatorio, e vale regra comum.",
+        ]
+    );
+    editor.stop();
+}
+
+#[test]
+fn capacidades_incompletas_nao_derrubam_o_initialize() {
+    // O `semanticTokens` sem `tokenTypes` e o `positionEncodings` com valores que não são texto
+    // não passam por `InitializeParams`, mas o servidor só precisa do resto.
+    let (client, server_conn) = Connection::memory();
+    let server = std::thread::spawn(move || super::run(server_conn));
+    let request = Request::new(
+        RequestId::from(1),
+        Initialize::METHOD.to_owned(),
+        json!({
+            "capabilities": {
+                "textDocument": { "semanticTokens": { "requests": { "full": true } } },
+                "general": { "positionEncodings": [1, "utf-16", "utf-8"] },
+                "workspace": 7
+            },
+            "workspaceFolders": "isto não é uma lista",
+            "rootUri": 3
+        }),
+    );
+    client.sender.send(request.into()).unwrap();
+    let Message::Response(response) = client
+        .receiver
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+    else {
+        panic!("esperava a resposta do initialize");
+    };
+    let result: InitializeResult =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    assert_eq!(
+        result.capabilities.position_encoding,
+        Some(PositionEncodingKind::UTF8)
+    );
+    let notify = |method: &str, params| {
+        let n = Notification::new(method.to_owned(), params);
+        client.sender.send(n.into()).unwrap();
+    };
+    notify(Initialized::METHOD, json!({}));
+    let shutdown = Request::new(RequestId::from(2), Shutdown::METHOD.to_owned(), json!(null));
+    client.sender.send(shutdown.into()).unwrap();
+    let Message::Response(_) = client
+        .receiver
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+    else {
+        panic!("esperava a resposta do shutdown");
+    };
+    notify(Exit::METHOD, json!(null));
+    server.join().unwrap().unwrap();
 }
 
 #[test]
