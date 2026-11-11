@@ -11,6 +11,7 @@ O servidor oferece:
   mensagem do ERP
 - avisos de código que compila mas faz outra coisa do que parece
 - ir para a definição e achar as referências de variáveis, funções, parâmetros e rótulos
+- destacar as outras ocorrências do nome que está no cursor
 - hover com a linha do `definir` e, com o dicionário de dados do ERP configurado, o tipo, a
   descrição, as chaves, os relacionamentos e a busca dos campos de tabela
 - as funções que o ERP já traz, como `IntParaAlfa`, com a declaração no hover e a conferência dos

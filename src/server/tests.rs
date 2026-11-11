@@ -932,3 +932,42 @@ fn destaque_semantico_classifica_cada_nome() {
     );
     editor.stop();
 }
+
+#[test]
+fn destaca_as_ocorrencias_do_nome() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "Definir Funcao Soma(Numero A);\n\
+                definir alfa aTxt;\n\
+                IntParaAlfa(1, aTxt);\n\
+                IntParaAlfa(2, aTxt);\n\
+                Soma(1);\n\
+                funcao Soma(Numero A); { A = 1; }";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let mut at = |line: u32, character: u32| -> Vec<String> {
+        let response = editor.request(
+            lsp_types::request::DocumentHighlightRequest::METHOD,
+            json!({ "textDocument": { "uri": RULE },
+                    "position": { "line": line, "character": character } }),
+        );
+        let list: Vec<lsp_types::DocumentHighlight> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        list.iter()
+            .map(|h| {
+                let kind = match h.kind.unwrap() {
+                    lsp_types::DocumentHighlightKind::WRITE => "escrita",
+                    lsp_types::DocumentHighlightKind::READ => "leitura",
+                    _ => "texto",
+                };
+                format!("{}:{} {kind}", h.range.start.line, h.range.start.character)
+            })
+            .collect()
+    };
+    // Variável, pelo uso.
+    assert_eq!(at(2, 16), ["1:13 escrita", "2:15 leitura", "3:15 leitura"]);
+    // Função da regra, pela declaração, marca a implementação e a chamada.
+    assert_eq!(at(0, 16), ["0:15 escrita", "4:0 leitura", "5:7 escrita"]);
+    // Função do ERP, que o arquivo não define.
+    assert_eq!(at(2, 3), ["2:0 texto", "3:0 texto"]);
+    editor.stop();
+}

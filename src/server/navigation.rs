@@ -47,7 +47,7 @@ impl Context<'_> {
         }
     }
 
-    fn range(&self, range: TextRange) -> Range {
+    pub(crate) fn range(&self, range: TextRange) -> Range {
         let (text, index, range) = match self.embedding {
             Some(e) => (e.json, e.index, e.rule.range_to_json(range)),
             None => (self.doc.text.as_str(), &self.doc.index, range),
@@ -789,7 +789,7 @@ fn name_ref_kind(tree: &crate::Tree, node: NodeId) -> Option<(NodeId, bool)> {
 
 /// Nome que contém `offset`, fora de campo depois de ponto, e se ele é o nome chamado numa
 /// chamada.
-fn name_at(tree: &crate::Tree, offset: TextSize) -> Option<(NodeId, bool)> {
+pub(crate) fn name_at(tree: &crate::Tree, offset: TextSize) -> Option<(NodeId, bool)> {
     let mut node = tree.root();
     loop {
         let child = tree

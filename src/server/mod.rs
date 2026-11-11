@@ -6,6 +6,7 @@
 
 mod diagnostics;
 mod documents;
+mod highlight;
 mod kind;
 mod navigation;
 mod semantic;
@@ -20,8 +21,8 @@ use lsp_types::notification::{
     Notification as LspNotification, PublishDiagnostics,
 };
 use lsp_types::request::{
-    CodeActionRequest, Completion, DocumentSymbolRequest, ExecuteCommand, GotoDefinition,
-    HoverRequest, PrepareRenameRequest, References, Rename, Request as LspRequest,
+    CodeActionRequest, Completion, DocumentHighlightRequest, DocumentSymbolRequest, ExecuteCommand,
+    GotoDefinition, HoverRequest, PrepareRenameRequest, References, Rename, Request as LspRequest,
     SemanticTokensFullRequest, SignatureHelpRequest,
 };
 use lsp_types::{
@@ -53,6 +54,7 @@ pub fn run(connection: Connection) -> Result<()> {
             }),
             text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
             definition_provider: Some(OneOf::Left(true)),
+            document_highlight_provider: Some(OneOf::Left(true)),
             references_provider: Some(OneOf::Left(true)),
             hover_provider: Some(HoverProviderCapability::Simple(true)),
             document_symbol_provider: Some(OneOf::Left(true)),
@@ -257,6 +259,14 @@ impl Server<'_> {
                         serde_json::to_value(DocumentSymbolResponse::Nested(c.document_symbols()))
                     }),
                 }
+            }
+            DocumentHighlightRequest::METHOD => {
+                let params: lsp_types::DocumentHighlightParams =
+                    serde_json::from_value(request.params)?;
+                let at = params.text_document_position_params;
+                self.with(&at.text_document.uri, Some(at.position), |c| {
+                    serde_json::to_value(c.document_highlight(at.position))
+                })
             }
             SemanticTokensFullRequest::METHOD => {
                 let params: lsp_types::SemanticTokensParams =
