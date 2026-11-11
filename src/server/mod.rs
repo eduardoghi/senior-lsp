@@ -24,6 +24,7 @@ mod signature;
 mod sql;
 mod webservice;
 mod workspace;
+mod workspace_symbols;
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -39,6 +40,7 @@ use lsp_types::request::{
     DocumentSymbolRequest, ExecuteCommand, FoldingRangeRequest, GotoDefinition, GotoImplementation,
     HoverRequest, InlayHintRequest, PrepareRenameRequest, References, Rename,
     Request as LspRequest, SelectionRangeRequest, SemanticTokensFullRequest, SignatureHelpRequest,
+    WorkspaceSymbolRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -60,7 +62,8 @@ pub fn run(connection: Connection) -> Result<()> {
     let params: InitializeParams = serde_json::from_value(params)?;
     configure_dictionaries(&params);
     let default_kind = default_kind(&params);
-    let workspace = workspace_folders(&params);
+    let folders = workspace_folders(&params);
+    let analyze_folders = analyze_folders(&params);
     let encoding = negotiate_encoding(&params);
     let result = InitializeResult {
         capabilities: ServerCapabilities {
@@ -90,6 +93,7 @@ pub fn run(connection: Connection) -> Result<()> {
             references_provider: Some(OneOf::Left(true)),
             hover_provider: Some(HoverProviderCapability::Simple(true)),
             document_symbol_provider: Some(OneOf::Left(true)),
+            workspace_symbol_provider: Some(OneOf::Left(true)),
             completion_provider: Some(lsp_types::CompletionOptions {
                 // Depois do ponto vêm os membros do cursor, da lista e da tabela.
                 trigger_characters: Some(vec![".".to_owned()]),
@@ -134,7 +138,9 @@ pub fn run(connection: Connection) -> Result<()> {
         encoding,
         default_kind,
         chosen: HashMap::new(),
-        workspace,
+        folders,
+        analyze_folders,
+        index: Default::default(),
     };
     // O `initialize_finish` já esperou o `initialized`, então o editor está pronto.
     server.analyze_workspace()?;
@@ -191,27 +197,26 @@ fn default_kind(params: &InitializeParams) -> Context {
         .unwrap_or(Context::Rule)
 }
 
-/// Pastas do workspace para a análise da pasta inteira, só com a opção `analisar_pasta`.
+/// Pastas do workspace, onde ficam as regras da análise da pasta inteira e da busca de símbolos.
 #[allow(deprecated)]
-fn workspace_folders(params: &InitializeParams) -> Option<Vec<std::path::PathBuf>> {
-    let enabled = params
-        .initialization_options
-        .as_ref()
-        .and_then(|o| o.get("analisar_pasta"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if !enabled {
-        return None;
-    }
+fn workspace_folders(params: &InitializeParams) -> Vec<std::path::PathBuf> {
     let uris: Vec<&Uri> = match &params.workspace_folders {
         Some(folders) => folders.iter().map(|f| &f.uri).collect(),
         None => params.root_uri.iter().collect(),
     };
-    Some(
-        uris.into_iter()
-            .filter_map(|u| crate::form::path_from_uri(u.as_str()))
-            .collect(),
-    )
+    uris.into_iter()
+        .filter_map(|u| crate::form::path_from_uri(u.as_str()))
+        .collect()
+}
+
+/// Opção `analisar_pasta`, que liga os diagnósticos da pasta inteira.
+fn analyze_folders(params: &InitializeParams) -> bool {
+    params
+        .initialization_options
+        .as_ref()
+        .and_then(|o| o.get("analisar_pasta"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 fn negotiate_encoding(params: &InitializeParams) -> ColumnEncoding {
@@ -231,8 +236,12 @@ struct Server<'a> {
     documents: Documents,
     encoding: ColumnEncoding,
     default_kind: Context,
-    /// Pastas do workspace, quando a opção `analisar_pasta` está ligada.
-    workspace: Option<Vec<std::path::PathBuf>>,
+    /// Pastas do workspace.
+    folders: Vec<std::path::PathBuf>,
+    /// Opção `analisar_pasta`: analisa as regras das pastas sem abrir cada arquivo.
+    analyze_folders: bool,
+    /// Definições das regras das pastas, para a busca de símbolos do workspace.
+    index: workspace_symbols::SymbolIndex,
     /// Tipo escolhido pelo editor para arquivos soltos. Fica depois de fechar o documento, para
     /// valer de novo quando ele for reaberto.
     chosen: HashMap<Uri, Context>,
@@ -333,6 +342,14 @@ impl Server<'_> {
                         serde_json::to_value(DocumentSymbolResponse::Nested(c.document_symbols()))
                     }),
                 }
+            }
+            WorkspaceSymbolRequest::METHOD => {
+                let params: lsp_types::WorkspaceSymbolParams =
+                    serde_json::from_value(request.params)?;
+                let symbols = self.workspace_symbols(&params.query);
+                Ok(serde_json::to_value(
+                    lsp_types::WorkspaceSymbolResponse::Flat(symbols),
+                )?)
             }
             CallHierarchyPrepare::METHOD => {
                 let params: lsp_types::CallHierarchyPrepareParams =
@@ -621,10 +638,12 @@ impl Server<'_> {
                     let Some(path) = crate::form::path_from_uri(change.uri.as_str()) else {
                         continue;
                     };
+                    let deleted = change.typ == lsp_types::FileChangeType::DELETED;
+                    self.update_symbols(&path, deleted);
                     if !self.analyzes(&path) {
                         continue;
                     }
-                    if change.typ == lsp_types::FileChangeType::DELETED {
+                    if deleted {
                         if self.documents.get(&change.uri).is_none() {
                             self.send_diagnostics(change.uri, Vec::new(), None)?;
                         }

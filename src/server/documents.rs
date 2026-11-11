@@ -171,6 +171,11 @@ impl Documents {
         self.open.get(uri)
     }
 
+    /// Regras em texto abertas no editor. Os JSON de modelo ficam de fora.
+    pub(crate) fn open_rules(&self) -> impl Iterator<Item = (&Uri, &Document)> {
+        self.open.iter()
+    }
+
     pub(crate) fn report(&self, uri: &Uri) -> Option<&ReportDocument> {
         self.reports.get(uri)
     }

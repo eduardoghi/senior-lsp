@@ -1807,3 +1807,159 @@ fn informacao_relacionada_dos_avisos() {
     assert_eq!(related("SEN061"), Some(("Função F".into(), 4)));
     editor.stop();
 }
+
+/// Nomes, tipos e contêineres devolvidos pela busca de símbolos do workspace.
+fn workspace_symbols(
+    editor: &mut Editor,
+    query: &str,
+) -> Vec<(String, lsp_types::SymbolKind, String)> {
+    let response = editor.request("workspace/symbol", json!({ "query": query }));
+    let symbols: Vec<lsp_types::SymbolInformation> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    symbols
+        .into_iter()
+        .map(|s| (s.name, s.kind, s.container_name.unwrap_or_default()))
+        .collect()
+}
+
+#[test]
+fn busca_simbolos_nas_regras_da_pasta() {
+    use lsp_types::SymbolKind as K;
+    let base = std::env::temp_dir().join(format!("senior-lsp-simbolos-{}", std::process::id()));
+    let r1 = base.join("regras/CALC001.LSP/Rule.txt");
+    let r2 = base.join("regras/OUTRA.LSP/Rule.txt");
+    let tela = base.join("Formulários SGI/interface/I070EMP/rule.txt");
+    let relatorio = base.join("Modelos/M1.GER/regras/Cabecalho.SOnPrint.txt");
+    for path in [&r1, &r2, &tela, &relatorio] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    }
+    std::fs::write(
+        &r1,
+        "definir numero nTotal;\r\nfuncao CalculaIcms(Numero nBase); {\r\n    definir alfa aLocal;\r\n    Rotulo1:\r\n    nTotal = nBase;\r\n}\r\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &r2,
+        "Definir Funcao Dobro(Numero n);\nfuncao Dobro(Numero n); { n = n * 2; }\n",
+    )
+    .unwrap();
+    std::fs::write(&tela, "definir numero nTelaTotal;\n").unwrap();
+    std::fs::write(&relatorio, "definir numero nRelTotal;\n").unwrap();
+    // Fora das regras, o arquivo e o JSON não entram.
+    std::fs::write(base.join("regras/LEIAME.txt"), "definir numero nLeiame;\n").unwrap();
+    std::fs::write(
+        base.join("regras/M.json"),
+        "{ \"definir numero nJson;\": 1 }",
+    )
+    .unwrap();
+    let folder = crate::form::uri_from_path(&base);
+    let r1_uri = crate::form::uri_from_path(&r1);
+
+    // Com a análise da pasta desligada, a primeira busca lê o disco.
+    let options = json!({ "workspaceFolders": [{ "uri": folder, "name": "x" }] });
+    let (mut editor, _) = Editor::start_with(None, options);
+    let found = workspace_symbols(&mut editor, "total");
+    let names: Vec<_> = found.iter().map(|s| s.0.as_str()).collect();
+    assert_eq!(names, ["nTotal", "nRelTotal", "nTelaTotal"], "{found:?}");
+    assert_eq!(found[0], ("nTotal".into(), K::VARIABLE, "CALC001".into()));
+    assert_eq!(found[1].2, "Cabecalho.SOnPrint");
+    assert_eq!(found[2].2, "I070EMP");
+
+    // Funções, declaração e implementação, variável de dentro da função e rótulo.
+    assert_eq!(
+        workspace_symbols(&mut editor, "dobro"),
+        [
+            ("Dobro".into(), K::FUNCTION, "OUTRA".into()),
+            ("Dobro".into(), K::FUNCTION, "OUTRA".into())
+        ]
+    );
+    assert_eq!(workspace_symbols(&mut editor, "alocal").len(), 1);
+    assert_eq!(
+        workspace_symbols(&mut editor, "rotulo1"),
+        [("Rotulo1".into(), K::KEY, "CALC001".into())]
+    );
+    // Subsequência, sem diferenciar caixa, e o parâmetro não entra.
+    assert_eq!(workspace_symbols(&mut editor, "clcicm")[0].0, "CalculaIcms");
+    assert!(workspace_symbols(&mut editor, "nbase").is_empty());
+    assert!(workspace_symbols(&mut editor, "nleiame").is_empty());
+    assert!(workspace_symbols(&mut editor, "njson").is_empty());
+    // A posição do nome.
+    let response = editor.request("workspace/symbol", json!({ "query": "calculaicms" }));
+    let symbols: Vec<lsp_types::SymbolInformation> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    assert_eq!(symbols[0].location.uri.as_str(), r1_uri);
+    assert_eq!(
+        symbols[0].location.range,
+        lsp_types::Range::new(
+            lsp_types::Position::new(1, 7),
+            lsp_types::Position::new(1, 18)
+        )
+    );
+
+    // Arquivo alterado, criado e apagado no disco.
+    std::fs::write(&r2, "definir numero nNovaTotal;\n").unwrap();
+    let nova = base.join("regras/NOVA.LSP/Rule.txt");
+    std::fs::create_dir_all(nova.parent().unwrap()).unwrap();
+    std::fs::write(&nova, "definir numero nOutraTotal;\n").unwrap();
+    std::fs::remove_file(&tela).unwrap();
+    editor.notify(
+        lsp_types::notification::DidChangeWatchedFiles::METHOD,
+        json!({ "changes": [
+            { "uri": crate::form::uri_from_path(&r2), "type": 2 },
+            { "uri": crate::form::uri_from_path(&nova), "type": 1 },
+            { "uri": crate::form::uri_from_path(&tela), "type": 3 },
+        ] }),
+    );
+    let names: Vec<_> = workspace_symbols(&mut editor, "total")
+        .into_iter()
+        .map(|s| s.0)
+        .collect();
+    assert_eq!(names, ["nTotal", "nRelTotal", "nNovaTotal", "nOutraTotal"]);
+    assert!(workspace_symbols(&mut editor, "dobro").is_empty());
+
+    // O texto do editor vale no lugar do disco enquanto o arquivo está aberto.
+    editor.open(&r1_uri, 1, "definir numero nSoNoEditor;\n");
+    editor.diagnostics();
+    assert_eq!(
+        workspace_symbols(&mut editor, "nsoneditor"),
+        [("nSoNoEditor".into(), K::VARIABLE, "CALC001".into())]
+    );
+    assert!(workspace_symbols(&mut editor, "calculaicms").is_empty());
+    editor.close(&r1_uri);
+    assert_eq!(workspace_symbols(&mut editor, "calculaicms").len(), 1);
+    editor.stop();
+
+    // Ligada a análise da pasta, o índice sai da leitura do início.
+    let options =
+        json!({ "analisar_pasta": true, "workspaceFolders": [{ "uri": folder, "name": "x" }] });
+    let (mut editor, _) = Editor::start_with(None, options);
+    let names: Vec<_> = workspace_symbols(&mut editor, "total")
+        .into_iter()
+        .map(|s| s.0)
+        .collect();
+    assert_eq!(names, ["nTotal", "nRelTotal", "nNovaTotal", "nOutraTotal"]);
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn busca_de_simbolos_limita_o_resultado() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-limite-{}", std::process::id()));
+    let rule = base.join("regras/GRANDE.LSP/Rule.txt");
+    std::fs::create_dir_all(rule.parent().unwrap()).unwrap();
+    let text: String = (0..800)
+        .map(|i| format!("definir numero nVar{i};\n"))
+        .collect();
+    std::fs::write(&rule, text).unwrap();
+    let folder = crate::form::uri_from_path(&base);
+    let (mut editor, _) = Editor::start_with(
+        None,
+        json!({ "workspaceFolders": [{ "uri": folder, "name": "x" }] }),
+    );
+    assert_eq!(workspace_symbols(&mut editor, "nvar").len(), 500);
+    assert_eq!(workspace_symbols(&mut editor, "").len(), 500);
+    // Os nomes mais curtos vêm primeiro.
+    assert_eq!(workspace_symbols(&mut editor, "nvar1")[0].0, "nVar1");
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}

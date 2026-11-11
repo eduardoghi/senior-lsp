@@ -55,6 +55,14 @@ O servidor oferece:
 - destaque semântico, que colore cada nome pelo que ele é: função do ERP ou da regra, variável,
   parâmetro, campo depois do ponto, tabela e web service
 - a lista de variáveis e funções do arquivo
+- busca de símbolos nas regras da pasta aberta (Ctrl+T no VS Code), com as funções (`funcao` e
+  `definir funcao`), os `definir` e os rótulos de todos os `Rule.txt` e das regras de relatório
+  separadas do JSON, cada um com o nome da regra (`<NOME>.LSP/Rule.txt` aparece como `NOME`). A
+  consulta casa sem diferenciar maiúsculas, pelo começo, por um trecho ou pelas letras em ordem, e
+  vêm no máximo 500 símbolos, os que começam com a consulta primeiro. Funciona com a opção
+  `analisar_pasta` desligada, lendo as regras na primeira busca, e depois só acompanha os eventos de
+  arquivo do editor. Um arquivo aberto vale pelo texto do editor. As regras que ficam dentro dos JSON
+  de modelo não entram
 - completar nomes num editor, com as variáveis e funções do arquivo, as do ERP e as palavras da
   linguagem
 - completar depois do ponto, com as operações e as colunas do SELECT do cursor, as operações e os
