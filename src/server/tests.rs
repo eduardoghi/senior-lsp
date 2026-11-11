@@ -1701,3 +1701,26 @@ fn link_do_json_para_a_regra_separada() {
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn informacao_relacionada_dos_avisos() {
+    let (editor, _) = Editor::start(None);
+    let text = "Definir Funcao F(Numero p);\n\
+                definir numero x;\n\
+                x = p;\n\
+                F(1);\n\
+                funcao F(Numero p); { x = p; }\n\
+                x = 2;";
+    editor.open(RULE, 1, text);
+    let d = editor.diagnostics();
+    let related = |code: &str| {
+        d.diagnostics
+            .iter()
+            .find(|d| d.code == Some(lsp_types::NumberOrString::String(code.into())))
+            .and_then(|d| d.related_information.clone())
+            .map(|r| (r[0].message.clone(), r[0].location.range.start.line))
+    };
+    assert_eq!(related("SEN063"), Some(("Parâmetro p".into(), 0)));
+    assert_eq!(related("SEN061"), Some(("Função F".into(), 4)));
+    editor.stop();
+}

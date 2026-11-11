@@ -233,7 +233,7 @@ mensagens do servidor aparecem na aba Saída do cliente LSP.
 
 ## Diagnósticos
 
-Cada diagnóstico tem um código fixo.
+Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outro lugar envolvido (a `funcao` a que o comando pertence e o parâmetro na função dele), que o editor mostra junto da mensagem.
 
 | Código | Tipo | Caso |
 |---|---|---|

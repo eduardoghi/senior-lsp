@@ -17,6 +17,7 @@ mod links;
 mod members;
 mod navigation;
 mod quickfix;
+mod related;
 mod selection;
 mod semantic;
 mod signature;
@@ -769,6 +770,7 @@ impl Server<'_> {
             embedding: None,
         };
         diagnostics.extend(context.webservice_diagnostics());
+        context.add_related(&mut diagnostics);
         Some((diagnostics, Some(doc.version)))
     }
 
