@@ -1465,3 +1465,66 @@ fn parametro_que_nao_esta_na_porta() {
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn hierarquia_de_chamadas() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "Definir Funcao A();\n\
+                Definir Funcao B();\n\
+                Definir Funcao C();\n\
+                A();\n\
+                funcao A(); { B(); C(); B(); }\n\
+                funcao B(); { C(); IntParaAlfa(1, x); }\n\
+                funcao C(); { }";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let prepare = editor.request(
+        lsp_types::request::CallHierarchyPrepare::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "position": { "line": 2, "character": 15 } }),
+    );
+    let items: Vec<lsp_types::CallHierarchyItem> =
+        serde_json::from_value(prepare.response_result.unwrap()).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].selection_range.start.line, 6,
+        "vai para a funcao C"
+    );
+    let c = items[0].clone();
+
+    let incoming = editor.request(
+        lsp_types::request::CallHierarchyIncomingCalls::METHOD,
+        json!({ "item": c }),
+    );
+    let incoming: Vec<lsp_types::CallHierarchyIncomingCall> =
+        serde_json::from_value(incoming.response_result.unwrap()).unwrap();
+    let callers: Vec<_> = incoming
+        .iter()
+        .map(|i| (i.from.name.clone(), i.from_ranges.len()))
+        .collect();
+    assert_eq!(callers, [("A".to_owned(), 1), ("B".to_owned(), 1)]);
+
+    let a = incoming[0].from.clone();
+    let outgoing = editor.request(
+        lsp_types::request::CallHierarchyOutgoingCalls::METHOD,
+        json!({ "item": a }),
+    );
+    let outgoing: Vec<lsp_types::CallHierarchyOutgoingCall> =
+        serde_json::from_value(outgoing.response_result.unwrap()).unwrap();
+    let called: Vec<_> = outgoing
+        .iter()
+        .map(|o| (o.to.name.clone(), o.from_ranges.len()))
+        .collect();
+    assert_eq!(called, [("B".to_owned(), 2), ("C".to_owned(), 1)]);
+
+    // Quem chama A é o corpo principal da regra.
+    let incoming = editor.request(
+        lsp_types::request::CallHierarchyIncomingCalls::METHOD,
+        json!({ "item": a }),
+    );
+    let incoming: Vec<lsp_types::CallHierarchyIncomingCall> =
+        serde_json::from_value(incoming.response_result.unwrap()).unwrap();
+    assert_eq!(incoming.len(), 1);
+    assert_eq!(incoming[0].from.kind, lsp_types::SymbolKind::FILE);
+    editor.stop();
+}

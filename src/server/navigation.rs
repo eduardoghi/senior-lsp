@@ -762,7 +762,7 @@ fn inside_literal_or_comment(tree: &crate::Tree, offset: TextSize) -> bool {
 }
 
 /// `funcao` cujo trecho contém `offset`, a mais interna.
-fn enclosing_function_at(tree: &crate::Tree, offset: TextSize) -> Option<NodeId> {
+pub(crate) fn enclosing_function_at(tree: &crate::Tree, offset: TextSize) -> Option<NodeId> {
     let mut node = tree.root();
     let mut found = None;
     while let Some(child) = tree

@@ -4,6 +4,7 @@
 //! respondida na hora, sem fila nem thread de trabalho. O editor manda o texto inteiro a cada
 //! mudança, e o arquivo é analisado de novo do começo.
 
+mod calls;
 mod diagnostics;
 mod documents;
 mod folding;
@@ -28,6 +29,7 @@ use lsp_types::notification::{
     Notification as LspNotification, PublishDiagnostics,
 };
 use lsp_types::request::{
+    CallHierarchyIncomingCalls, CallHierarchyOutgoingCalls, CallHierarchyPrepare,
     CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
     DocumentSymbolRequest, ExecuteCommand, FoldingRangeRequest, GotoDefinition, GotoImplementation,
     HoverRequest, InlayHintRequest, PrepareRenameRequest, References, Rename,
@@ -66,6 +68,7 @@ pub fn run(connection: Connection) -> Result<()> {
                 true,
             )),
             document_highlight_provider: Some(OneOf::Left(true)),
+            call_hierarchy_provider: Some(lsp_types::CallHierarchyServerCapability::Simple(true)),
             code_lens_provider: Some(lsp_types::CodeLensOptions {
                 resolve_provider: Some(false),
             }),
@@ -289,6 +292,30 @@ impl Server<'_> {
                         serde_json::to_value(DocumentSymbolResponse::Nested(c.document_symbols()))
                     }),
                 }
+            }
+            CallHierarchyPrepare::METHOD => {
+                let params: lsp_types::CallHierarchyPrepareParams =
+                    serde_json::from_value(request.params)?;
+                let at = params.text_document_position_params;
+                self.with(&at.text_document.uri, Some(at.position), |c| {
+                    serde_json::to_value(c.prepare_call_hierarchy(at.position))
+                })
+            }
+            CallHierarchyIncomingCalls::METHOD => {
+                let params: lsp_types::CallHierarchyIncomingCallsParams =
+                    serde_json::from_value(request.params)?;
+                let item = params.item;
+                self.with(&item.uri.clone(), Some(item.selection_range.start), |c| {
+                    serde_json::to_value(c.incoming_calls(&item))
+                })
+            }
+            CallHierarchyOutgoingCalls::METHOD => {
+                let params: lsp_types::CallHierarchyOutgoingCallsParams =
+                    serde_json::from_value(request.params)?;
+                let item = params.item;
+                self.with(&item.uri.clone(), Some(item.selection_range.start), |c| {
+                    serde_json::to_value(c.outgoing_calls(&item))
+                })
             }
             CodeLensRequest::METHOD => {
                 let params: lsp_types::CodeLensParams = serde_json::from_value(request.params)?;

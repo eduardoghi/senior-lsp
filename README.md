@@ -12,6 +12,8 @@ O servidor oferece:
 - avisos de código que compila mas faz outra coisa do que parece
 - ir para a definição e achar as referências de variáveis, funções, parâmetros e rótulos
 - ir para a implementação, do `definir funcao` ou da chamada para a `funcao`, e da `funcao` de volta
+- hierarquia de chamadas, com quem chama a função (outras funções, o corpo da regra e, numa tela
+  SGI, as outras regras) e as funções da regra que ela chama
 - ir da definição de um web service interno (`Definir interno.com.x.Servico.Porta ws;`) para o
   `Rule.txt` da porta, na pasta `Web Services` da mesma exportação
 - os parâmetros da porta do web service, lidos do `Port.json` da exportação, no hover do nome
