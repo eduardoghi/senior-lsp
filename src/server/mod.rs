@@ -10,6 +10,7 @@ mod folding;
 mod highlight;
 mod inlay;
 mod kind;
+mod lens;
 mod members;
 mod navigation;
 mod quickfix;
@@ -25,9 +26,10 @@ use lsp_types::notification::{
     Notification as LspNotification, PublishDiagnostics,
 };
 use lsp_types::request::{
-    CodeActionRequest, Completion, DocumentHighlightRequest, DocumentSymbolRequest, ExecuteCommand,
-    FoldingRangeRequest, GotoDefinition, HoverRequest, InlayHintRequest, PrepareRenameRequest,
-    References, Rename, Request as LspRequest, SemanticTokensFullRequest, SignatureHelpRequest,
+    CodeActionRequest, CodeLensRequest, Completion, DocumentHighlightRequest,
+    DocumentSymbolRequest, ExecuteCommand, FoldingRangeRequest, GotoDefinition, HoverRequest,
+    InlayHintRequest, PrepareRenameRequest, References, Rename, Request as LspRequest,
+    SemanticTokensFullRequest, SignatureHelpRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -59,6 +61,9 @@ pub fn run(connection: Connection) -> Result<()> {
             text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
             definition_provider: Some(OneOf::Left(true)),
             document_highlight_provider: Some(OneOf::Left(true)),
+            code_lens_provider: Some(lsp_types::CodeLensOptions {
+                resolve_provider: Some(false),
+            }),
             folding_range_provider: Some(lsp_types::FoldingRangeProviderCapability::Simple(true)),
             inlay_hint_provider: Some(OneOf::Left(true)),
             references_provider: Some(OneOf::Left(true)),
@@ -269,6 +274,22 @@ impl Server<'_> {
                         serde_json::to_value(DocumentSymbolResponse::Nested(c.document_symbols()))
                     }),
                 }
+            }
+            CodeLensRequest::METHOD => {
+                let params: lsp_types::CodeLensParams = serde_json::from_value(request.params)?;
+                let uri = &params.text_document.uri;
+                Ok(match self.documents.get(uri) {
+                    Some(doc) => {
+                        let context = navigation::Context {
+                            doc,
+                            uri,
+                            encoding: self.encoding,
+                            embedding: None,
+                        };
+                        serde_json::to_value(context.code_lenses())?
+                    }
+                    None => serde_json::Value::Null,
+                })
             }
             InlayHintRequest::METHOD => {
                 let params: lsp_types::InlayHintParams = serde_json::from_value(request.params)?;

@@ -12,6 +12,9 @@ O servidor oferece:
 - avisos de código que compila mas faz outra coisa do que parece
 - ir para a definição e achar as referências de variáveis, funções, parâmetros e rótulos
 - destacar as outras ocorrências do nome que está no cursor
+- contagem de referências em cima de cada `funcao`, que abre a lista das chamadas no VS Code. Nos
+  outros editores, o clique chama o comando `senior-lsp.mostrarReferencias`, que o editor precisa
+  tratar
 - correção rápida que cria o `definir` de um nome usado sem definição, com o tipo deduzido do uso
   (texto atribuído, parâmetro da função do ERP que recebe o nome ou a letra inicial, como `aTexto`)
 - correções rápidas que apagam a definição sem uso (SEN068), põem a comparação entre parênteses

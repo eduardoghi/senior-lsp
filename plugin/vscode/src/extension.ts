@@ -21,6 +21,20 @@ const KINDS = [
 /** Chave no estado do workspace com o tipo escolhido para cada arquivo, pelo URI. */
 const CHOSEN_KEY = "seniorLsp.tipos";
 
+interface LspPosition {
+    line: number;
+    character: number;
+}
+
+interface LspLocation {
+    uri: string;
+    range: { start: LspPosition; end: LspPosition };
+}
+
+function toPosition(p: LspPosition): vscode.Position {
+    return new vscode.Position(p.line, p.character);
+}
+
 let client: LanguageClient | undefined;
 let statusBar: vscode.StatusBarItem;
 
@@ -33,6 +47,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         statusBar,
         vscode.commands.registerCommand("seniorLsp.restart", () => restart(context, output)),
         vscode.commands.registerCommand("seniorLsp.escolherTipo", () => chooseKind()),
+        // Clique na contagem de referências em cima de cada função. O servidor manda o JSON do
+        // protocolo, e o painel do VS Code precisa dos tipos dele.
+        vscode.commands.registerCommand(
+            "senior-lsp.mostrarReferencias",
+            (uri: string, position: LspPosition, locations: LspLocation[]) =>
+                vscode.commands.executeCommand(
+                    "editor.action.showReferences",
+                    vscode.Uri.parse(uri),
+                    toPosition(position),
+                    locations.map(
+                        (l) =>
+                            new vscode.Location(
+                                vscode.Uri.parse(l.uri),
+                                new vscode.Range(toPosition(l.range.start), toPosition(l.range.end)),
+                            ),
+                    ),
+                ),
+        ),
         vscode.window.onDidChangeActiveTextEditor(() => void updateStatusBar()),
         vscode.workspace.onDidChangeConfiguration((e) => {
             if (e.affectsConfiguration("seniorLsp")) {

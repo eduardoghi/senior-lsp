@@ -1252,3 +1252,35 @@ fn correcoes_dos_avisos() {
     );
     editor.stop();
 }
+
+#[test]
+fn contagem_de_referencias_das_funcoes() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "Definir Funcao Soma(Numero A);\n\
+                Definir Funcao SoDeclarada();\n\
+                Soma(1);\n\
+                Soma(2);\n\
+                funcao Soma(Numero A); { A = 1; }\n\
+                funcao SemUso(); { }";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let response = editor.request(
+        lsp_types::request::CodeLensRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE } }),
+    );
+    let lenses: Vec<lsp_types::CodeLens> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    let found: Vec<String> = lenses
+        .iter()
+        .map(|l| {
+            let command = l.command.as_ref().unwrap();
+            assert_eq!(command.command, "senior-lsp.mostrarReferencias");
+            format!("{} {}", l.range.start.line, command.title)
+        })
+        .collect();
+    assert_eq!(
+        found,
+        ["1 0 referências", "4 2 referências", "5 0 referências"]
+    );
+    editor.stop();
+}
