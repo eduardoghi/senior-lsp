@@ -33,7 +33,7 @@ pub(crate) struct Embedding<'a> {
 }
 
 impl Context<'_> {
-    fn offset(&self, position: Position) -> TextSize {
+    pub(crate) fn offset(&self, position: Position) -> TextSize {
         let lc = LineCol {
             line: position.line,
             col: position.character,
@@ -643,7 +643,7 @@ impl Context<'_> {
     }
 
     /// Primeira linha da definição, sem o `{` que abre o corpo de uma função.
-    fn header(&self, node: NodeId) -> String {
+    pub(crate) fn header(&self, node: NodeId) -> String {
         let text = &self.doc.text[self.doc.tree.text_range(node)];
         let first = text.lines().next().unwrap_or(text).trim_end();
         let first = first.strip_suffix('{').unwrap_or(first).trim_end();

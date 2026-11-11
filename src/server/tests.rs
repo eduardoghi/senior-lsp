@@ -835,3 +835,38 @@ fn tipo_da_pasta_de_tela_nao_troca() {
     );
     editor.stop();
 }
+
+#[test]
+fn ajuda_de_assinatura_mostra_o_parametro_atual() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "Definir Funcao Soma(Numero A, Numero B);\nIntParaAlfa(1, \nSoma(1, ";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let help = |editor: &mut Editor, line: u32, character: u32| {
+        editor
+            .request(
+                lsp_types::request::SignatureHelpRequest::METHOD,
+                json!({ "textDocument": { "uri": RULE },
+                        "position": { "line": line, "character": character } }),
+            )
+            .response_result
+            .unwrap()
+    };
+    let erp = help(&mut editor, 1, 15);
+    assert!(
+        erp["signatures"][0]["label"]
+            .as_str()
+            .unwrap()
+            .contains("IntParaAlfa(")
+    );
+    assert_eq!(erp["activeParameter"], 1);
+    let local = help(&mut editor, 2, 8);
+    assert_eq!(
+        local["signatures"][0]["label"],
+        "Definir Funcao Soma(Numero A, Numero B)"
+    );
+    assert_eq!(local["signatures"][0]["parameters"][1]["label"], "Numero B");
+    assert_eq!(local["activeParameter"], 1);
+    assert_eq!(help(&mut editor, 0, 0), json!(null));
+    editor.stop();
+}

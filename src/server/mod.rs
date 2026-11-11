@@ -8,6 +8,7 @@ mod diagnostics;
 mod documents;
 mod kind;
 mod navigation;
+mod signature;
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -20,6 +21,7 @@ use lsp_types::notification::{
 use lsp_types::request::{
     CodeActionRequest, Completion, DocumentSymbolRequest, ExecuteCommand, GotoDefinition,
     HoverRequest, PrepareRenameRequest, References, Rename, Request as LspRequest,
+    SignatureHelpRequest,
 };
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -58,6 +60,11 @@ pub fn run(connection: Connection) -> Result<()> {
                 prepare_provider: Some(true),
                 work_done_progress_options: Default::default(),
             })),
+            signature_help_provider: Some(lsp_types::SignatureHelpOptions {
+                trigger_characters: Some(vec!["(".to_owned(), ",".to_owned()]),
+                retrigger_characters: None,
+                work_done_progress_options: Default::default(),
+            }),
             code_action_provider: Some(lsp_types::CodeActionProviderCapability::Simple(true)),
             execute_command_provider: Some(lsp_types::ExecuteCommandOptions {
                 commands: vec![kind::COMMAND.to_owned()],
@@ -239,6 +246,14 @@ impl Server<'_> {
                         serde_json::to_value(DocumentSymbolResponse::Nested(c.document_symbols()))
                     }),
                 }
+            }
+            SignatureHelpRequest::METHOD => {
+                let params: lsp_types::SignatureHelpParams =
+                    serde_json::from_value(request.params)?;
+                let at = params.text_document_position_params;
+                self.with(&at.text_document.uri, Some(at.position), |c| {
+                    serde_json::to_value(c.signature_help(at.position))
+                })
             }
             CodeActionRequest::METHOD => {
                 let params: lsp_types::CodeActionParams = serde_json::from_value(request.params)?;

@@ -15,6 +15,7 @@ O servidor oferece:
   descrição, as chaves, os relacionamentos e a busca dos campos de tabela
 - as funções que o ERP já traz, como `IntParaAlfa`, com a declaração no hover e a conferência dos
   parâmetros na chamada
+- ajuda de assinatura, com a declaração da função e o parâmetro atual enquanto se digita a chamada
 - a lista de variáveis e funções do arquivo
 - completar nomes num editor, com as variáveis e funções do arquivo, as do ERP e as palavras da
   linguagem
