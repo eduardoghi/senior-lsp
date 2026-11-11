@@ -57,7 +57,7 @@ pub(crate) fn diagnostics_with(
         .map(|c| {
             let severity = if c.kind.is_error() {
                 DiagnosticSeverity::ERROR
-            } else if c.kind == CheckKind::Unused {
+            } else if matches!(c.kind, CheckKind::Unused | CheckKind::UnusedFunction) {
                 DiagnosticSeverity::HINT
             } else {
                 DiagnosticSeverity::WARNING
@@ -73,7 +73,8 @@ pub(crate) fn diagnostics_with(
             source: Some("senior-lsp".to_owned()),
             message,
             // O editor esmaece o nome sem uso, como faz com código morto.
-            tags: (code == "SEN068").then(|| vec![lsp_types::DiagnosticTag::UNNECESSARY]),
+            tags: matches!(code, "SEN068" | "SEN070")
+                .then(|| vec![lsp_types::DiagnosticTag::UNNECESSARY]),
             ..Diagnostic::default()
         })
         .collect()
@@ -305,6 +306,10 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                 &text[check.range]
             ),
         ),
+        CheckKind::UnusedFunction => (
+            "SEN070",
+            format!("A função {name} nunca é chamada neste arquivo."),
+        ),
         CheckKind::Unused => (
             "SEN068",
             format!("{name} é definido e nunca usado neste arquivo."),
@@ -410,6 +415,11 @@ mod tests {
             &LineIndex::new(text),
             ColumnEncoding::Utf16,
         );
+        // A função do exemplo não é chamada, e a dica disso não é o assunto aqui.
+        let d: Vec<_> = d
+            .into_iter()
+            .filter(|d| d.code != Some(NumberOrString::String("SEN070".to_owned())))
+            .collect();
         let resumo: Vec<_> = d
             .iter()
             .map(|d| {

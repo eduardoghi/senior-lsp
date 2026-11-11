@@ -70,6 +70,8 @@ pub enum CheckKind {
     /// Variável, cursor, lista, tabela ou web service definido e nunca usado. Só na regra comum,
     /// porque na tela e no relatório as regras seguintes podem usar o nome.
     Unused,
+    /// Função definida e nunca chamada, na regra comum, pelo mesmo motivo.
+    UnusedFunction,
 }
 
 impl CheckKind {
@@ -236,6 +238,34 @@ fn unused(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
                 label: Some(name.to_owned()),
             });
         }
+    }
+    // A função tem o `definir funcao` e a `funcao`, e qualquer chamada alcança as duas. O aviso
+    // sai uma vez, na `funcao` quando ela existe.
+    let mut functions: std::collections::BTreeMap<std::string::String, Vec<usize>> =
+        Default::default();
+    for (i, def) in symbols.definitions.iter().enumerate() {
+        if def.kind == DefKind::Function {
+            functions
+                .entry(text[def.name].to_ascii_uppercase())
+                .or_default()
+                .push(i);
+        }
+    }
+    for (upper, defs) in functions {
+        if defs.iter().any(|&i| used[i]) || in_sql.contains(&upper) {
+            continue;
+        }
+        let def = defs
+            .iter()
+            .map(|&i| &symbols.definitions[i])
+            .find(|d| tree.kind(d.node) == SyntaxKind::FuncImpl)
+            .unwrap_or(&symbols.definitions[defs[0]]);
+        checks.push(Check {
+            kind: CheckKind::UnusedFunction,
+            range: def.name,
+            name: None,
+            label: Some(text[def.name].to_owned()),
+        });
     }
 }
 
@@ -500,8 +530,38 @@ mod tests {
             &Inherited::default(),
         )
         .into_iter()
+        // A função de exemplo de muitos testes não é chamada. Os testes da dica de função sem
+        // uso usam `checks_all`.
+        .filter(|c| c.kind != CheckKind::UnusedFunction)
         .map(|c| (c.kind, &text[c.range]))
         .collect()
+    }
+
+    fn checks_all(text: &str) -> Vec<(CheckKind, &str)> {
+        let tree = crate::parse(text).unwrap();
+        validate(
+            &tree,
+            &Symbols::build(&tree, text),
+            text,
+            Context::Rule,
+            &Inherited::default(),
+        )
+        .into_iter()
+        .map(|c| (c.kind, &text[c.range]))
+        .collect()
+    }
+
+    #[test]
+    fn funcao_sem_chamada() {
+        let text = "Definir Funcao Usada();\nDefinir Funcao Sobra();\nDefinir Funcao PeloNome();\n\
+                    definir alfa a;\nUsada();\na = \"PeloNome\";\nMensagem(Retorna, a);\n\
+                    funcao Usada(); { }\nfuncao Sobra(); { }\nfuncao PeloNome(); { }";
+        let sobra: Vec<_> = checks_all(text)
+            .into_iter()
+            .filter(|(k, _)| *k == CheckKind::UnusedFunction)
+            .map(|(_, n)| n)
+            .collect();
+        assert_eq!(sobra, ["Sobra"]);
     }
 
     #[test]
