@@ -9,13 +9,15 @@
 use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 use text_size::TextRange;
 
+use super::config::Levels;
 use super::directives;
 use super::documents::Document;
 use crate::line_index::{ColumnEncoding, LineIndex};
 use crate::validate::{Check, CheckKind, validate};
 use crate::{LexErrorKind, ParseErrorKind, SyntaxKind, Tree};
 
-/// Diagnóstico ainda na posição do texto da regra, antes das diretivas e da conversão para linha e coluna.
+/// Diagnóstico ainda na posição do texto da regra, antes das diretivas, da configuração e da
+/// conversão para linha e coluna.
 pub(crate) struct Found {
     pub(crate) range: TextRange,
     pub(crate) code: &'static str,
@@ -25,12 +27,14 @@ pub(crate) struct Found {
 
 /// Diagnósticos da regra para o editor. `extra` traz os que o servidor acrescenta fora do
 /// validador, como o do web service. Depois de todos prontos, as diretivas do arquivo escondem os
-/// que citam, menos os erros de sintaxe.
+/// que citam (menos os erros de sintaxe) e o `levels` do `senior-lsp.json` troca ou tira o nível de
+/// cada código.
 ///
 /// `to_range` converte a posição no texto da regra, que num modelo de relatório não é a do arquivo.
 pub(crate) fn diagnostics(
     doc: &Document,
     extra: Vec<Found>,
+    levels: &Levels,
     to_range: &dyn Fn(TextRange) -> Range,
 ) -> Vec<Diagnostic> {
     let mut found = found(doc);
@@ -46,10 +50,14 @@ pub(crate) fn diagnostics(
     }));
     found
         .into_iter()
-        .map(|f| {
-            Diagnostic {
+        .filter_map(|f| {
+            let severity = match levels.get(f.code) {
+                Some(level) => level.severity()?,
+                None => f.severity,
+            };
+            Some(Diagnostic {
                 range: to_range(f.range),
-                severity: Some(f.severity),
+                severity: Some(severity),
                 code: Some(NumberOrString::String(f.code.to_owned())),
                 source: Some("senior-lsp".to_owned()),
                 message: f.message,
@@ -57,7 +65,7 @@ pub(crate) fn diagnostics(
                 tags: matches!(f.code, "SEN068" | "SEN070" | "SEN071" | "SEN073")
                     .then(|| vec![lsp_types::DiagnosticTag::UNNECESSARY]),
                 ..Diagnostic::default()
-            }
+            })
         })
         .collect()
 }
@@ -388,7 +396,12 @@ mod tests {
             .set(uri.clone(), text.to_owned(), 1, Context::Rule)
             .unwrap();
         let doc = documents.get(&uri).unwrap();
-        diagnostics(doc, Vec::new(), &lsp_range(doc, encoding))
+        diagnostics(
+            doc,
+            Vec::new(),
+            &Levels::default(),
+            &lsp_range(doc, encoding),
+        )
     }
 
     fn diags(text: &str, encoding: ColumnEncoding) -> Vec<Resumo> {
@@ -500,5 +513,37 @@ mod tests {
         let codes: Vec<_> = d.iter().map(|(c, _, _)| c.as_str()).collect();
         // O SEN071 some, o SEN020 da diretiva é recusado e o erro de sintaxe da linha 3 continua.
         assert_eq!(codes, ["SEN021", "SEN072"]);
+    }
+
+    #[test]
+    fn configuracao_troca_o_nivel_e_tira_o_codigo() {
+        let uri: lsp_types::Uri = "file:///regras/R.LSP/Rule.txt".parse().unwrap();
+        let mut documents = Documents::default();
+        let text = "Pare;\nx = 1;\nx = 2 e -3;";
+        documents
+            .set(uri.clone(), text.to_owned(), 1, Context::Rule)
+            .unwrap();
+        let doc = documents.get(&uri).unwrap();
+        let mut levels = std::collections::HashMap::new();
+        levels.insert("SEN071".to_owned(), super::super::config::Level::Off);
+        levels.insert("SEN060".to_owned(), super::super::config::Level::Error);
+        let levels = Levels::from_map(levels);
+        let d = diagnostics(
+            doc,
+            Vec::new(),
+            &levels,
+            &lsp_range(doc, ColumnEncoding::Utf16),
+        );
+        let found: Vec<_> = d
+            .iter()
+            .map(|d| (d.code.clone().unwrap(), d.severity.unwrap()))
+            .collect();
+        assert_eq!(
+            found,
+            [(
+                NumberOrString::String("SEN060".to_owned()),
+                DiagnosticSeverity::ERROR
+            )]
+        );
     }
 }

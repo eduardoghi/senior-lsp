@@ -10,7 +10,7 @@ O servidor oferece:
 - erros de sintaxe e de tipo, com o texto do compilador entre parênteses para quem já conhece a
   mensagem do ERP
 - avisos de código que compila mas faz outra coisa do que parece
-- [diretivas em comentário](#esconder-diagnósticos) que escondem diagnósticos por código
+- [diretivas em comentário](#esconder-diagnósticos) e um arquivo `senior-lsp.json` que escondem diagnósticos por código ou mudam o nível deles
 - ir para a definição e achar as referências de variáveis, funções, parâmetros e rótulos
 - ir para a implementação, do `definir funcao` ou da chamada para a `funcao`, e da `funcao` de volta
 - hierarquia de chamadas, com quem chama a função (outras funções, o corpo da regra e, numa tela
@@ -337,9 +337,33 @@ Mensagem(Retorna, aMsg);
 Uma diretiva que não serve para nada vira aviso no próprio comentário.
 
 - SEN072 quando a diretiva não tem código, tem um código que não existe ou que não se pode esconder (erro de sintaxe, SEN072 e SEN073), tem um nome desconhecido (`senior-lsp-` seguido de outra palavra) ou quando um `enable` não tem o `disable` do código antes.
-- SEN073 quando a diretiva não escondeu nenhum diagnóstico do código citado, como o `@ts-expect-error` do TypeScript e o `#[expect]` do Rust. Numa lista com vários códigos, só os que não esconderam nada são marcados. Um `disable` de um código que já estava desligado por outro `disable` também sai como SEN073.
+- SEN073 quando a diretiva não escondeu nenhum diagnóstico do código citado, como o `@ts-expect-error` do TypeScript e o `#[expect]` do Rust. Numa lista com vários códigos, só os que não esconderam nada são marcados. Um `disable` de um código que já estava desligado por outro `disable` também sai como SEN073. Quando o código está em `off` no `senior-lsp.json`, a diretiva continua valendo como usada, porque o diagnóstico existia antes da configuração.
 
-O SEN072 e o SEN073 não se escondem por diretiva.
+O SEN072 e o SEN073 não se escondem por diretiva, mas mudam de nível no `senior-lsp.json`.
+
+### Arquivo de configuração
+
+O `senior-lsp.json` muda o nível de cada código para uma pasta inteira. O servidor procura o arquivo subindo a partir da pasta do arquivo analisado, como o `.editorconfig`, e usa o primeiro que achar, sem juntar com os de cima.
+
+```json
+{
+    "diagnostics": {
+        "SEN048": "off",
+        "SEN071": "hint"
+    },
+    "overrides": [
+        { "files": "Modelos/**", "diagnostics": { "SEN048": "off" } }
+    ]
+}
+```
+
+- Os níveis são `off` (o diagnóstico some), `hint`, `info`, `warning` e `error`. Um código fora do arquivo fica como o servidor o emite.
+- Os `overrides` valem em ordem, e o último que casa com o arquivo vence, código a código. O `files` é um glob relativo à pasta do `senior-lsp.json`, em texto ou em lista. Ele não diferencia maiúsculas, o `*` não atravessa pastas, o `**` atravessa e um nome de pasta com barra no fim (`Modelos/`) vale para tudo o que há dentro dela.
+- Os erros de sintaxe não mudam de nível.
+- Um JSON inválido faz o servidor ignorar o arquivo e mostrar um aviso (`window/showMessage`), e a análise segue sem configuração. Chave desconhecida, código que não existe e nível inválido também viram aviso, e o resto do arquivo vale.
+- A configuração vale nos arquivos abertos e na análise da pasta inteira. Quando o editor avisa que um `senior-lsp.json` mudou (o VS Code avisa), o servidor lê de novo e publica os diagnósticos outra vez. Nos editores que não avisam, como o Kate, a leitura é refeita ao abrir qualquer arquivo.
+
+No VS Code, a extensão traz o esquema do arquivo, então o editor completa os códigos e os níveis.
 
 ## Dicionário de dados
 

@@ -116,7 +116,7 @@ impl Server<'_> {
 
     fn send_disk(&self, documents: &Documents, uri: Uri, publish_empty: bool) -> Result<()> {
         if let Some((diagnostics, _)) = self.diagnostics_of(documents, &uri)
-            && (publish_empty || !diagnostics.is_empty())
+            && (publish_empty || !diagnostics.is_empty() || self.published.borrow().contains(&uri))
         {
             self.send_diagnostics(uri, diagnostics, None)?;
         }

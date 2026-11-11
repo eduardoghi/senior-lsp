@@ -37,6 +37,12 @@
                 "configuration": "./language-configuration.json"
             }
         ],
+        "jsonValidation": [
+            {
+                "fileMatch": "senior-lsp.json",
+                "url": "./schemas/senior-lsp.schema.json"
+            }
+        ],
         "grammars": [
             {
                 "language": "lsp-senior",

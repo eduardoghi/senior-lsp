@@ -180,6 +180,15 @@ impl Documents {
         self.reports.get(uri)
     }
 
+    /// Endereço de cada documento aberto, regra ou JSON de modelo.
+    pub(crate) fn uris(&self) -> Vec<Uri> {
+        self.open
+            .keys()
+            .chain(self.reports.keys())
+            .cloned()
+            .collect()
+    }
+
     /// Tira o documento, regra ou JSON de modelo, e diz se ele estava aberto.
     pub(crate) fn remove(&mut self, uri: &Uri) -> bool {
         self.open.remove(uri).is_some() | self.reports.remove(uri).is_some()

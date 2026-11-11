@@ -17,6 +17,11 @@ Configurações:
 - `seniorLsp.tbsProducao` e `seniorLsp.tbsTeste` são os dicionários de dados do ERP
   (`sapiens.tbs`), opcionais. Veja a seção Dicionário de dados no README do repositório.
 
+O arquivo `senior-lsp.json` na raiz do repositório muda ou desliga diagnósticos por código, e a
+extensão completa os códigos e os níveis dele. As diretivas `senior-lsp-disable-next-line`,
+`senior-lsp-disable` e `senior-lsp-enable` nos comentários escondem diagnósticos no arquivo. Veja
+a seção Esconder diagnósticos no README do repositório.
+
 Num arquivo fora da exportação, a barra de status mostra o tipo da regra (regra comum, tela SGI ou
 modelo de relatório) e troca ao clicar. A escolha fica guardada no workspace.
 

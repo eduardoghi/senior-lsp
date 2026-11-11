@@ -1,0 +1,153 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "senior-lsp.json",
+    "description": "Configuração dos diagnósticos do Senior LSP para a pasta do arquivo e as de dentro dela.",
+    "type": "object",
+    "properties": {
+        "diagnostics": {
+            "$ref": "#/definitions/diagnosticos"
+        },
+        "overrides": {
+            "type": "array",
+            "description": "Níveis por arquivo, na ordem. O último que casa vence.",
+            "items": {
+                "type": "object",
+                "required": [
+                    "files"
+                ],
+                "properties": {
+                    "files": {
+                        "description": "Glob relativo à pasta do senior-lsp.json, como Modelos/**.",
+                        "anyOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "minItems": 1
+                            }
+                        ]
+                    },
+                    "diagnostics": {
+                        "$ref": "#/definitions/diagnosticos"
+                    }
+                },
+                "additionalProperties": false
+            }
+        }
+    },
+    "additionalProperties": false,
+    "definitions": {
+        "nivel": {
+            "type": "string",
+            "enum": [
+                "off",
+                "hint",
+                "info",
+                "warning",
+                "error"
+            ],
+            "description": "off esconde o diagnóstico. Os outros níveis trocam a severidade dele."
+        },
+        "diagnosticos": {
+            "type": "object",
+            "description": "Nível de cada código de diagnóstico. Os erros de sintaxe (SEN001 a SEN028) não mudam.",
+            "properties": {
+                "SEN040": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN041": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN042": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN043": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN044": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN045": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN046": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN047": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN048": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN049": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN050": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN051": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN052": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN053": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN054": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN055": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN060": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN061": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN062": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN063": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN064": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN065": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN066": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN067": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN068": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN069": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN070": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN071": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN072": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN073": {
+                    "$ref": "#/definitions/nivel"
+                }
+            },
+            "additionalProperties": false
+        }
+    }
+}

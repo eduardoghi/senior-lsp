@@ -6,7 +6,7 @@ use std::time::Duration;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
-    Notification as _, PublishDiagnostics,
+    Notification as _, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::request::{
     Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest, Initialize,
@@ -111,6 +111,18 @@ impl Editor {
             match self.recv() {
                 Message::Notification(n) if n.method == PublishDiagnostics::METHOD => {
                     return serde_json::from_value(n.params).unwrap();
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    /// Próximo aviso `window/showMessage` do servidor.
+    fn warning(&self) -> String {
+        loop {
+            match self.recv() {
+                Message::Notification(n) if n.method == ShowMessage::METHOD => {
+                    return n.params["message"].as_str().unwrap().to_owned();
                 }
                 _ => continue,
             }
@@ -1985,6 +1997,17 @@ fn found(params: &PublishDiagnosticsParams, text: &str) -> Vec<(String, u32, Str
         .collect()
 }
 
+fn severity_of(
+    params: &PublishDiagnosticsParams,
+    code: &str,
+) -> Option<lsp_types::DiagnosticSeverity> {
+    params
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(lsp_types::NumberOrString::String(code.into())))
+        .and_then(|d| d.severity)
+}
+
 #[test]
 fn diretiva_da_proxima_linha_esconde_o_diagnostico() {
     let (editor, _) = Editor::start(None);
@@ -2155,6 +2178,171 @@ fn diretiva_em_modelo_de_relatorio_e_em_regra_separada() {
     let d = editor.diagnostics();
     assert_eq!(codes(&d), ["SEN052"]);
     assert_eq!(d.diagnostics[0].range.start.line, 2);
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+/// Cria `senior-lsp.json` e uma regra comum numa pasta de teste. Devolve a pasta, o arquivo de
+/// configuração e o URI da regra.
+fn pasta_com_config(
+    name: &str,
+    config: &str,
+    rule: &str,
+    text: &str,
+) -> (std::path::PathBuf, std::path::PathBuf, String) {
+    let base = std::env::temp_dir().join(format!("senior-lsp-{name}-{}", std::process::id()));
+    let regra = base.join(rule);
+    std::fs::create_dir_all(regra.parent().unwrap()).unwrap();
+    std::fs::write(&regra, text).unwrap();
+    let config_path = base.join("senior-lsp.json");
+    std::fs::write(&config_path, config).unwrap();
+    (base, config_path, crate::form::uri_from_path(&regra))
+}
+
+fn config_mudou(editor: &Editor, config: &std::path::Path) {
+    editor.notify(
+        lsp_types::notification::DidChangeWatchedFiles::METHOD,
+        json!({ "changes": [{ "uri": crate::form::uri_from_path(config), "type": 2 }] }),
+    );
+}
+
+#[test]
+fn configuracao_muda_o_nivel_com_override_e_recarrega() {
+    let (base, config, uri) = pasta_com_config(
+        "config",
+        r#"{ "diagnostics": { "SEN060": "error", "SEN071": "off" },
+              "overrides": [ { "files": "Modelos/**", "diagnostics": { "SEN060": "hint" } },
+                             { "files": ["Modelos/**/*.txt"], "diagnostics": { "SEN060": "off" } } ] }"#,
+        "regras/R1.LSP/Rule.txt",
+        "",
+    );
+    let text = "Pare;\nx = 2 e -3;";
+    let modelo = base.join("Modelos/M1.LSP/Rule.txt");
+    std::fs::create_dir_all(modelo.parent().unwrap()).unwrap();
+    std::fs::write(&modelo, text).unwrap();
+    let modelo_uri = crate::form::uri_from_path(&modelo);
+
+    let (editor, _) = Editor::start(None);
+    editor.open(&uri, 1, text);
+    let d = editor.diagnostics();
+    // O SEN071 está desligado e o SEN060 sobe para erro.
+    assert_eq!(codes(&d), ["SEN060"]);
+    assert_eq!(
+        severity_of(&d, "SEN060"),
+        Some(lsp_types::DiagnosticSeverity::ERROR)
+    );
+
+    // O último override que casa vence.
+    editor.open(&modelo_uri, 1, text);
+    assert!(editor.diagnostics().diagnostics.is_empty());
+
+    // Com o arquivo alterado, os abertos são publicados de novo.
+    std::fs::write(&config, r#"{ "diagnostics": { "SEN060": "info" } }"#).unwrap();
+    config_mudou(&editor, &config);
+    let mut by_uri = std::collections::HashMap::new();
+    for _ in 0..2 {
+        let d = editor.diagnostics();
+        by_uri.insert(d.uri.to_string(), d);
+    }
+    assert_eq!(
+        severity_of(&by_uri[&uri], "SEN060"),
+        Some(lsp_types::DiagnosticSeverity::INFORMATION)
+    );
+    assert_eq!(codes(&by_uri[&uri]), ["SEN071", "SEN060"]);
+    assert_eq!(codes(&by_uri[&modelo_uri]), ["SEN071", "SEN060"]);
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn configuracao_em_off_nao_torna_a_diretiva_sem_efeito() {
+    let (base, _, uri) = pasta_com_config(
+        "config-off",
+        r#"{ "diagnostics": { "SEN071": "off" } }"#,
+        "regras/R1.LSP/Rule.txt",
+        "",
+    );
+    let (editor, _) = Editor::start(None);
+    let text = "Pare;\n@ senior-lsp-disable-next-line SEN071 @\nx = 1;";
+    editor.open(&uri, 1, text);
+    assert!(editor.diagnostics().diagnostics.is_empty());
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn configuracao_com_json_invalido_avisa_e_segue_sem_ela() {
+    let (base, config, uri) = pasta_com_config(
+        "config-ruim",
+        r#"{ "diagnostics": { "SEN060": "off" } "#,
+        "regras/R1.LSP/Rule.txt",
+        "",
+    );
+    let (editor, _) = Editor::start(None);
+    let text = "x = 2 e -3;";
+    editor.open(&uri, 1, text);
+    let message = editor.warning();
+    assert!(message.contains("senior-lsp.json"), "{message}");
+    assert!(message.contains("ignorado"), "{message}");
+    // Sem a configuração, o aviso continua como o servidor o emite.
+    let d = editor.diagnostics();
+    assert_eq!(codes(&d), ["SEN060"]);
+    assert_eq!(
+        severity_of(&d, "SEN060"),
+        Some(lsp_types::DiagnosticSeverity::WARNING)
+    );
+
+    // Abrir outro arquivo lê a configuração de novo, mas o mesmo aviso não se repete.
+    let outro = uri.replace("R1.LSP", "R2.LSP");
+    editor.open(&outro, 1, text);
+    assert!(
+        matches!(editor.recv(), Message::Notification(n) if n.method == PublishDiagnostics::METHOD)
+    );
+
+    // Corrigido o arquivo, o servidor volta a usá-lo, e o código desconhecido vira aviso.
+    std::fs::write(
+        &config,
+        r#"{ "diagnostics": { "SEN060": "off", "SEN999": "off" } }"#,
+    )
+    .unwrap();
+    config_mudou(&editor, &config);
+    let message = editor.warning();
+    assert!(message.contains("SEN999"), "{message}");
+    assert!(editor.diagnostics().diagnostics.is_empty());
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn configuracao_vale_na_analise_da_pasta_e_limpa_o_que_ficou() {
+    let (base, config, uri) = pasta_com_config(
+        "config-pasta",
+        r#"{ "diagnostics": { "SEN052": "off" } }"#,
+        "regras/R1.LSP/Rule.txt",
+        "NaoExiste();",
+    );
+    let folder = crate::form::uri_from_path(&base);
+    let (editor, _) = Editor::start_with(
+        None,
+        json!({ "analisar_pasta": true, "workspaceFolders": [{ "uri": folder, "name": "x" }] }),
+    );
+    // O código está desligado, então a regra não tem o que publicar.
+    editor.quiet();
+
+    std::fs::write(&config, r#"{ "diagnostics": { "SEN052": "warning" } }"#).unwrap();
+    config_mudou(&editor, &config);
+    let d = editor.diagnostics();
+    assert_eq!(d.uri.as_str(), uri);
+    assert_eq!(
+        severity_of(&d, "SEN052"),
+        Some(lsp_types::DiagnosticSeverity::WARNING)
+    );
+
+    std::fs::write(&config, r#"{ "diagnostics": { "SEN052": "off" } }"#).unwrap();
+    config_mudou(&editor, &config);
+    let d = editor.diagnostics();
+    assert_eq!(d.uri.as_str(), uri);
+    assert!(d.diagnostics.is_empty());
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }

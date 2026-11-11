@@ -54,6 +54,11 @@ pub(crate) fn is_syntax(code: &str) -> bool {
     SYNTAX.contains(&code)
 }
 
+/// O código existe, escondível ou não. Espera o código em maiúsculas.
+pub(crate) fn is_known(code: &str) -> bool {
+    is_suppressible(code) || is_syntax(code) || code == BAD_DIRECTIVE || code == UNUSED_DIRECTIVE
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     NextLine,

@@ -5,6 +5,7 @@
 //! mudança, e o arquivo é analisado de novo do começo.
 
 mod calls;
+mod config;
 mod diagnostics;
 mod directives;
 mod documents;
@@ -142,6 +143,8 @@ pub fn run(connection: Connection) -> Result<()> {
         folders,
         analyze_folders,
         index: Default::default(),
+        configs: Default::default(),
+        published: Default::default(),
     };
     // O `initialize_finish` já esperou o `initialized`, então o editor está pronto.
     server.analyze_workspace()?;
@@ -246,6 +249,11 @@ struct Server<'a> {
     /// Tipo escolhido pelo editor para arquivos soltos. Fica depois de fechar o documento, para
     /// valer de novo quando ele for reaberto.
     chosen: HashMap<Uri, Context>,
+    /// Arquivos `senior-lsp.json` já lidos.
+    configs: std::cell::RefCell<config::Configs>,
+    /// Arquivos para os quais o servidor publicou algum diagnóstico, para limpar a lista deles
+    /// quando a análise da pasta ou a configuração passa a não achar nada.
+    published: std::cell::RefCell<std::collections::HashSet<Uri>>,
 }
 
 impl Server<'_> {
@@ -581,6 +589,9 @@ impl Server<'_> {
                 let params: DidOpenTextDocumentParams =
                     serde_json::from_value(notification.params)?;
                 let doc = params.text_document;
+                // Abrir um arquivo é a chance de o editor sem aviso de arquivo (como o Kate) ver um
+                // `senior-lsp.json` novo ou alterado.
+                self.configs.borrow_mut().clear();
                 if is_report(&doc.uri) {
                     self.documents
                         .set_report(doc.uri.clone(), doc.text, doc.version)?;
@@ -635,10 +646,15 @@ impl Server<'_> {
             lsp_types::notification::DidChangeWatchedFiles::METHOD => {
                 let params: lsp_types::DidChangeWatchedFilesParams =
                     serde_json::from_value(notification.params)?;
+                let mut config_changed = false;
                 for change in params.changes {
                     let Some(path) = crate::form::path_from_uri(change.uri.as_str()) else {
                         continue;
                     };
+                    if path.file_name().is_some_and(|n| n == config::FILE_NAME) {
+                        config_changed = true;
+                        continue;
+                    }
                     let deleted = change.typ == lsp_types::FileChangeType::DELETED;
                     self.update_symbols(&path, deleted);
                     if !self.analyzes(&path) {
@@ -651,6 +667,9 @@ impl Server<'_> {
                     } else {
                         self.analyze_disk(&path)?;
                     }
+                }
+                if config_changed {
+                    self.reload_config()?;
                 }
             }
             _ => {}
@@ -750,6 +769,7 @@ impl Server<'_> {
         documents: &Documents,
         uri: &Uri,
     ) -> Option<(Vec<lsp_types::Diagnostic>, Option<i32>)> {
+        let levels = self.levels_of(uri);
         if let Some(report) = documents.report(uri) {
             let mut all = Vec::new();
             for rule in &report.rules {
@@ -761,7 +781,12 @@ impl Server<'_> {
                     };
                     lsp_types::Range::new(p(json_range.start()), p(json_range.end()))
                 };
-                all.extend(diagnostics::diagnostics(&rule.doc, Vec::new(), &to_range));
+                all.extend(diagnostics::diagnostics(
+                    &rule.doc,
+                    Vec::new(),
+                    &levels,
+                    &to_range,
+                ));
             }
             return Some((all, Some(report.version)));
         }
@@ -776,10 +801,44 @@ impl Server<'_> {
         let mut diagnostics = diagnostics::diagnostics(
             doc,
             context.webservice_diagnostics(),
+            &levels,
             &diagnostics::lsp_range(doc, self.encoding),
         );
         context.add_related(&mut diagnostics);
         Some((diagnostics, Some(doc.version)))
+    }
+
+    /// Níveis do `senior-lsp.json` que vale para o arquivo. O que o arquivo tem de errado vai ao
+    /// editor como aviso, uma vez a cada leitura.
+    fn levels_of(&self, uri: &Uri) -> config::Levels {
+        let Some(path) = crate::form::path_from_uri(uri.as_str()) else {
+            return config::Levels::default();
+        };
+        let mut warnings = Vec::new();
+        let levels = self.configs.borrow_mut().levels(&path, &mut warnings);
+        for message in warnings {
+            let params = lsp_types::ShowMessageParams {
+                typ: lsp_types::MessageType::WARNING,
+                message,
+            };
+            let notification = Notification::new(
+                lsp_types::notification::ShowMessage::METHOD.to_owned(),
+                params,
+            );
+            // Sem conexão o servidor já está terminando, e o aviso não faz falta.
+            let _ = self.connection.sender.send(notification.into());
+        }
+        levels
+    }
+
+    /// Lê os `senior-lsp.json` de novo e publica outra vez os diagnósticos dos arquivos abertos e,
+    /// com a pasta inteira analisada, dos arquivos do disco.
+    fn reload_config(&mut self) -> Result<()> {
+        self.configs.borrow_mut().reload();
+        for uri in self.documents.uris() {
+            self.publish(&uri)?;
+        }
+        self.analyze_workspace()
     }
 
     fn send_diagnostics(
@@ -788,6 +847,11 @@ impl Server<'_> {
         diagnostics: Vec<lsp_types::Diagnostic>,
         version: Option<i32>,
     ) -> Result<()> {
+        if diagnostics.is_empty() {
+            self.published.borrow_mut().remove(&uri);
+        } else {
+            self.published.borrow_mut().insert(uri.clone());
+        }
         let params = PublishDiagnosticsParams {
             uri,
             diagnostics,
