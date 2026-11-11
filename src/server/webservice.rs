@@ -232,6 +232,16 @@ impl Context<'_> {
     pub(crate) fn webservice_diagnostics(&self) -> Vec<super::diagnostics::Found> {
         let tree = &self.doc.tree;
         let text = &self.doc.text;
+        // Sem `definir` de web service, nenhum nome do arquivo é um, e a árvore nem precisa ser lida.
+        if !self
+            .doc
+            .symbols
+            .definitions
+            .iter()
+            .any(|d| d.kind == crate::symbols::DefKind::WebService)
+        {
+            return Vec::new();
+        }
         let mut ports: std::collections::HashMap<String, Option<Port>> =
             std::collections::HashMap::new();
         let mut diagnostics = Vec::new();
