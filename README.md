@@ -12,6 +12,8 @@ O servidor oferece:
 - avisos de código que compila mas faz outra coisa do que parece
 - ir para a definição e achar as referências de variáveis, funções, parâmetros e rótulos
 - destacar as outras ocorrências do nome que está no cursor
+- correção rápida que cria o `definir` de um nome usado sem definição, com o tipo deduzido do uso
+  (texto atribuído, parâmetro da função do ERP que recebe o nome ou a letra inicial, como `aTexto`)
 - hover com a linha do `definir` e, com o dicionário de dados do ERP configurado, o tipo, a
   descrição, as chaves, os relacionamentos e a busca dos campos de tabela
 - as funções que o ERP já traz, como `IntParaAlfa`, com a declaração no hover e a conferência dos

@@ -971,3 +971,65 @@ fn destaca_as_ocorrencias_do_nome() {
     assert_eq!(at(2, 3), ["2:0 texto", "3:0 texto"]);
     editor.stop();
 }
+
+/// A correção que cria o `definir` no ponto, com o título e o texto inserido.
+fn define_fix(editor: &mut Editor, line: u32, character: u32) -> Option<(String, String, u32)> {
+    let response = editor.request(
+        lsp_types::request::CodeActionRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "range": { "start": { "line": line, "character": character },
+                           "end": { "line": line, "character": character } },
+                "context": { "diagnostics": [] } }),
+    );
+    let actions = response.response_result.unwrap();
+    let fix = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "quickfix")?;
+    let edit = &fix["edit"]["changes"][RULE][0];
+    Some((
+        fix["title"].as_str().unwrap().to_owned(),
+        edit["newText"].as_str().unwrap().to_owned(),
+        edit["range"]["start"]["line"].as_u64().unwrap() as u32,
+    ))
+}
+
+#[test]
+fn correcao_cria_o_definir_com_o_tipo_do_uso() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "definir alfa aA;\n\
+                aA = \"x\";\n\
+                aTxt = aA + \"y\";\n\
+                IntParaAlfa(1, saida);\n\
+                nTotal = nTotal + 1;\n\
+                dHoje = DatSis;\n\
+                VSCodEmp = 1;";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let fix = |editor: &mut Editor, line| define_fix(editor, line, 1);
+    assert_eq!(
+        fix(&mut editor, 2),
+        Some((
+            "definir alfa aTxt;".into(),
+            "definir alfa aTxt;\n".into(),
+            1
+        ))
+    );
+    assert_eq!(fix(&mut editor, 3), None, "a chamada, não o argumento");
+    assert_eq!(
+        define_fix(&mut editor, 3, 16).map(|f| f.0),
+        Some("definir alfa saida;".into())
+    );
+    assert_eq!(
+        fix(&mut editor, 4).map(|f| f.0),
+        Some("definir numero nTotal;".into())
+    );
+    assert_eq!(
+        fix(&mut editor, 5).map(|f| f.0),
+        Some("definir data dHoje;".into())
+    );
+    assert_eq!(fix(&mut editor, 6), None, "variável de identificador");
+    assert_eq!(fix(&mut editor, 1), None, "já definida");
+    editor.stop();
+}

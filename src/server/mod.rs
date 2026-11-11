@@ -9,6 +9,7 @@ mod documents;
 mod highlight;
 mod kind;
 mod navigation;
+mod quickfix;
 mod semantic;
 mod signature;
 
@@ -288,9 +289,24 @@ impl Server<'_> {
             }
             CodeActionRequest::METHOD => {
                 let params: lsp_types::CodeActionParams = serde_json::from_value(request.params)?;
-                Ok(serde_json::to_value(
-                    self.kind_actions(&params.text_document.uri),
-                )?)
+                let uri = &params.text_document.uri;
+                let mut actions = Vec::new();
+                if let Some(doc) = self.documents.get(uri) {
+                    let context = navigation::Context {
+                        doc,
+                        uri,
+                        encoding: self.encoding,
+                        embedding: None,
+                    };
+                    actions.extend(
+                        context
+                            .define_actions(params.range.start)
+                            .into_iter()
+                            .map(lsp_types::CodeActionOrCommand::CodeAction),
+                    );
+                }
+                actions.extend(self.kind_actions(uri));
+                Ok(serde_json::to_value(actions)?)
             }
             ExecuteCommand::METHOD => {
                 let params: lsp_types::ExecuteCommandParams =
