@@ -12,8 +12,23 @@ impl Context<'_> {
         let tree = &self.doc.tree;
         let text = &self.doc.text;
         let mut hints = Vec::new();
+        // O editor pede só o trecho na tela. Um nó que acaba antes dele ou começa depois não tem
+        // argumento dentro, então nem ele nem os filhos são visitados. Numa regra dentro do JSON
+        // de modelo, a posição fora das linhas da regra vira o offset 0, e aí a árvore é toda
+        // visitada, como antes.
+        let (from, to) = match self.embedding {
+            None => (self.offset(range.start), self.offset(range.end)),
+            Some(_) => (
+                text_size::TextSize::new(0),
+                text_size::TextSize::of(text.as_str()),
+            ),
+        };
         let mut stack = vec![tree.root()];
         while let Some(node) = stack.pop() {
+            let node_range = tree.text_range(node);
+            if node_range.end() < from || node_range.start() > to {
+                continue;
+            }
             stack.extend(tree.children(node));
             if tree.kind(node) != SyntaxKind::CallExpr {
                 continue;
