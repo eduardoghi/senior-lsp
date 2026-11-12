@@ -220,34 +220,6 @@ fn unused(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
     for target in symbols.references.iter().flat_map(|r| &r.targets) {
         used[*target] = true;
     }
-    let tokens = tree.tokens();
-    let mut in_sql = rustc_hash::FxHashSet::default();
-    for i in 0..tokens.len() {
-        if tokens.kind(i) == SyntaxKind::String {
-            for name in words(tokens.text(i, text)) {
-                in_sql.insert(name.to_ascii_uppercase());
-            }
-        }
-    }
-    for (i, def) in symbols.definitions.iter().enumerate() {
-        let kind = matches!(
-            def.kind,
-            DefKind::Variable(_)
-                | DefKind::Cursor
-                | DefKind::List
-                | DefKind::Table
-                | DefKind::WebService
-        );
-        let name = &text[def.name];
-        if kind && !used[i] && !in_sql.contains(&name.to_ascii_uppercase()) {
-            checks.push(Check {
-                kind: CheckKind::Unused,
-                range: def.name,
-                name: None,
-                label: Some(name.to_owned()),
-            });
-        }
-    }
     // A função tem o `definir funcao` e a `funcao`, e qualquer chamada alcança as duas. O aviso
     // sai uma vez, na `funcao` quando ela existe.
     let mut functions: std::collections::BTreeMap<std::string::String, Vec<usize>> =
@@ -258,6 +230,41 @@ fn unused(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
                 .entry(text[def.name].to_ascii_uppercase())
                 .or_default()
                 .push(i);
+        }
+    }
+    let is_variable = |def: &crate::symbols::Definition| {
+        matches!(
+            def.kind,
+            DefKind::Variable(_)
+                | DefKind::Cursor
+                | DefKind::List
+                | DefKind::Table
+                | DefKind::WebService
+        )
+    };
+    // Só os nomes sem uso direto precisam ser procurados nos textos, e a maioria das regras não
+    // tem nenhum, então o texto das strings nem é lido.
+    let mut wanted = rustc_hash::FxHashSet::default();
+    for (i, def) in symbols.definitions.iter().enumerate() {
+        if is_variable(def) && !used[i] {
+            wanted.insert(text[def.name].to_ascii_uppercase());
+        }
+    }
+    for (upper, defs) in &functions {
+        if !defs.iter().any(|&i| used[i]) {
+            wanted.insert(upper.clone());
+        }
+    }
+    let in_sql = names_in_strings(tree, text, &wanted);
+    for (i, def) in symbols.definitions.iter().enumerate() {
+        let name = &text[def.name];
+        if is_variable(def) && !used[i] && !in_sql.contains(&name.to_ascii_uppercase()) {
+            checks.push(Check {
+                kind: CheckKind::Unused,
+                range: def.name,
+                name: None,
+                label: Some(name.to_owned()),
+            });
         }
     }
     for (upper, defs) in functions {
@@ -276,6 +283,34 @@ fn unused(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
             label: Some(text[def.name].to_owned()),
         });
     }
+}
+
+/// Dos nomes em `wanted` (em maiúsculas), os que aparecem como palavra em algum texto do arquivo.
+fn names_in_strings(
+    tree: &Tree,
+    text: &str,
+    wanted: &rustc_hash::FxHashSet<std::string::String>,
+) -> rustc_hash::FxHashSet<std::string::String> {
+    let mut found = rustc_hash::FxHashSet::default();
+    if wanted.is_empty() {
+        return found;
+    }
+    let tokens = tree.tokens();
+    let mut upper = std::string::String::new();
+    for i in 0..tokens.len() {
+        if tokens.kind(i) != SyntaxKind::String {
+            continue;
+        }
+        for name in words(tokens.text(i, text)) {
+            upper.clear();
+            upper.push_str(name);
+            upper.make_ascii_uppercase();
+            if wanted.contains(&upper) && !found.contains(&upper) {
+                found.insert(upper.clone());
+            }
+        }
+    }
+    found
 }
 
 /// Palavras de um texto que podem ser nome, como `nCodEmp` em `"WHERE CODEMP = :nCodEmp"`.
@@ -578,6 +613,21 @@ mod tests {
             .map(|(_, name)| name)
             .collect();
         assert_eq!(unused, ["aSobra", "cSobra", "lSobra"]);
+    }
+
+    #[test]
+    fn nome_citado_num_texto_conta_como_uso_sem_diferenca_de_caixa() {
+        let text = "definir funcao PeloTexto(); definir funcao Esquecida();\n\
+                    definir alfa aTexto; definir numero NMAIUSCULA;\n\
+                    aTexto = \"WHERE X = :nmaiuscula AND Y = 'pelotexto'\";\n\
+                    Mensagem(Retorna, aTexto);\n\
+                    funcao PeloTexto(); { }\n\
+                    funcao Esquecida(); { }";
+        let found: Vec<_> = checks_all(text)
+            .into_iter()
+            .filter(|(kind, _)| matches!(kind, CheckKind::Unused | CheckKind::UnusedFunction))
+            .collect();
+        assert_eq!(found, [(CheckKind::UnusedFunction, "Esquecida")]);
     }
 
     #[test]
