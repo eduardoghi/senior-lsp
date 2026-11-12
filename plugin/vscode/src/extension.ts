@@ -269,7 +269,7 @@ function releaseTarget(): string {
     const key = `${process.platform}-${process.arch}`;
     switch (key) {
         case "linux-x64":
-            return "x86_64-unknown-linux-musl";
+            return "x86_64-unknown-linux-gnu";
         case "win32-x64":
             return "x86_64-pc-windows-msvc";
         default:

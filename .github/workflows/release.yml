@@ -14,8 +14,10 @@ jobs:
     strategy:
       matrix:
         include:
+          # glibc, e não musl. O alocador do musl deixava a tecla 55% mais lenta, e o binário passa
+          # a pedir a glibc do runner ou mais nova, o que deixa distribuições antigas de fora.
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
+            target: x86_64-unknown-linux-gnu
             ext: ''
           - os: windows-latest
             target: x86_64-pc-windows-msvc
