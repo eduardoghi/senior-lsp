@@ -402,9 +402,7 @@ impl Scanner<'_> {
                 }
                 self.depth -= 1;
             }
-            Some(b'"') => {
-                self.string();
-            }
+            Some(b'"') => self.skip_string(),
             Some(_) => {
                 // Número, `true`, `false` ou `null`.
                 while self.pos < self.bytes.len()
@@ -457,7 +455,7 @@ impl Scanner<'_> {
                 }
                 Some(b',') => self.pos += 1,
                 Some(b'"') => {
-                    let key = self.string().value;
+                    let key = self.key();
                     if self.peek() == Some(b':') {
                         self.pos += 1;
                     }
@@ -489,7 +487,7 @@ impl Scanner<'_> {
                     } else if key == "size" {
                         size = self.integer(rules);
                     } else {
-                        self.value(rules, Some(&key));
+                        self.value(rules, Some(&*key));
                     }
                 }
                 Some(_) => self.pos += 1,
@@ -649,7 +647,40 @@ impl Scanner<'_> {
     }
 }
 
-impl Scanner<'_> {
+impl<'a> Scanner<'a> {
+    /// Chave de objeto a partir das aspas. Sem escape, que é o caso de quase toda chave, devolve o
+    /// trecho do próprio JSON, sem alocar.
+    fn key(&mut self) -> std::borrow::Cow<'a, str> {
+        let bytes: &'a [u8] = self.bytes;
+        let start = self.pos + 1;
+        let rest = bytes.get(start..).unwrap_or_default();
+        if let Some(k) = memchr::memchr2(b'"', b'\\', rest)
+            && rest[k] == b'"'
+            && let Ok(key) = std::str::from_utf8(&rest[..k])
+        {
+            self.pos = start + k + 1;
+            return std::borrow::Cow::Borrowed(key);
+        }
+        std::borrow::Cow::Owned(self.string().value)
+    }
+
+    /// Pula uma string a partir das aspas, sem montar o valor, e para no mesmo lugar que a
+    /// [`Scanner::string`]. Num escape basta pular o byte logo depois da barra, que pode ser aspas
+    /// ou outra barra. O resto do escape, como os dígitos do `\u` ou o fim de um caractere com
+    /// acento, nunca é aspas nem barra.
+    fn skip_string(&mut self) {
+        let bytes = self.bytes;
+        let mut at = self.pos + 1;
+        while let Some(k) = memchr::memchr2(b'"', b'\\', bytes.get(at..).unwrap_or_default()) {
+            if bytes[at + k] == b'"' {
+                self.pos = at + k + 1;
+                return;
+            }
+            at += k + 2;
+        }
+        self.pos = bytes.len() + 1;
+    }
+
     /// Valor dos quatro dígitos hexadecimais em `at`, ou `None` se não forem quatro dígitos.
     fn hex4(&self, at: usize) -> Option<u32> {
         let digits = self.bytes.get(at..at + 4)?;
@@ -698,6 +729,41 @@ fn assemble(prop: String, lines: Vec<JsonString>) -> EmbeddedRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scanner(json: &str) -> Scanner<'_> {
+        Scanner {
+            bytes: json.as_bytes(),
+            pos: 0,
+            entries: Vec::new(),
+            depth: 0,
+        }
+    }
+
+    #[test]
+    fn pular_e_ler_a_chave_param_onde_a_string_para() {
+        let casos = [
+            r#""simples" x"#,
+            r#""aspas \" e barra \\" x"#,
+            r#""fim com barra \\\\" x"#,
+            r#""😀 e ç" x"#,
+            r#""escape desconhecido \é" x"#,
+            r#""\u" x"#,
+            "\"acentuação ção\" x",
+            r#""sem fechar \"#,
+            r#""sem fechar"#,
+            r#""""#,
+        ];
+        for caso in casos {
+            let mut lida = scanner(caso);
+            let valor = lida.string().value;
+            let mut pulada = scanner(caso);
+            pulada.skip_string();
+            assert_eq!(pulada.pos, lida.pos, "skip_string em {caso}");
+            let mut chave = scanner(caso);
+            assert_eq!(chave.key(), valor, "key em {caso}");
+            assert_eq!(chave.pos, lida.pos, "key em {caso}");
+        }
+    }
 
     const JSON: &str = r#"{
   "children": [

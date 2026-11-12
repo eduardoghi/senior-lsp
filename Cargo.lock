@@ -428,6 +428,7 @@ dependencies = [
  "globset",
  "lsp-server",
  "lsp-types",
+ "memchr",
  "rustc-hash",
  "serde_json",
  "sqlparser",
