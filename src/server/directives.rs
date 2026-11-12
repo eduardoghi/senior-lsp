@@ -114,6 +114,12 @@ pub(crate) fn scan(text: &str, tree: &Tree) -> Scan {
         };
         let inner = &raw[open..raw.len() - close];
         let base = range.start() + TextSize::new(open as u32);
+        // Quase nenhum comentário é diretiva. A primeira palavra é conferida antes de separar o
+        // comentário inteiro em palavras.
+        let first = inner.trim_start_matches(|c: char| c.is_whitespace() || c == ',');
+        if !has_prefix(first, "senior-lsp-") {
+            continue;
+        }
         let mut words = words(inner, base).into_iter();
         let Some((name_range, name)) = words.next() else {
             continue;
