@@ -21,7 +21,7 @@ pub(crate) fn links(
     let json = &report.json;
     let position = |offset: usize| {
         let lc = report
-            .index
+            .index()
             .line_col(json, TextSize::new(offset as u32), encoding);
         Position::new(lc.line, lc.col)
     };

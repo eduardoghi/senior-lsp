@@ -81,7 +81,12 @@ impl Server<'_> {
                 documents.set_with(uri.clone(), text, 0, context, inherited.clone())?;
                 self.keep_symbols(&documents, &uri, path);
             } else {
-                let Some(json) = read(path, false) else {
+                // O modelo já leu e decodificou todos os JSON da pasta.
+                let known = model.texts.iter().find(|(p, _)| p == path);
+                let Some(json) = known
+                    .map(|(_, text)| text.clone())
+                    .or_else(|| read(path, false).map(Into::into))
+                else {
                     continue;
                 };
                 documents.set_report_in(uri.clone(), json, 0, &model, inherited.clone())?;

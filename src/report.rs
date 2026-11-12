@@ -157,6 +157,8 @@ pub struct Model {
     pub rules: Vec<(std::path::PathBuf, std::sync::Arc<Embedded>)>,
     /// Cada entrada com o JSON onde está cadastrada.
     pub entries: Vec<(std::path::PathBuf, std::sync::Arc<str>, Entry)>,
+    /// Texto de cada JSON lido, para a análise da pasta não ler e decodificar o arquivo de novo.
+    pub texts: Vec<(std::path::PathBuf, std::sync::Arc<str>)>,
 }
 
 /// Regras de todos os JSON do modelo de `json_path`.
@@ -224,6 +226,7 @@ pub fn model(json_path: &std::path::Path, current: &str) -> Model {
             continue;
         };
         let json: std::sync::Arc<str> = text.into();
+        out.texts.push((path.clone(), json.clone()));
         let (rules, entries) = scan(&json);
         for rule in rules {
             let embedded = Embedded {

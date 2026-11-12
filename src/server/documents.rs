@@ -92,7 +92,9 @@ impl Document {
 pub(crate) struct ReportDocument {
     pub(crate) version: i32,
     pub(crate) json: Arc<str>,
-    pub(crate) index: LineIndex,
+    /// Montado no primeiro uso. Na análise da pasta, quase nenhum JSON tem diagnóstico, e o índice
+    /// de um JSON grande custa uma varredura do arquivo inteiro.
+    index: OnceCell<LineIndex>,
     pub(crate) rules: Vec<ReportRule>,
 }
 
@@ -102,6 +104,11 @@ pub(crate) struct ReportRule {
 }
 
 impl ReportDocument {
+    /// Começo de cada linha do JSON, para converter posição em linha e coluna.
+    pub(crate) fn index(&self) -> &LineIndex {
+        self.index.get_or_init(|| LineIndex::new(&self.json))
+    }
+
     /// Regra em que cai a posição do JSON, com a posição dentro dela.
     pub(crate) fn rule_at(&self, offset: text_size::TextSize) -> Option<&ReportRule> {
         self.rules
@@ -178,7 +185,7 @@ impl Documents {
     pub(crate) fn set_report_in(
         &mut self,
         uri: Uri,
-        json: String,
+        json: impl Into<Arc<str>>,
         version: i32,
         model: &crate::report::Model,
         inherited: Arc<Inherited>,
@@ -206,13 +213,12 @@ impl Documents {
             );
             rules.push(ReportRule { embedded, doc });
         }
-        let index = LineIndex::new(&json);
         self.reports.insert(
             uri,
             ReportDocument {
                 version,
                 json,
-                index,
+                index: OnceCell::new(),
                 rules,
             },
         );

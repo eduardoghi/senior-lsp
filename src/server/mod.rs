@@ -648,7 +648,7 @@ impl Server<'_> {
             line: position.line,
             col: position.character,
         };
-        let offset = report.index.offset(&report.json, lc, self.encoding);
+        let offset = report.index().offset(&report.json, lc, self.encoding);
         match report.rule_at(offset) {
             Some(rule) => Ok(f(&self.report_context(uri, report, rule))?),
             None => Ok(serde_json::Value::Null),
@@ -668,7 +668,7 @@ impl Server<'_> {
             embedding: Some(navigation::Embedding {
                 rule: &rule.embedded.rule,
                 json: &report.json,
-                index: &report.index,
+                index: report.index(),
             }),
         }
     }
@@ -713,7 +713,7 @@ impl Server<'_> {
                 } else if let Some(report) = self.documents.take_report(&uri) {
                     let text = sync::apply(
                         report.json.to_string(),
-                        &report.index,
+                        report.index(),
                         changes,
                         self.encoding,
                     );
@@ -876,7 +876,7 @@ impl Server<'_> {
                 let to_range = |range: text_size::TextRange| {
                     let json_range = rule.embedded.rule.range_to_json(range);
                     let p = |offset| {
-                        let lc = report.index.line_col(&report.json, offset, self.encoding);
+                        let lc = report.index().line_col(&report.json, offset, self.encoding);
                         lsp_types::Position::new(lc.line, lc.col)
                     };
                     lsp_types::Range::new(p(json_range.start()), p(json_range.end()))
