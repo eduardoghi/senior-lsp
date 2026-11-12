@@ -111,10 +111,92 @@ impl LineIndex {
     }
 }
 
+/// Largura de um trecho na contagem de coluna do editor.
+pub fn width(text: &str, encoding: ColumnEncoding) -> u32 {
+    let n = match encoding {
+        ColumnEncoding::Utf8 => text.len(),
+        ColumnEncoding::Utf16 if text.is_ascii() => text.len(),
+        ColumnEncoding::Utf16 => text.encode_utf16().count(),
+    };
+    n as u32
+}
+
+/// Linha e coluna de posições em ordem crescente, sem a busca do [`LineIndex::line_col`] em
+/// cada uma. A coluna é somada desde a posição anterior, então uma posição menor que a anterior
+/// dá resultado errado.
+pub struct LineCursor<'a> {
+    text: &'a str,
+    index: &'a LineIndex,
+    encoding: ColumnEncoding,
+    line: usize,
+    /// Começo da linha seguinte, ou `usize::MAX` na última.
+    next: usize,
+    at: usize,
+    col: u32,
+}
+
+impl<'a> LineCursor<'a> {
+    pub fn new(text: &'a str, index: &'a LineIndex, encoding: ColumnEncoding) -> LineCursor<'a> {
+        let mut cursor = LineCursor {
+            text,
+            index,
+            encoding,
+            line: 0,
+            next: 0,
+            at: 0,
+            col: 0,
+        };
+        cursor.next = cursor.start_of(1);
+        cursor
+    }
+
+    fn start_of(&self, line: usize) -> usize {
+        self.index
+            .line_starts
+            .get(line)
+            .map_or(usize::MAX, |&s| usize::from(s))
+    }
+
+    /// O mesmo que o [`LineIndex::line_col`] de `offset`.
+    pub fn line_col(&mut self, offset: TextSize) -> LineCol {
+        let offset = usize::from(offset);
+        while offset >= self.next {
+            self.line += 1;
+            self.at = self.next;
+            self.col = 0;
+            self.next = self.start_of(self.line + 1);
+        }
+        self.col += width(&self.text[self.at..offset], self.encoding);
+        self.at = offset;
+        LineCol {
+            line: self.line as u32,
+            col: self.col,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ColumnEncoding::{Utf8, Utf16};
+
+    #[test]
+    fn o_cursor_da_o_mesmo_que_a_busca() {
+        for text in ["", "abc", "a\nb\r\nc\rd\n", "ação 😀 x\r\nçé\n\n😀😀 fim"] {
+            let index = LineIndex::new(text);
+            for encoding in [Utf8, Utf16] {
+                let mut cursor = LineCursor::new(text, &index, encoding);
+                for (offset, _) in text.char_indices().chain([(text.len(), ' ')]) {
+                    let offset = TextSize::new(offset as u32);
+                    assert_eq!(
+                        cursor.line_col(offset),
+                        index.line_col(text, offset, encoding),
+                        "{text:?} {offset:?} {encoding:?}"
+                    );
+                }
+            }
+        }
+    }
 
     fn lc(text: &str, offset: u32, encoding: ColumnEncoding) -> (u32, u32) {
         let p = LineIndex::new(text).line_col(text, TextSize::new(offset), encoding);

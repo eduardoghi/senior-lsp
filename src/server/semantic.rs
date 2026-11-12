@@ -4,7 +4,7 @@
 //! sabe se `Soma` é uma função da regra, se `IntParaAlfa` é do ERP ou se `nValor` é variável ou
 //! parâmetro, e é isso que vai aqui.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 use lsp_types::{
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensLegend,
@@ -70,7 +70,7 @@ pub(crate) fn tokens(doc: &Document, encoding: ColumnEncoding) -> SemanticTokens
     let tree = &doc.tree;
     let text = &doc.text;
     let symbols = &doc.symbols;
-    let references: HashMap<TextRange, &[usize]> = symbols
+    let references: FxHashMap<TextRange, &[usize]> = symbols
         .references
         .iter()
         .map(|r| (r.range, r.targets.as_slice()))
@@ -97,13 +97,16 @@ pub(crate) fn tokens(doc: &Document, encoding: ColumnEncoding) -> SemanticTokens
     found.dedup_by_key(|(range, _, _)| range.start());
     let mut data = Vec::with_capacity(found.len());
     let (mut line, mut col) = (0, 0);
+    // Os nomes estão em ordem, então a linha e a coluna andam junto com eles.
+    let mut cursor = crate::line_index::LineCursor::new(text, &doc.index, encoding);
     for (range, ty, modifiers) in found {
-        let start = doc.index.line_col(text, range.start(), encoding);
-        let end = doc.index.line_col(text, range.end(), encoding);
+        let name = &text[range];
         // Um nome nunca quebra linha. Fica de fora o que não estiver numa linha só.
-        if end.line != start.line {
+        if name.contains(['\n', '\r']) {
             continue;
         }
+        let start = cursor.line_col(range.start());
+        let end_col = start.col + crate::line_index::width(name, encoding);
         let delta_start = if start.line == line {
             start.col - col
         } else {
@@ -112,7 +115,7 @@ pub(crate) fn tokens(doc: &Document, encoding: ColumnEncoding) -> SemanticTokens
         data.push(SemanticToken {
             delta_line: start.line - line,
             delta_start,
-            length: end.col - start.col,
+            length: end_col - start.col,
             token_type: ty as u32,
             token_modifiers_bitset: modifiers,
         });
@@ -126,7 +129,7 @@ pub(crate) fn tokens(doc: &Document, encoding: ColumnEncoding) -> SemanticTokens
 
 fn classify(
     doc: &Document,
-    references: &HashMap<TextRange, &[usize]>,
+    references: &FxHashMap<TextRange, &[usize]>,
     node: NodeId,
     range: TextRange,
 ) -> Option<(Type, u32)> {
