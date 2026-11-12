@@ -472,13 +472,24 @@ impl Context {
             Err(_) => Rest::default(),
         };
         let relations = relations.unwrap_or_default();
+        // Com milhares de relacionamentos, procurar cada ponta percorrendo as tabelas custava um
+        // terço da leitura do arquivo. Com nome repetido, vale a primeira tabela, como no `find`.
+        let mut by_name: rustc_hash::FxHashMap<&str, usize> = Default::default();
+        for (i, t) in tables.iter().enumerate() {
+            by_name.entry(t.name.as_str()).or_insert(i);
+        }
+        let mut ends = Vec::with_capacity(relations.len() * 2);
         for (i, relation) in relations.iter().enumerate() {
             for name in [&relation.from_table, &relation.to_table] {
-                if let Some(t) = tables.iter_mut().find(|t| &t.name == name)
-                    && t.relations.last() != Some(&i)
-                {
-                    t.relations.push(i);
+                if let Some(&t) = by_name.get(name.as_str()) {
+                    ends.push((t, i));
                 }
+            }
+        }
+        for (t, i) in ends {
+            let list = &mut tables[t].relations;
+            if list.last() != Some(&i) {
+                list.push(i);
             }
         }
         tables.sort_by_cached_key(|t| t.name.to_ascii_uppercase());
