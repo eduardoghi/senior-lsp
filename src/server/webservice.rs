@@ -6,6 +6,7 @@
 //! `Web Services` é procurada subindo a partir do arquivo aberto.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use lsp_types::{Location, Position, Range, Uri};
 use text_size::TextSize;
@@ -28,7 +29,7 @@ impl Context<'_> {
     /// Descrição e parâmetros da porta, no hover do nome qualificado.
     pub(crate) fn webservice_hover(&self, offset: TextSize) -> Option<lsp_types::Hover> {
         let name = self.qualified_at(offset)?;
-        let port = read_port(&self.port_dir(name)?)?;
+        let port = self.port(name)?;
         let mut value = format!("```lsp\n{name}\n```\n");
         if !port.description.is_empty() {
             value.push_str(&port.description);
@@ -119,9 +120,59 @@ impl Context<'_> {
     }
 
     /// Parâmetros da porta do web service definido como `variable`.
-    pub(crate) fn webservice_params(&self, variable: &str) -> Option<Port> {
-        read_port(&self.port_dir(self.webservice_name(variable)?)?)
+    pub(crate) fn webservice_params(&self, variable: &str) -> Option<Arc<Port>> {
+        self.port(self.webservice_name(variable)?)
     }
+
+    /// Porta pelo nome qualificado, lida do `Port.json` uma vez e guardada. Achar a pasta da porta
+    /// custa um `read_dir` por pasta acima do arquivo, e o diagnóstico de web service roda a cada
+    /// tecla. A porta guardada vale enquanto o `Port.json` tiver a mesma data e o mesmo tamanho.
+    /// Uma pasta `Web Services` criada mais perto do arquivo depois da primeira leitura só é vista
+    /// quando o `Port.json` guardado mudar ou o servidor reiniciar.
+    fn port(&self, qualified: &str) -> Option<Arc<Port>> {
+        let file = crate::form::path_from_uri(self.uri.as_str())?;
+        let key = (file.parent()?.to_path_buf(), qualified.to_ascii_uppercase());
+        let cached = PORTS.with_borrow(|ports| ports.get(&key).cloned());
+        if let Some(cached) = cached
+            && stamp(&cached.json) == Some(cached.stamp)
+        {
+            return Some(cached.port);
+        }
+        let dir = self.port_dir(qualified)?;
+        let json = child(&dir, "Port.json")?;
+        let stamp = stamp(&json)?;
+        let port = Arc::new(read_port(&dir)?);
+        PORTS.with_borrow_mut(|ports| {
+            ports.insert(
+                key,
+                CachedPort {
+                    json,
+                    stamp,
+                    port: port.clone(),
+                },
+            )
+        });
+        Some(port)
+    }
+}
+
+#[derive(Clone)]
+struct CachedPort {
+    json: PathBuf,
+    stamp: (std::time::SystemTime, u64),
+    port: Arc<Port>,
+}
+
+thread_local! {
+    /// Portas já lidas, pela pasta do arquivo da regra e pelo nome qualificado em maiúsculas.
+    static PORTS: std::cell::RefCell<rustc_hash::FxHashMap<(PathBuf, String), CachedPort>> =
+        Default::default();
+}
+
+/// Data de alteração e tamanho do arquivo, para saber se ele mudou.
+fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
 }
 
 /// Parâmetros que o ERP acrescenta a toda porta, com o tipo e a descrição que ele registra
@@ -242,7 +293,7 @@ impl Context<'_> {
         {
             return Vec::new();
         }
-        let mut ports: std::collections::HashMap<String, Option<Port>> =
+        let mut ports: std::collections::HashMap<String, Option<Arc<Port>>> =
             std::collections::HashMap::new();
         let mut diagnostics = Vec::new();
         let mut stack = vec![tree.root()];
