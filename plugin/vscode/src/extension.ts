@@ -66,6 +66,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                 ),
         ),
         vscode.window.onDidChangeActiveTextEditor(() => void updateStatusBar()),
+        // Trocar o modo de linguagem não troca o editor ativo. O VS Code fecha e reabre o mesmo
+        // documento com a linguagem nova, e é por aqui que a barra fica sabendo. A comparação é
+        // pela URI e a atualização fica para depois do evento, porque o editor ativo pode ainda
+        // apontar para o documento com a linguagem antiga.
+        vscode.workspace.onDidOpenTextDocument((document) => {
+            if (document.uri.toString() === vscode.window.activeTextEditor?.document.uri.toString()) {
+                setTimeout(() => void updateStatusBar(), 0);
+            }
+        }),
         vscode.workspace.onDidChangeConfiguration((e) => {
             if (e.affectsConfiguration("seniorLsp")) {
                 void restart(context, output);
