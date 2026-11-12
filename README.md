@@ -382,7 +382,10 @@ teste, que compila na base de teste e não em produção. No Claude Code, os cam
 plugin, perguntadas na instalação e alteradas depois pelo `/config` ou pelo
 `/plugin configure senior-lsp@<marketplace>`. Em outros editores, vão em `tbs_producao` e
 `tbs_teste` nas opções de inicialização do servidor, ou nas variáveis `SENIOR_LSP_TBS_PRODUCAO` e
-`SENIOR_LSP_TBS_TESTE`. Cada arquivo é lido na primeira consulta e de novo só quando muda.
+`SENIOR_LSP_TBS_TESTE`. Cada arquivo é lido na primeira consulta, e a data dele é conferida a cada 5
+minutos fora da digitação, para ler de novo o que mudou. Depois de uma atualização do ERP ou de uma
+customização no CBDS, o comando `senior-lsp.recarregarDicionario` lê os dois na hora. No VS Code ele
+é o "Senior LSP: Recarregar o dicionário de dados" da paleta de comandos.
 
 O executável também imprime as tabelas e os campos em texto, uma linha por tabela e uma por
 campo, separadas por tabulação:

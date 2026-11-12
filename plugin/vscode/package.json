@@ -102,6 +102,11 @@
                 "command": "seniorLsp.restart",
                 "title": "Reiniciar o servidor",
                 "category": "Senior LSP"
+            },
+            {
+                "command": "senior-lsp.recarregarDicionario",
+                "title": "Recarregar o dicionário de dados",
+                "category": "Senior LSP"
             }
         ]
     },

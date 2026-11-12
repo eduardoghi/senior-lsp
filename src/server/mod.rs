@@ -60,6 +60,10 @@ use documents::{Documents, is_report, is_report_rule, is_rule};
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
+/// Comando que lê de novo os `.tbs` na hora, depois de uma atualização do ERP ou de uma
+/// customização no CBDS, sem esperar a conferência periódica.
+const RELOAD_DICTIONARY: &str = "senior-lsp.recarregarDicionario";
+
 /// Atende o editor pela conexão até o `shutdown` e o `exit`.
 pub fn run(connection: Connection) -> Result<()> {
     let (id, params) = connection.initialize_start()?;
@@ -129,7 +133,7 @@ pub fn run(connection: Connection) -> Result<()> {
             }),
             code_action_provider: Some(lsp_types::CodeActionProviderCapability::Simple(true)),
             execute_command_provider: Some(lsp_types::ExecuteCommandOptions {
-                commands: vec![kind::COMMAND.to_owned()],
+                commands: vec![kind::COMMAND.to_owned(), RELOAD_DICTIONARY.to_owned()],
                 work_done_progress_options: Default::default(),
             }),
             ..ServerCapabilities::default()
@@ -826,6 +830,10 @@ impl Server<'_> {
         &mut self,
         params: &lsp_types::ExecuteCommandParams,
     ) -> std::result::Result<(), String> {
+        if params.command == RELOAD_DICTIONARY {
+            crate::dictionary::reload();
+            return self.reanalyze_open().map_err(|e| e.to_string());
+        }
         if params.command != kind::COMMAND {
             return Err(format!("comando desconhecido: {}", params.command));
         }
@@ -933,6 +941,23 @@ impl Server<'_> {
 
     /// Lê os `senior-lsp.json` de novo e publica outra vez os diagnósticos dos arquivos abertos e,
     /// com a pasta inteira analisada, dos arquivos do disco.
+    /// Analisa de novo os documentos abertos, que guardam o dicionário de quando foram analisados,
+    /// e a pasta, se a análise dela estiver ligada.
+    fn reanalyze_open(&mut self) -> Result<()> {
+        for uri in self.documents.uris() {
+            if let Some(doc) = self.documents.get(&uri) {
+                let (text, version) = (doc.text.clone(), doc.version);
+                let context = self.rule_context(&uri);
+                self.documents.set(uri.clone(), text, version, context)?;
+            } else if let Some(report) = self.documents.report(&uri) {
+                let (json, version) = (report.json.to_string(), report.version);
+                self.documents.set_report(uri.clone(), json, version)?;
+            }
+            self.publish(&uri)?;
+        }
+        self.analyze_workspace()
+    }
+
     fn reload_config(&mut self) -> Result<()> {
         self.configs.borrow_mut().reload();
         for uri in self.documents.uris() {
