@@ -613,7 +613,12 @@ impl Server<'_> {
                 return Ok(());
             }
         };
-        let response = Response::new_ok(id, result?);
+        // O `Response::new_ok` passa o resultado por `serde_json::to_value`, que copia de novo uma
+        // árvore que já é JSON. Nos pedidos grandes, como os símbolos do documento, a cópia pesa.
+        let response = Response {
+            id,
+            response_result: Ok(result?),
+        };
         self.connection.sender.send(response.into())?;
         Ok(())
     }
