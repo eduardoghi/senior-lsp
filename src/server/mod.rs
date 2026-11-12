@@ -9,6 +9,7 @@ mod config;
 mod diagnostics;
 mod directives;
 mod documents;
+mod extract;
 mod folding;
 mod highlight;
 mod ignore;
@@ -563,6 +564,12 @@ impl Server<'_> {
                 let params: lsp_types::CodeActionParams = serde_json::from_value(request.params)?;
                 let uri = &params.text_document.uri;
                 let mut actions = Vec::new();
+                // O cliente pode pedir só alguns tipos de ação, como `refactor` no menu de
+                // refatorar.
+                let extract = params.context.only.as_ref().is_none_or(|only| {
+                    only.iter()
+                        .any(|k| matches!(k.as_str(), "" | "refactor" | "refactor.extract"))
+                });
                 if let Some(doc) = self.documents.get(uri) {
                     let context = navigation::Context {
                         doc,
@@ -579,6 +586,12 @@ impl Server<'_> {
                             .define_actions(params.range.start)
                             .into_iter()
                             .chain(context.check_fixes(params.range))
+                            .chain(
+                                extract
+                                    .then(|| context.extract_actions(params.range))
+                                    .into_iter()
+                                    .flatten(),
+                            )
                             .chain(context.ignore_actions(params.range, &shown))
                             .map(lsp_types::CodeActionOrCommand::CodeAction),
                     );

@@ -34,6 +34,15 @@ O servidor oferece:
   (SEN041), trocam o apóstrofo por maiúscula (SEN064), acrescentam o `SQL_UsarAbrangencia(obj, 0)`
   que falta (SEN066) e declaram a função chamada que não existe (SEN052), com o `Definir Funcao`
   junto dos outros `definir` e a `funcao` vazia no fim do arquivo
+- ação de código "Extrair função" (`refactor.extract`) para comandos inteiros e contíguos do mesmo
+  bloco, selecionados no editor. A chamada `NovaFuncao();` ocupa o lugar do trecho, o `Definir
+  Funcao` entra junto dos outros `definir` e a `funcao` vai para o fim do arquivo, com o corpo
+  reindentado. Como as variáveis de fora de função são globais, a função não tem parâmetros. O nome
+  começa em `NovaFuncao` e ganha um número se algo com esse nome já existe no arquivo, na tela ou no
+  ERP, e o F2 renomeia depois. A ação não aparece quando a seleção corta um comando, quando o trecho
+  tem `definir` ou `funcao`, quando um `pare` ou `continue` perde o laço, quando um `vapara` e o
+  rótulo dele ficam em lados diferentes do trecho, quando o trecho dentro de uma `funcao` usa
+  parâmetro ou variável definida nela, e nas regras dentro do JSON de modelo de relatório
 - hover com a linha do `definir` e, com o dicionário de dados do ERP configurado, o tipo, a
   descrição, as chaves, os relacionamentos e a busca dos campos de tabela
 - dentro do SQL de um texto (`cur.SQL "..."`, `ExecSql` e `SQL_DefinirComando`), o `:variavel` vai para o

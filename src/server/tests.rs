@@ -2614,3 +2614,493 @@ fn correcao_rapida_oferece_uma_acao_por_codigo_e_respeita_crlf() {
     );
     editor.stop();
 }
+
+/// Pede a ação "Extrair função" para o trecho e devolve o texto depois de aplicar as edições, ou
+/// `None` se o servidor não oferece a ação.
+fn extract_in(uri: &str, text: &str, from: (u32, u32), to: (u32, u32)) -> Option<String> {
+    let (mut editor, _) = Editor::start(None);
+    editor.open(uri, 1, text);
+    editor.diagnostics();
+    let response = editor.request(
+        lsp_types::request::CodeActionRequest::METHOD,
+        json!({ "textDocument": { "uri": uri },
+                "range": { "start": { "line": from.0, "character": from.1 },
+                           "end": { "line": to.0, "character": to.1 } },
+                "context": { "diagnostics": [] } }),
+    );
+    let actions: Vec<lsp_types::CodeActionOrCommand> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    editor.stop();
+    let action = actions.into_iter().find_map(|a| match a {
+        lsp_types::CodeActionOrCommand::CodeAction(a)
+            if a.kind == Some(lsp_types::CodeActionKind::REFACTOR_EXTRACT) =>
+        {
+            Some(a)
+        }
+        _ => None,
+    })?;
+    assert_eq!(action.title, "Extrair função");
+    let edits = action.edit.unwrap().changes.unwrap()[&uri.parse::<Uri>().unwrap()].clone();
+    let offset = |p: lsp_types::Position| {
+        text.split_inclusive('\n')
+            .take(p.line as usize)
+            .map(str::len)
+            .sum::<usize>()
+            + p.character as usize
+    };
+    // As edições valem sobre o texto original. Na mesma posição, a que vem antes na lista fica
+    // antes no texto.
+    let mut order: Vec<_> = edits.iter().enumerate().collect();
+    order.sort_by_key(|(i, e)| std::cmp::Reverse((offset(e.range.start), *i)));
+    let mut out = text.to_owned();
+    for (_, e) in order {
+        out.replace_range(offset(e.range.start)..offset(e.range.end), &e.new_text);
+    }
+    Some(out)
+}
+
+/// Seleciona as linhas de `first` a `last` (a partir de 0), do começo da primeira ao fim da
+/// última.
+fn extract_lines(text: &str, first: u32, last: u32) -> Option<String> {
+    let end = text.lines().nth(last as usize).unwrap().chars().count() as u32;
+    extract_in(RULE, text, (first, 0), (last, end))
+}
+
+const EXTRACT_EXAMPLE: &str = "definir alfa aMsg;\n\
+                               definir numero nTotal;\n\
+                               \n\
+                               nTotal = nQtdPed * nPreUni;\n\
+                               se (nTotal > 1000) {\n\
+                               \x20   aMsg = \"Pedido acima do limite\";\n\
+                               \x20   Mensagem(Retorna, aMsg);\n\
+                               }\n\
+                               GravarPedido();\n";
+
+#[test]
+fn extrair_funcao_leva_o_trecho_para_o_fim_do_arquivo() {
+    assert_eq!(
+        extract_lines(EXTRACT_EXAMPLE, 4, 7).unwrap(),
+        "definir alfa aMsg;\n\
+         definir numero nTotal;\n\
+         definir funcao NovaFuncao();\n\
+         \n\
+         nTotal = nQtdPed * nPreUni;\n\
+         NovaFuncao();\n\
+         GravarPedido();\n\
+         \n\
+         funcao NovaFuncao(); {\n\
+         \x20   se (nTotal > 1000) {\n\
+         \x20       aMsg = \"Pedido acima do limite\";\n\
+         \x20       Mensagem(Retorna, aMsg);\n\
+         \x20   }\n\
+         }\n"
+    );
+}
+
+#[test]
+fn extrair_funcao_aceita_a_selecao_com_espaco_e_comentario_nas_pontas() {
+    let text = "definir numero n;\n@ antes @\n  n = 1;\n  n = 2;\n@ depois @\n";
+    // Do fim da linha 0 ao começo da linha 5, pegando o comentário e as quebras.
+    let out = extract_in(RULE, text, (0, 17), (4, 0)).unwrap();
+    assert!(
+        out.contains("\n@ antes @\n  NovaFuncao();\n@ depois @"),
+        "{out}"
+    );
+    assert!(
+        out.ends_with("funcao NovaFuncao(); {\n    n = 1;\n    n = 2;\n}\n"),
+        "{out}"
+    );
+}
+
+#[test]
+fn extrair_funcao_escolhe_nome_livre() {
+    let text = "definir funcao NovaFuncao();\n\
+                definir numero n;\n\
+                n = 1;\n\
+                n = 2;\n\
+                funcao NovaFuncao(); { n = 0; }\n";
+    let out = extract_lines(text, 3, 3).unwrap();
+    assert!(out.contains("\nNovaFuncao2();\n"), "{out}");
+    assert!(out.contains("definir funcao NovaFuncao2();\n"), "{out}");
+    assert!(
+        out.ends_with("\nfuncao NovaFuncao2(); {\n    n = 2;\n}\n"),
+        "{out}"
+    );
+    // Variável e função do ERP também ocupam o nome.
+    let text = "definir numero NovaFuncao;\ndefinir numero NovaFuncao2;\nn = 1;\nn = 2;\n";
+    let out = extract_lines(text, 3, 3).unwrap();
+    assert!(out.contains("\nNovaFuncao3();\n"), "{out}");
+}
+
+#[test]
+fn extrair_funcao_nao_repete_nome_de_outra_regra_do_formulario() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-extrair-{}", std::process::id()));
+    let form = base.join("Formulários SGI/interface/F1");
+    let action = form.join("actions/A1");
+    std::fs::create_dir_all(&action).unwrap();
+    std::fs::write(
+        form.join("rule.txt"),
+        "Definir Funcao NovaFuncao();\nfuncao NovaFuncao(); { }\n",
+    )
+    .unwrap();
+    let rule = action.join("rule.txt");
+    let text = "definir numero n;\nn = 1;\nn = 2;\n";
+    std::fs::write(&rule, text).unwrap();
+    let uri = crate::form::uri_from_path(&rule);
+    let out = extract_in(&uri, text, (2, 0), (2, 6));
+    std::fs::remove_dir_all(&base).unwrap();
+    let out = out.unwrap();
+    assert!(out.contains("\nNovaFuncao2();\n"), "{out}");
+}
+
+#[test]
+fn extrair_funcao_respeita_crlf() {
+    let text = EXTRACT_EXAMPLE.replace('\n', "\r\n");
+    let out = extract_lines(&text, 4, 7).unwrap();
+    assert_eq!(
+        out.matches('\n').count(),
+        out.matches("\r\n").count(),
+        "{out:?}"
+    );
+    assert!(
+        out.contains("definir funcao NovaFuncao();\r\n\r\nnTotal"),
+        "{out:?}"
+    );
+    assert!(out.ends_with("\r\n\r\nfuncao NovaFuncao(); {\r\n    se (nTotal > 1000) {\r\n        aMsg = \"Pedido acima do limite\";\r\n        Mensagem(Retorna, aMsg);\r\n    }\r\n}\r\n"), "{out:?}");
+}
+
+#[test]
+fn extrair_funcao_sem_quebra_no_fim_do_arquivo() {
+    let text = "definir numero n;\nn = 1;\nn = 2;";
+    let out = extract_lines(text, 1, 2).unwrap();
+    assert_eq!(
+        out,
+        "definir numero n;\ndefinir funcao NovaFuncao();\nNovaFuncao();\n\nfuncao NovaFuncao(); {\n    n = 1;\n    n = 2;\n}\n"
+    );
+}
+
+#[test]
+fn extrair_funcao_sem_definir_poe_a_declaracao_no_comeco() {
+    let text = "n = 1;\nse (n > 0) {\n    n = 2;\n}\n";
+    let out = extract_lines(text, 2, 2).unwrap();
+    assert_eq!(
+        out,
+        "Definir Funcao NovaFuncao();\nn = 1;\nse (n > 0) {\n    NovaFuncao();\n}\n\nFuncao NovaFuncao(); {\n    n = 2;\n}\n"
+    );
+}
+
+#[test]
+fn extrair_funcao_de_dentro_de_se_aninhado_mantem_a_indentacao_da_chamada() {
+    let text = "definir numero n;\n\
+                se (n > 0) {\n\
+                \x20   enquanto (n > 1) {\n\
+                \x20       n = n - 1;\n\
+                \x20       se (n = 5) {\n\
+                \x20           n = 4;\n\
+                \x20       }\n\
+                \x20   }\n\
+                }\n";
+    let out = extract_lines(text, 3, 6).unwrap();
+    assert_eq!(
+        out,
+        "definir numero n;\n\
+         definir funcao NovaFuncao();\n\
+         se (n > 0) {\n\
+         \x20   enquanto (n > 1) {\n\
+         \x20       NovaFuncao();\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         funcao NovaFuncao(); {\n\
+         \x20   n = n - 1;\n\
+         \x20   se (n = 5) {\n\
+         \x20       n = 4;\n\
+         \x20   }\n\
+         }\n"
+    );
+}
+
+#[test]
+fn extrair_funcao_com_funcao_no_arquivo_poe_a_nova_no_fim() {
+    let text = "definir numero n;\n\
+                definir funcao Soma(Numero a);\n\
+                definir alfa aTxt;\n\
+                n = 1;\n\
+                Soma(n);\n\
+                funcao Soma(Numero a); {\n\
+                \x20   a = a + 1;\n\
+                }\n";
+    let out = extract_lines(text, 3, 3).unwrap();
+    assert_eq!(
+        out,
+        "definir numero n;\n\
+         definir funcao Soma(Numero a);\n\
+         definir funcao NovaFuncao();\n\
+         definir alfa aTxt;\n\
+         NovaFuncao();\n\
+         Soma(n);\n\
+         funcao Soma(Numero a); {\n\
+         \x20   a = a + 1;\n\
+         }\n\
+         \n\
+         funcao NovaFuncao(); {\n\
+         \x20   n = 1;\n\
+         }\n"
+    );
+}
+
+#[test]
+fn extrair_funcao_de_dentro_de_funcao_que_usa_so_globais() {
+    let text = "definir numero n;\n\
+                definir funcao F(Numero p);\n\
+                funcao F(Numero p); {\n\
+                \x20   n = 1;\n\
+                \x20   n = n + 2;\n\
+                }\n";
+    let out = extract_lines(text, 3, 4).unwrap();
+    assert!(
+        out.contains("funcao F(Numero p); {\n    NovaFuncao();\n}\n"),
+        "{out}"
+    );
+    assert!(
+        out.ends_with("\nfuncao NovaFuncao(); {\n    n = 1;\n    n = n + 2;\n}\n"),
+        "{out}"
+    );
+}
+
+#[test]
+fn extrair_funcao_mantem_o_texto_entre_aspas_em_varias_linhas() {
+    // A barra no fim da linha continua o texto na linha de baixo, e a indentação dela é conteúdo.
+    let text = "definir alfa aSql;\n\
+                aSql = \"SELECT *\\\n\
+                \x20  FROM E070EMP  \\\n\
+                \x20 WHERE 1 = 1\";\n\
+                aSql = aSql;\n";
+    let out = extract_lines(text, 1, 4).unwrap();
+    assert!(
+        out.ends_with(
+            "funcao NovaFuncao(); {\n    aSql = \"SELECT *\\\n   FROM E070EMP  \\\n  WHERE 1 = 1\";\n    aSql = aSql;\n}\n"
+        ),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn extrair_funcao_em_regra_de_tela_e_de_relatorio() {
+    let text = "definir numero n;\nn = 1;\nn = 2;\n";
+    for uri in [
+        "file:///x/Formul%C3%A1rios%20SGI/F1/rule.txt",
+        "file:///x/Modelos/M1.GER/regras/Cabecalho.SOnPrint.txt",
+    ] {
+        let out = extract_in(uri, text, (2, 0), (2, 6)).unwrap();
+        assert!(out.contains("\nNovaFuncao();\n"), "{uri}: {out}");
+    }
+}
+
+#[test]
+fn extrair_funcao_recusa_selecao_vazia_ou_que_corta_comando() {
+    let text = "definir numero n;\nse (n = 1) {\n    n = 2;\n    n = 3;\n}\nn = 4;\n";
+    assert_eq!(extract_in(RULE, text, (2, 4), (2, 4)), None, "vazia");
+    assert_eq!(extract_in(RULE, text, (2, 0), (2, 4)), None, "só espaço");
+    assert_eq!(
+        extract_in(RULE, text, (2, 4), (2, 9)),
+        None,
+        "falta o ponto e vírgula"
+    );
+    assert_eq!(
+        extract_in(RULE, text, (2, 6), (3, 10)),
+        None,
+        "começo cortado"
+    );
+    assert_eq!(
+        extract_in(RULE, text, (1, 0), (2, 10)),
+        None,
+        "se pela metade"
+    );
+    assert_eq!(
+        extract_in(RULE, text, (2, 4), (4, 1)),
+        None,
+        "termina depois do bloco"
+    );
+    assert_eq!(
+        extract_in(RULE, text, (3, 4), (5, 6)),
+        None,
+        "blocos diferentes"
+    );
+    assert_eq!(extract_in(RULE, text, (1, 4), (1, 11)), None, "condição");
+    assert!(
+        extract_in(RULE, text, (1, 0), (4, 1)).is_some(),
+        "o se inteiro"
+    );
+    assert!(
+        extract_in(RULE, text, (2, 0), (3, 10)).is_some(),
+        "dois comandos"
+    );
+    assert!(
+        extract_in(RULE, text, (2, 4), (2, 10)).is_some(),
+        "um comando"
+    );
+}
+
+#[test]
+fn extrair_funcao_recusa_trecho_com_definir_ou_funcao() {
+    let text = "definir numero n;\n\
+                se (n = 1) {\n\
+                \x20   definir alfa aLocal;\n\
+                \x20   aLocal = \"x\";\n\
+                }\n\
+                definir alfa aOutra;\n\
+                definir funcao F();\n\
+                n = 5;\n\
+                funcao F(); { n = 1; }\n";
+    assert!(extract_lines(text, 7, 7).is_some(), "controle");
+    assert_eq!(extract_lines(text, 1, 4), None, "definir dentro do se");
+    assert_eq!(extract_lines(text, 2, 3), None, "definir e uso");
+    assert_eq!(extract_lines(text, 5, 5), None, "definir");
+    assert_eq!(extract_lines(text, 6, 7), None, "definir funcao e comando");
+    assert_eq!(extract_lines(text, 7, 8), None, "comando e funcao");
+    assert_eq!(extract_lines(text, 8, 8), None, "funcao");
+}
+
+#[test]
+fn extrair_funcao_recusa_pare_e_continue_sem_o_laco() {
+    let text = "definir numero n;\n\
+                enquanto (n < 9) {\n\
+                \x20   n++;\n\
+                \x20   se (n = 3) {\n\
+                \x20       continue;\n\
+                \x20   }\n\
+                \x20   n++;\n\
+                \x20   pare;\n\
+                }\n\
+                para (n = 0; n < 3; n++) {\n\
+                \x20   se (n = 1) { pare; }\n\
+                }\n";
+    assert_eq!(extract_lines(text, 4, 4), None, "continue");
+    assert_eq!(extract_lines(text, 7, 7), None, "pare");
+    assert_eq!(extract_lines(text, 3, 5), None, "se com continue");
+    assert_eq!(extract_lines(text, 6, 7), None, "comando e pare");
+    assert!(extract_lines(text, 1, 8).is_some(), "o laço inteiro");
+    assert!(extract_lines(text, 9, 11).is_some(), "o para inteiro");
+    assert!(
+        extract_lines(text, 10, 10).is_none(),
+        "pare do para, sem o para"
+    );
+    assert!(extract_lines(text, 2, 2).is_some(), "sem pare");
+}
+
+#[test]
+fn extrair_funcao_recusa_vapara_e_rotulo_que_cruzam_o_trecho() {
+    let text = "definir numero n;\n\
+                n = 1;\n\
+                vapara fim;\n\
+                n = 2;\n\
+                ini:\n\
+                n = 3;\n\
+                vapara ini;\n\
+                fim:\n\
+                n = 4;\n\
+                vapara outro;\n\
+                outro:\n";
+    assert_eq!(extract_lines(text, 2, 3), None, "vapara para fora");
+    assert_eq!(extract_lines(text, 4, 5), None, "rótulo alvo de fora");
+    assert_eq!(extract_lines(text, 6, 6), None, "vapara para rótulo fora");
+    assert_eq!(
+        extract_lines(text, 7, 8),
+        None,
+        "rótulo alvo de vapara de fora"
+    );
+    assert!(
+        extract_lines(text, 4, 6).is_some(),
+        "rótulo e vapara dentro"
+    );
+    assert!(
+        extract_lines(text, 9, 10).is_some(),
+        "outro rótulo e vapara dentro"
+    );
+    assert!(extract_lines(text, 1, 1).is_some(), "sem rótulo");
+}
+
+#[test]
+fn extrair_funcao_dentro_de_funcao_recusa_parametro_e_variavel_local() {
+    let text = "definir numero g;\n\
+                definir funcao F(Numero p);\n\
+                funcao F(Numero p); {\n\
+                \x20   definir numero loc;\n\
+                \x20   g = 1;\n\
+                \x20   g = p;\n\
+                \x20   loc = 2;\n\
+                \x20   IntParaAlfa(g, aTxt);\n\
+                }\n\
+                funcao G(); {\n\
+                \x20   g = 5;\n\
+                }\n";
+    assert!(extract_lines(text, 4, 4).is_some(), "só global");
+    assert!(extract_lines(text, 7, 7).is_some(), "chamada com global");
+    assert_eq!(extract_lines(text, 5, 5), None, "parâmetro");
+    assert_eq!(
+        extract_lines(text, 6, 6),
+        None,
+        "variável definida na função"
+    );
+    assert_eq!(extract_lines(text, 4, 6), None, "global e local juntas");
+    assert!(
+        extract_lines(text, 10, 10).is_some(),
+        "outra função só com global"
+    );
+}
+
+#[test]
+fn extrair_funcao_dentro_de_funcao_recusa_sql_com_parametro() {
+    let text = "definir cursor cur;\n\
+                definir funcao F(Numero nCod);\n\
+                funcao F(Numero nCod); {\n\
+                \x20   cur.SQL \"SELECT 1 FROM E070EMP WHERE CODEMP = :nCod\";\n\
+                \x20   cur.SQL \"SELECT 1 FROM E070EMP WHERE CODEMP = 1\";\n\
+                }\n";
+    assert_eq!(extract_lines(text, 3, 3), None, "usa o parâmetro no SQL");
+    assert!(extract_lines(text, 4, 4).is_some(), "SQL sem parâmetro");
+}
+
+#[test]
+fn extrair_funcao_recusa_trecho_com_erro_de_sintaxe() {
+    let text = "definir numero n;\nn = ;\nn = 2;\n";
+    assert_eq!(extract_lines(text, 1, 2), None);
+    assert!(extract_lines(text, 2, 2).is_some());
+}
+
+#[test]
+fn extrair_funcao_recusa_declaracao_na_linha_do_trecho() {
+    let text = "definir numero n; n = 1;\nn = 2;\n";
+    assert_eq!(extract_in(RULE, text, (0, 18), (0, 24)), None);
+    assert!(extract_lines(text, 1, 1).is_some());
+}
+
+#[test]
+fn extrair_funcao_respeita_o_filtro_de_tipos_do_cliente() {
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, "definir numero n;\nn = 1;\n");
+    editor.diagnostics();
+    let mut kinds = |only: serde_json::Value| -> Vec<String> {
+        let response = editor.request(
+            lsp_types::request::CodeActionRequest::METHOD,
+            json!({ "textDocument": { "uri": RULE },
+                    "range": { "start": { "line": 1, "character": 0 },
+                               "end": { "line": 1, "character": 6 } },
+                    "context": { "diagnostics": [], "only": only } }),
+        );
+        response
+            .response_result
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|a| a["kind"].as_str().map(str::to_owned))
+            .collect()
+    };
+    assert_eq!(kinds(json!(["refactor"])), ["refactor.extract"]);
+    assert_eq!(kinds(json!(["refactor.extract"])), ["refactor.extract"]);
+    assert!(kinds(json!(["quickfix"])).is_empty());
+    assert_eq!(kinds(json!(null)), ["refactor.extract"]);
+    editor.stop();
+}

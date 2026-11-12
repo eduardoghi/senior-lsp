@@ -74,7 +74,7 @@ impl Context<'_> {
     }
 
     /// As palavras reservadas com a caixa que o arquivo já usa, pelo primeiro `definir` dele.
-    fn keyword_case(&self, words: &str) -> String {
+    pub(super) fn keyword_case(&self, words: &str) -> String {
         let text = &self.doc.text;
         let first = self.doc.symbols.definitions.iter().find_map(|d| {
             let start = usize::from(self.doc.tree.text_range(d.node).start());
@@ -92,8 +92,6 @@ impl Context<'_> {
     /// começo do arquivo, e o texto com a quebra de linha do arquivo.
     fn insertion(&self, use_at: TextSize, line: &str) -> (TextSize, String) {
         let tree = &self.doc.tree;
-        let text = &self.doc.text;
-        let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
         let last = self
             .doc
             .symbols
@@ -103,6 +101,14 @@ impl Context<'_> {
             .map(|d| tree.text_range(d.node).end())
             .filter(|&end| end <= use_at)
             .max();
+        self.insert_after(last, line)
+    }
+
+    /// Onde a linha entra para ficar na linha de baixo de `last`, ou no começo do arquivo sem
+    /// `last`, e o texto com a quebra de linha do arquivo.
+    pub(super) fn insert_after(&self, last: Option<TextSize>, line: &str) -> (TextSize, String) {
+        let text = &self.doc.text;
+        let newline = newline(text);
         let Some(end) = last else {
             return (TextSize::from(0), format!("{line}{newline}"));
         };
