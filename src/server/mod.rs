@@ -389,6 +389,12 @@ struct Server<'a> {
     published: std::cell::RefCell<std::collections::HashSet<Uri>>,
 }
 
+// O `catch_unwind` só segura o pânico que desenrola a pilha. Com `panic = "abort"` o servidor
+// morreria no primeiro, e nenhum teste perceberia, porque o Cargo ignora essa opção ao compilar os
+// testes.
+#[cfg(panic = "abort")]
+compile_error!("o servidor depende do catch_unwind, compile com panic = \"unwind\"");
+
 impl Server<'_> {
     /// Responde o pedido. Parâmetros fora do formato e um pânico no meio do atendimento viram
     /// resposta de erro, e o servidor segue atendendo os outros pedidos.
