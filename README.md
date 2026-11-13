@@ -338,11 +338,19 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN073 | aviso | diretiva que não escondeu nenhum diagnóstico do código citado |
 | SEN074 | erro | coluna do SELECT de um cursor com uma tabela que não está no dicionário de dados, como um apelido de tabela ou uma função |
 | SEN075 | erro | coluna do SELECT de um cursor com um campo que a tabela não tem no dicionário de dados |
+| SEN076 | dica | coluna do SELECT de um cursor que a regra não lê, ou `*` de que ela só lê parte dos campos, só na regra comum |
 
 O SEN068 e o SEN070 saem como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
 conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da
 variável num texto para uma função preencher. Na tela e no relatório o aviso não sai, porque as
 regras seguintes podem usar o nome.
+
+O SEN076 esmaece no texto do SQL a coluna que a regra não lê pelo cursor (`cur.CAMPO`). O campo que
+aparece no ORDER BY conta como lido, porque com o Senior SQL 2 o ORDER BY só aceita o que está no
+SELECT. Quando a regra não lê nenhuma coluna, como no cursor que só serve ao `Achou`, a primeira
+fica sem aviso, porque o SELECT precisa de pelo menos uma. O `*` é avisado quando a regra lê menos
+campos do que a tabela tem, o que precisa do dicionário de dados. Na tela e no relatório o aviso
+não sai, pelo mesmo motivo do SEN068.
 
 O SEN071 cobre da primeira instrução depois do comando até a última do bloco, e o editor esmaece
 o trecho. Um rótulo (`nome:`) no meio do bloco volta a tornar o código alcançável, porque um

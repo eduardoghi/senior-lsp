@@ -115,6 +115,32 @@ pub(super) struct Analysis {
     pub(super) columns: Option<Vec<Column>>,
     /// As colunas do SELECT com tabela ou campo que o dicionário de dados não tem.
     pub(super) unknown: Vec<Unknown>,
+    /// As colunas que viram campo do cursor, quando o texto é um SELECT com FROM.
+    pub(super) selection: Option<Selection>,
+}
+
+/// Campos que o SELECT dá ao cursor, como o compilador os monta.
+pub(super) struct Selection {
+    pub(super) columns: Vec<Selected>,
+    pub(super) star: Option<Star>,
+}
+
+/// Coluna do SELECT que vira campo do cursor.
+pub(super) struct Selected {
+    /// Nome do campo em maiúsculas, sem a tabela.
+    pub(super) name: String,
+    /// Trecho dentro do literal de string, em bytes a partir da aspa que o abre.
+    pub(super) range: std::ops::Range<usize>,
+    /// O campo aparece no ORDER BY, que com o Senior SQL 2 só aceita o que está no SELECT.
+    pub(super) ordered: bool,
+}
+
+/// O `*` do SELECT, que dá ao cursor todos os campos da primeira tabela do FROM.
+pub(super) struct Star {
+    pub(super) range: std::ops::Range<usize>,
+    pub(super) table: String,
+    /// Os campos da tabela em maiúsculas, ou `None` quando o dicionário não tem a tabela.
+    pub(super) fields: Option<Vec<String>>,
 }
 
 /// Coluna do SELECT do cursor que o dicionário de dados não confirma.
@@ -177,24 +203,38 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
     }
     let sql = string_value(literal);
     let statements = Parser::parse_sql(&OracleDialect {}, &sql).ok();
-    let mut unknown = unknown_columns(&sql, dictionaries, statements.is_some());
-    if !unknown.is_empty() {
-        // As posições saem no SQL montado e vão para o literal, que pode ter escape e emenda.
-        let offsets = value_offsets(literal);
-        for found in &mut unknown {
-            let at = |i: usize| offsets.get(i).copied().unwrap_or(literal.len());
-            let start = at(found.range.start);
-            let end = match found.range.end.checked_sub(1) {
-                Some(last) if last >= found.range.start => at(last) + 1,
-                _ => start,
-            };
-            found.range = start..end.clamp(start, literal.len());
+    let reading = compiler_columns(&sql);
+    let mut unknown = match &reading {
+        Some(reading) => unknown_columns(reading, dictionaries, statements.is_some()),
+        None => Vec::new(),
+    };
+    let mut selection = reading.as_ref().map(|r| selection(r, dictionaries));
+    // As posições saem no SQL montado e vão para o literal, que pode ter escape e emenda.
+    let offsets = value_offsets(literal);
+    let in_literal = |range: &mut std::ops::Range<usize>| {
+        let at = |i: usize| offsets.get(i).copied().unwrap_or(literal.len());
+        let start = at(range.start);
+        let end = match range.end.checked_sub(1) {
+            Some(last) if last >= range.start => at(last) + 1,
+            _ => start,
+        };
+        *range = start..end.clamp(start, literal.len());
+    };
+    unknown.iter_mut().for_each(|u| in_literal(&mut u.range));
+    if let Some(selection) = &mut selection {
+        selection
+            .columns
+            .iter_mut()
+            .for_each(|c| in_literal(&mut c.range));
+        if let Some(star) = &mut selection.star {
+            in_literal(&mut star.range);
         }
     }
     let analysis = Rc::new(Analysis {
         constants: statements.as_deref().map(constants_of).unwrap_or_default(),
         columns: statements.and_then(|s| select_columns(&s, dictionaries)),
         unknown,
+        selection,
     });
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -234,6 +274,16 @@ impl Piece {
     }
 }
 
+/// O SELECT de um cursor separado como o compilador separa.
+struct Reading {
+    /// A primeira tabela do FROM.
+    table: Piece,
+    /// O que fica entre as vírgulas do SELECT ao FROM, em maiúsculas fora de aspas.
+    columns: Vec<Piece>,
+    /// O que vem depois do `ORDER BY`, em maiúsculas, ou vazio.
+    order_by: String,
+}
+
 /// Tira das pontas o espaço e os caracteres de controle, que é o que o compilador tira.
 fn trimmed(bytes: &[u8], mut start: usize, mut end: usize) -> (usize, usize) {
     while start < end && bytes[start] <= b' ' {
@@ -255,7 +305,7 @@ fn is_blank(byte: u8) -> bool {
 /// depois do `FROM` até a primeira vírgula ou espaço e corta as colunas em toda vírgula entre o
 /// `SELECT` e o `FROM`, mesmo dentro de parênteses. `None` quando o texto não começa com `SELECT`
 /// e um espaço ou não tem `FROM`, casos em que as colunas não são conferidas.
-fn compiler_columns(sql: &str) -> Option<(Piece, Vec<Piece>)> {
+fn compiler_columns(sql: &str) -> Option<Reading> {
     let bytes = sql.as_bytes();
     let (lead, end) = trimmed(bytes, 0, bytes.len());
     let bytes = &bytes[lead..end];
@@ -327,7 +377,21 @@ fn compiler_columns(sql: &str) -> Option<(Piece, Vec<Piece>)> {
         text.clear();
         offsets.clear();
     }
-    Some((table, columns))
+    let order_by = find(b"ORDER BY").map_or(upper.len(), |at| at + "ORDER BY".len());
+    Some(Reading {
+        table,
+        columns,
+        order_by: String::from_utf8_lossy(&upper[order_by..]).into_owned(),
+    })
+}
+
+/// Campos da tabela ou da visão `name` num dicionário.
+fn rowset<'a>(dictionary: &'a SharedDictionary, name: &str) -> Option<&'a [Field]> {
+    let dictionary = dictionary.as_deref()?;
+    match dictionary.table(name) {
+        Some(table) => Some(&table.fields),
+        None => dictionary.view(name).map(|view| view.fields.as_slice()),
+    }
 }
 
 /// O que o dicionário diz de `TABELA.CAMPO`.
@@ -341,19 +405,12 @@ enum Lookup {
 /// Procura o campo na tabela ou na visão, que é o que o cursor aceita antes do ponto. Vale o
 /// dicionário de produção, e o de teste quando produção não tem o campo.
 fn lookup(dictionaries: &Dictionaries, table: &str, field: &str) -> Lookup {
-    fn fields<'a>(dictionary: &'a SharedDictionary, table: &str) -> Option<&'a [Field]> {
-        let dictionary = dictionary.as_deref()?;
-        match dictionary.table(table) {
-            Some(table) => Some(&table.fields),
-            None => dictionary.view(table).map(|view| view.fields.as_slice()),
-        }
-    }
     let has = |fields: Option<&[Field]>| {
         fields.is_some_and(|f| f.iter().any(|f| f.name.eq_ignore_ascii_case(field)))
     };
     let (production, test) = (
-        fields(&dictionaries.production, table),
-        fields(&dictionaries.test, table),
+        rowset(&dictionaries.production, table),
+        rowset(&dictionaries.test, table),
     );
     if production.is_none() && test.is_none() {
         Lookup::NoTable
@@ -384,17 +441,19 @@ fn looks_constant(column: &str) -> bool {
 ///
 /// A coluna com espaço e sem ponto e a que fica com a tabela ou o campo vazio dão outros erros,
 /// e as constantes ficam com o [`constants_of`] quando o `sqlparser` leu o SQL (`skip_constants`).
-fn unknown_columns(sql: &str, dictionaries: &Dictionaries, skip_constants: bool) -> Vec<Unknown> {
+fn unknown_columns(
+    reading: &Reading,
+    dictionaries: &Dictionaries,
+    skip_constants: bool,
+) -> Vec<Unknown> {
     let mut unknown = Vec::new();
     if dictionaries.is_empty() {
         return unknown;
     }
-    let Some((main, columns)) = compiler_columns(sql) else {
-        return unknown;
-    };
+    let (main, columns) = (&reading.table, &reading.columns);
     let ctl = |c: char| c <= ' ';
     let mut missing_tables: Vec<String> = Vec::new();
-    for item in &columns {
+    for item in columns {
         if item.text == "*" {
             continue;
         }
@@ -461,6 +520,56 @@ fn unknown_columns(sql: &str, dictionaries: &Dictionaries, skip_constants: bool)
         }
     }
     unknown
+}
+
+/// Campos que o SELECT dá ao cursor. A coluna sem espaço vira um campo com o nome que vem depois
+/// do primeiro ponto, e o `*` vira todos os campos da primeira tabela do FROM. A coluna com algo
+/// depois de um espaço, como um apelido, não vira campo, e a constante dá erro, então as duas
+/// ficam de fora.
+fn selection(reading: &Reading, dictionaries: &Dictionaries) -> Selection {
+    let mut selection = Selection {
+        columns: Vec::new(),
+        star: None,
+    };
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let ordered = |name: &str| {
+        let text = reading.order_by.as_bytes();
+        memchr::memmem::find_iter(text, name.as_bytes()).any(|at| {
+            let end = at + name.len();
+            (at == 0 || !word(text[at - 1])) && (end == text.len() || !word(text[end]))
+        })
+    };
+    for item in &reading.columns {
+        let range = item.start..item.end;
+        if item.text == "*" {
+            let table = reading.table.text.as_str();
+            let fields = rowset(&dictionaries.production, table)
+                .or_else(|| rowset(&dictionaries.test, table))
+                .map(|fields| fields.iter().map(|f| f.name.to_uppercase()).collect());
+            selection.star = Some(Star {
+                range,
+                table: table.to_owned(),
+                fields,
+            });
+            continue;
+        }
+        if item.text.contains(' ') || looks_constant(&item.text) {
+            continue;
+        }
+        let name = item
+            .text
+            .split_once('.')
+            .map_or(item.text.as_str(), |n| n.1);
+        let name = name.trim_matches(|c: char| c <= ' ');
+        if !name.is_empty() {
+            selection.columns.push(Selected {
+                name: name.to_owned(),
+                range,
+                ordered: ordered(name),
+            });
+        }
+    }
+    selection
 }
 
 /// Coluna que um SELECT devolve, pelo nome em maiúsculas, com o tipo do campo no dicionário quando
@@ -766,7 +875,8 @@ impl Sources {
         columns.get(&field)?.ty
     }
 
-    /// `cur.CAMPO` com um campo que não é coluna do SQL do cursor nem operação.
+    /// `cur.CAMPO` com um campo que não é coluna do SQL do cursor nem operação. Devolve o cursor
+    /// e o campo lido, em maiúsculas, quando o nó é o campo de um cursor e não uma operação dele.
     pub(super) fn check_cursor_field(
         &self,
         tree: &Tree,
@@ -774,28 +884,24 @@ impl Sources {
         text: &str,
         node: NodeId,
         checks: &mut Vec<Check>,
-    ) {
-        let Some((cursor, field)) = cursor_field(tree, symbols, text, node) else {
-            return;
-        };
+    ) -> Option<(String, String)> {
+        let (cursor, field) = cursor_field(tree, symbols, text, node)?;
         let field = field.to_uppercase();
         if CURSOR_OPERATIONS.contains(&field.as_str()) {
-            return;
+            return None;
         }
-        let Some(Some(columns)) = self.cursors.get(&cursor) else {
-            return;
-        };
-        if columns.get(&field).is_some() {
-            return;
-        }
-        if let Some(name) = tree.children(node).nth(1) {
+        if let Some(Some(columns)) = self.cursors.get(&cursor)
+            && columns.get(&field).is_none()
+            && let Some(name) = tree.children(node).nth(1)
+        {
             checks.push(Check {
                 kind: CheckKind::CursorFieldNotInSelect,
                 range: tree.text_range(name),
                 name: None,
-                label: Some(cursor),
+                label: Some(cursor.clone()),
             });
         }
+        Some((cursor, field))
     }
 
     /// `SQL_Retornar*(obj, "coluna", ...)` com uma coluna que não está no SQL do objeto.
@@ -836,6 +942,100 @@ impl Sources {
                 name: None,
                 label: Some(object),
             });
+        }
+    }
+}
+
+/// Campos que a regra lê de cada cursor e os SQL literais de cada um, para avisar no fim as
+/// colunas do SELECT que a regra não lê.
+#[derive(Default)]
+pub(super) struct ColumnUses {
+    read: FxHashMap<String, FxHashSet<String>>,
+    literals: Vec<(String, text_size::TextRange)>,
+}
+
+impl ColumnUses {
+    /// Anota a leitura de `cursor.CAMPO`, os dois em maiúsculas.
+    pub(super) fn read(&mut self, cursor: String, field: String) {
+        self.read.entry(cursor).or_default().insert(field);
+    }
+
+    /// Anota o literal de um `cur.SQL "..."`.
+    pub(super) fn command(&mut self, tree: &Tree, symbols: &Symbols, text: &str, node: NodeId) {
+        let mut children = tree.children(node);
+        let Some((cursor, field)) = children
+            .next()
+            .and_then(|f| cursor_field(tree, symbols, text, f))
+        else {
+            return;
+        };
+        if field.eq_ignore_ascii_case("SQL")
+            && let Some(literal) = children.next().and_then(|v| string_literal(tree, v))
+        {
+            self.literals.push((cursor, literal));
+        }
+    }
+
+    /// Colunas do SELECT que a regra não lê pelo cursor. O campo que aparece no ORDER BY conta
+    /// como lido, porque com o Senior SQL 2 o ORDER BY só aceita o que está no SELECT. Também
+    /// conta o `cursor.CAMPO` escrito em qualquer lugar do arquivo, mesmo dentro de um texto.
+    /// Quando a regra não lê nenhuma coluna de um SELECT, como no cursor que só serve ao `Achou`,
+    /// a primeira fica sem aviso, porque o SELECT precisa de pelo menos uma. O `*` só é
+    /// conferido com a tabela no dicionário de dados.
+    pub(super) fn finish(self, text: &str, dictionaries: &Dictionaries, checks: &mut Vec<Check>) {
+        let upper = std::cell::OnceCell::new();
+        for (cursor, literal) in &self.literals {
+            let analysis = analysis(&text[*literal], dictionaries);
+            let Some(selection) = &analysis.selection else {
+                continue;
+            };
+            let read = self.read.get(cursor);
+            let is_read = |name: &str| {
+                read.is_some_and(|read| read.contains(name))
+                    || upper
+                        .get_or_init(|| text.to_ascii_uppercase())
+                        .contains(&format!("{cursor}.{name}"))
+            };
+            let at = |range: &std::ops::Range<usize>| {
+                let at = |offset: usize| literal.start() + text_size::TextSize::new(offset as u32);
+                text_size::TextRange::new(at(range.start), at(range.end))
+            };
+            if let Some(star) = &selection.star
+                && let Some(fields) = &star.fields
+            {
+                let used: Vec<&str> = fields
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|f| is_read(f))
+                    .collect();
+                if used.len() < fields.len() {
+                    checks.push(Check {
+                        kind: CheckKind::CursorStarUnused,
+                        range: at(&star.range),
+                        name: None,
+                        label: Some(format!(
+                            "{cursor}|{}|{}|{}",
+                            star.table,
+                            fields.len(),
+                            used.join(", ")
+                        )),
+                    });
+                }
+            }
+            let mut unused: Vec<&Selected> = selection
+                .columns
+                .iter()
+                .filter(|c| !c.ordered && !is_read(&c.name))
+                .collect();
+            if selection.star.is_none() && unused.len() == selection.columns.len() {
+                unused.drain(..1.min(unused.len()));
+            }
+            checks.extend(unused.into_iter().map(|column| Check {
+                kind: CheckKind::CursorColumnUnused,
+                range: at(&column.range),
+                name: None,
+                label: Some(cursor.clone()),
+            }));
         }
     }
 }
@@ -1070,7 +1270,7 @@ mod tests {
 
     /// A tabela e as colunas, com o trecho do SQL que cada uma ocupa.
     fn separado(sql: &str) -> Option<(String, Vec<String>)> {
-        let (table, columns) = compiler_columns(sql)?;
+        let Reading { table, columns, .. } = compiler_columns(sql)?;
         let source = |p: &Piece| sql[p.start..p.end].to_owned();
         let texts = columns.iter().map(|p| p.text.clone()).collect();
         assert!(table.text.eq_ignore_ascii_case(&source(&table)), "{sql}");
@@ -1131,7 +1331,7 @@ mod tests {
         for &start in &cuts {
             for &end in cuts.iter().filter(|&&end| end >= start) {
                 let part = &sql[start..end];
-                let Some((table, columns)) = compiler_columns(part) else {
+                let Some(Reading { table, columns, .. }) = compiler_columns(part) else {
                     continue;
                 };
                 for piece in columns.iter().chain([&table]) {
@@ -1168,7 +1368,7 @@ mod tests {
             test: None,
         };
         let kinds = |sql: &str| -> Vec<(CheckKind, String)> {
-            unknown_columns(sql, &dictionaries, true)
+            unknown_columns(&compiler_columns(sql).unwrap(), &dictionaries, true)
                 .into_iter()
                 .map(|u| (u.kind, sql[u.range].to_owned()))
                 .collect()
@@ -1183,9 +1383,13 @@ mod tests {
         );
         // Sem a leitura do `sqlparser`, a constante é conferida como o compilador a lê.
         assert_eq!(
-            unknown_columns("SELECT 1 FROM V", &dictionaries, false)[0]
-                .label
-                .as_deref(),
+            unknown_columns(
+                &compiler_columns("SELECT 1 FROM V").unwrap(),
+                &dictionaries,
+                false
+            )[0]
+            .label
+            .as_deref(),
             Some("V.1")
         );
     }

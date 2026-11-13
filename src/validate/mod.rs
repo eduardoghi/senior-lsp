@@ -78,6 +78,10 @@ pub enum CheckKind {
     Unused,
     /// Função definida e nunca chamada, na regra comum, pelo mesmo motivo.
     UnusedFunction,
+    /// Coluna do SELECT de um cursor que a regra não lê, na regra comum, pelo mesmo motivo.
+    CursorColumnUnused,
+    /// `*` no SELECT de um cursor de que a regra só lê parte dos campos, também na regra comum.
+    CursorStarUnused,
     /// Instruções depois de `Pare`, `Cancel` ou `VaPara` no mesmo bloco, que nunca executam.
     Unreachable,
 }
@@ -180,6 +184,8 @@ pub fn validate(
         sql: &sources,
     };
     let mut native_sql = sql::NativeSql::default();
+    // Só na regra comum, porque na tela e no relatório as regras seguintes podem ler o cursor.
+    let mut column_uses = (context == Context::Rule).then(sql::ColumnUses::default);
     let mut stack = vec![tree.root()];
     while let Some(node) = stack.pop() {
         types::check(tree, &scope, context, node, &mut checks);
@@ -194,10 +200,16 @@ pub fn validate(
             }
             FieldCommand => {
                 sql::cursor_sql(tree, text, node, &inherited.dictionaries, &mut checks);
+                if let Some(uses) = &mut column_uses {
+                    uses.command(tree, symbols, text, node);
+                }
             }
             Literal => lowercase_char(tree, text, node, &mut checks),
             FieldExpr => {
-                sources.check_cursor_field(tree, symbols, text, node, &mut checks);
+                let read = sources.check_cursor_field(tree, symbols, text, node, &mut checks);
+                if let (Some(uses), Some((cursor, field))) = (&mut column_uses, read) {
+                    uses.read(cursor, field);
+                }
                 if let Some((found, _)) = types::table_field(tree, &scope, node)
                     && found.only_in_test
                 {
@@ -222,6 +234,9 @@ pub fn validate(
         stack[first..].reverse();
     }
     native_sql.finish(&mut checks);
+    if let Some(uses) = column_uses {
+        uses.finish(text, &inherited.dictionaries, &mut checks);
+    }
     if context == Context::Rule {
         unused(tree, symbols, text, &mut checks);
     }
@@ -770,9 +785,16 @@ mod tests {
             &Inherited::default(),
         )
         .into_iter()
-        // A função de exemplo de muitos testes não é chamada. Os testes da dica de função sem
-        // uso usam `checks_all`.
-        .filter(|c| c.kind != CheckKind::UnusedFunction)
+        // A função de exemplo de muitos testes não é chamada, e os cursores de exemplo não têm
+        // os campos lidos. Os testes da dica de função sem uso usam `checks_all`.
+        .filter(|c| {
+            !matches!(
+                c.kind,
+                CheckKind::UnusedFunction
+                    | CheckKind::CursorColumnUnused
+                    | CheckKind::CursorStarUnused
+            )
+        })
         .map(|c| (c.kind, &text[c.range]))
         .collect()
     }

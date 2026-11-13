@@ -67,7 +67,7 @@ pub(crate) fn diagnostics(
                 source: Some("senior-lsp".to_owned()),
                 message: f.message,
                 // O editor esmaece o nome sem uso, o código que não executa e a diretiva sem efeito.
-                tags: matches!(f.code, "SEN068" | "SEN070" | "SEN071" | "SEN073")
+                tags: matches!(f.code, "SEN068" | "SEN070" | "SEN071" | "SEN073" | "SEN076")
                     .then(|| vec![lsp_types::DiagnosticTag::UNNECESSARY]),
                 ..Diagnostic::default()
             })
@@ -93,7 +93,13 @@ fn found(doc: &Document) -> Vec<Found> {
     let checks = doc.checks().iter().map(|c| {
         let severity = if c.kind.is_error() {
             DiagnosticSeverity::ERROR
-        } else if matches!(c.kind, CheckKind::Unused | CheckKind::UnusedFunction) {
+        } else if matches!(
+            c.kind,
+            CheckKind::Unused
+                | CheckKind::UnusedFunction
+                | CheckKind::CursorColumnUnused
+                | CheckKind::CursorStarUnused
+        ) {
             DiagnosticSeverity::HINT
         } else {
             DiagnosticSeverity::WARNING
@@ -361,6 +367,30 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                 ),
             )
         }
+        CheckKind::CursorColumnUnused => (
+            "SEN076",
+            format!(
+                "A regra não lê o campo {} que o SELECT do cursor {name} busca.",
+                &text[check.range]
+            ),
+        ),
+        CheckKind::CursorStarUnused => {
+            let mut parts = name.splitn(4, '|');
+            let mut part = || parts.next().unwrap_or("");
+            let (cursor, table, total, used) = (part(), part(), part(), part());
+            let used = if used.is_empty() {
+                "não lê nenhum".to_owned()
+            } else {
+                format!("só lê {used}")
+            };
+            (
+                "SEN076",
+                format!(
+                    "O * busca os {total} campos de {table} para o cursor {cursor}, e a regra \
+                     {used}."
+                ),
+            )
+        }
         CheckKind::ReturnedColumnNotInSelect => (
             "SEN067",
             format!(
@@ -478,6 +508,21 @@ mod tests {
                 "O campo B não existe na tabela A (Campo \"B\" inexistente na tabela/view \"A\")."
                     .to_owned()
             )
+        );
+        assert_eq!(
+            message(CheckKind::CursorColumnUnused, "A.B", "c"),
+            (
+                "SEN076",
+                "A regra não lê o campo A.B que o SELECT do cursor c busca.".to_owned()
+            )
+        );
+        assert_eq!(
+            message(CheckKind::CursorStarUnused, "A", "C|T|35|X, Y").1,
+            "O * busca os 35 campos de T para o cursor C, e a regra só lê X, Y."
+        );
+        assert_eq!(
+            message(CheckKind::CursorStarUnused, "A", "C|T|35|").1,
+            "O * busca os 35 campos de T para o cursor C, e a regra não lê nenhum."
         );
         assert_eq!(
             message(CheckKind::CursorUnknownField, "C", "T.C").1,

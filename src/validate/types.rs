@@ -619,6 +619,76 @@ mod tests {
     }
 
     #[test]
+    fn colunas_do_cursor_que_a_regra_nao_le() {
+        let regra = |sql: &str, uso: &str| {
+            format!(
+                "definir cursor c; definir numero n; definir alfa a;\nc.SQL \"{sql}\";\n\
+                 c.AbrirCursor();\n{uso}\nc.FecharCursor();"
+            )
+        };
+        let sem_uso = |text: &str, context| -> Vec<(CheckKind, std::string::String)> {
+            let tree = crate::parse(text).unwrap();
+            let symbols = crate::symbols::Symbols::build(&tree, text);
+            let mut inherited = crate::form::Inherited::default();
+            inherited.dictionaries = dicionarios();
+            crate::validate::validate(&tree, &symbols, text, context, &inherited)
+                .into_iter()
+                .filter(|c| matches!(c.kind, CursorColumnUnused | CursorStarUnused))
+                .map(|c| (c.kind, text[c.range].to_owned()))
+                .collect()
+        };
+        let rule = crate::builtins::Context::Rule;
+        let checks = |sql: &str, uso: &str| sem_uso(&regra(sql, uso), rule);
+        let um = |kind, text: &str| vec![(kind, text.to_owned())];
+
+        let duas = "SELECT CodEmp, E070EMP.NomEmp FROM E070EMP";
+        assert_eq!(
+            checks(duas, "n = c.CodEmp;"),
+            um(CursorColumnUnused, "E070EMP.NomEmp")
+        );
+        assert!(checks(duas, "n = c.codemp; a = c.NOMEMP;").is_empty());
+        // O nome do campo num texto conta como leitura.
+        assert!(checks(duas, "n = c.CodEmp; a = \"usa c.NomEmp\";").is_empty());
+        // O campo do ORDER BY fica, porque com o Senior SQL 2 ele tem que estar no SELECT.
+        for ordem in ["NomEmp", "E070EMP.NOMEMP DESC, CodEmp"] {
+            let sql = format!("{duas} ORDER BY {ordem}");
+            assert!(checks(&sql, "n = c.CodEmp;").is_empty(), "{sql}");
+        }
+        assert_eq!(
+            checks(&format!("{duas} ORDER BY NomEmpresa"), "n = c.CodEmp;"),
+            um(CursorColumnUnused, "E070EMP.NomEmp")
+        );
+        // Sem nenhuma leitura, a primeira coluna fica, porque o SELECT precisa de uma.
+        let so_achou = "se (c.Achou) { n = 1; }";
+        assert!(checks("SELECT CodEmp FROM E070EMP", so_achou).is_empty());
+        assert_eq!(
+            checks(duas, so_achou),
+            um(CursorColumnUnused, "E070EMP.NomEmp")
+        );
+        // O * conta os campos da tabela no dicionário.
+        let tudo = "SELECT * FROM E070EMP";
+        assert_eq!(checks(tudo, "n = c.CodEmp;"), um(CursorStarUnused, "*"));
+        assert_eq!(checks(tudo, so_achou), um(CursorStarUnused, "*"));
+        assert!(checks(tudo, "n = c.CodEmp; a = c.NomEmp;").is_empty());
+        assert!(checks("SELECT * FROM E999XXX", "n = c.CodEmp;").is_empty());
+        // A coluna com apelido não vira campo do cursor e fica de fora.
+        assert!(
+            checks(
+                "SELECT CodEmp, E070EMP.NomEmp Nome FROM E070EMP",
+                "n = c.CodEmp;"
+            )
+            .is_empty()
+        );
+        // Na tela e no relatório outra regra pode ler o cursor.
+        for context in [
+            crate::builtins::Context::Sgi,
+            crate::builtins::Context::Report,
+        ] {
+            assert!(sem_uso(&regra(duas, "n = c.CodEmp;"), context).is_empty());
+        }
+    }
+
+    #[test]
     fn campo_de_tabela_pelo_dicionario() {
         let ok = com_defs("aTxt = e070emp.NOMEMP; n = E070EMP.CodEmp + 1;");
         assert!(checks_com_dicionario(&ok).is_empty());
