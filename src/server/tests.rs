@@ -1691,6 +1691,93 @@ fn contagem_de_referencias_das_funcoes() {
 }
 
 #[test]
+fn lentes_contam_os_usos_nas_regras_seguintes_do_formulario() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-lentes-{}", std::process::id()));
+    let form = base.join("Formulários SGI/interface/F1");
+    std::fs::create_dir_all(form.join("actions/A1")).unwrap();
+    std::fs::create_dir_all(form.join("actions/A2")).unwrap();
+    let root = form.join("rule.txt");
+    let text = "Definir Funcao Soma(Numero A);\n\
+                Definir Funcao Outra();\n\
+                Soma(1);\n\
+                funcao Soma(Numero A); { A = 1; }\n\
+                funcao Outra(); { }";
+    std::fs::write(&root, text).unwrap();
+    let a1 = form.join("actions/A1/rule.txt");
+    // O `x.Soma` é campo, e a `Outra` da segunda ação é a função que ela mesma define, então não
+    // contam.
+    std::fs::write(&a1, "Soma(2);\nsoma(3);\nx.Soma = 1;").unwrap();
+    std::fs::write(
+        form.join("actions/A2/rule.txt"),
+        "definir funcao Outra();\nOutra();\nSoma(4);",
+    )
+    .unwrap();
+    let uri = crate::form::uri_from_path(&root);
+
+    let (mut editor, _) = Editor::start(None);
+    editor.open(&uri, 1, text);
+    editor.diagnostics();
+    let lenses = |editor: &mut Editor| -> Vec<(u32, String, Vec<String>)> {
+        let response = editor.request(
+            lsp_types::request::CodeLensRequest::METHOD,
+            json!({ "textDocument": { "uri": uri } }),
+        );
+        let lenses: Vec<lsp_types::CodeLens> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        lenses
+            .into_iter()
+            .map(|l| {
+                let command = l.command.unwrap();
+                let locations: Vec<lsp_types::Location> =
+                    serde_json::from_value(command.arguments.unwrap()[2].clone()).unwrap();
+                let places = locations
+                    .iter()
+                    .map(|l| {
+                        let file = l.uri.as_str().rsplit('/').nth(1).unwrap().to_owned();
+                        format!("{file}:{}", l.range.start.line)
+                    })
+                    .collect();
+                (l.range.start.line, command.title, places)
+            })
+            .collect()
+    };
+    // As chamadas do arquivo vêm primeiro, e depois as das regras seguintes, na ordem delas.
+    assert_eq!(
+        lenses(&mut editor),
+        [
+            (
+                3,
+                "4 referências".to_owned(),
+                vec![
+                    "F1:2".to_owned(),
+                    "A1:0".into(),
+                    "A1:1".into(),
+                    "A2:2".into()
+                ]
+            ),
+            (4, "0 referências".to_owned(), vec![]),
+        ]
+    );
+
+    // A regra seguinte mudou no disco, e a lente acompanha.
+    std::thread::sleep(Duration::from_millis(30));
+    std::fs::write(&a1, "Outra();").unwrap();
+    assert_eq!(
+        lenses(&mut editor),
+        [
+            (
+                3,
+                "2 referências".to_owned(),
+                vec!["F1:2".to_owned(), "A2:2".into()]
+            ),
+            (4, "1 referência".to_owned(), vec!["A1:0".to_owned()]),
+        ]
+    );
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
 fn ir_para_a_regra_da_porta_do_web_service() {
     let base = std::env::temp_dir().join(format!("senior-lsp-ws-{}", std::process::id()));
     let porta = base.join("Web Services/interno/com.empresa.vendas/Calcular");

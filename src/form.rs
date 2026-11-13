@@ -351,6 +351,8 @@ struct Form {
     /// Definições juntadas para a regra em cada posição da ordem. Esvazia quando qualquer coisa do
     /// formulário muda.
     merged: HashMap<usize, Arc<Inherited>>,
+    /// Usos de nomes de fora em cada regra já lida para isso, com a data e o tamanho do arquivo.
+    uses: HashMap<PathBuf, (Stamp, Option<Arc<RuleUses>>)>,
 }
 
 /// Quantos formulários ficam guardados. Passando disso o cache recomeça vazio.
@@ -376,8 +378,11 @@ fn with_form<R>(root: &Path, f: impl FnOnce(&mut Form) -> R) -> R {
             form.dictionaries = dictionaries;
             form.merged.clear();
             form.loaded = true;
-            let Form { rules, order, .. } = form;
+            let Form {
+                rules, uses, order, ..
+            } = form;
             rules.retain(|path, _| order.contains(path));
+            uses.retain(|path, _| order.contains(path));
         }
         f(form)
     })
@@ -418,6 +423,103 @@ impl Form {
         self.merged.insert(before, inherited.clone());
         inherited
     }
+}
+
+impl Form {
+    /// Usos de nomes de fora nas regras a partir da posição `from`, na ordem de compilação.
+    /// `skip` fica sem os usos, e a regra que não pôde ser lida também.
+    fn uses_from(
+        &mut self,
+        from: usize,
+        skip: Option<&Path>,
+    ) -> Vec<(PathBuf, Option<Arc<RuleUses>>)> {
+        let mut out = Vec::new();
+        for path in &self.order[from..] {
+            if skip == Some(path.as_path()) {
+                out.push((path.clone(), None));
+                continue;
+            }
+            let now = stamp(path);
+            let uses = match self.uses.get(path) {
+                Some((read, uses)) if *read == now => uses.clone(),
+                _ => {
+                    let uses = fs::read(path)
+                        .ok()
+                        .and_then(|b| crate::cp1252::decode(&b))
+                        .map(|text| Arc::new(RuleUses::of(Arc::from(text))));
+                    self.uses.insert(path.clone(), (now, uses.clone()));
+                    uses
+                }
+            };
+            out.push((path.clone(), uses));
+        }
+        out
+    }
+}
+
+/// Usos, numa regra, dos nomes que ela não define, que vêm de outra regra do formulário. Ficam
+/// de fora o campo depois de ponto e o nome que aponta para uma definição da própria regra.
+#[derive(Debug)]
+pub struct RuleUses {
+    pub text: Arc<str>,
+    pub index: crate::line_index::LineIndex,
+    /// Trechos de cada nome, em ordem de texto, pelo nome em maiúsculas.
+    foreign: HashMap<String, Vec<TextRange>>,
+}
+
+impl RuleUses {
+    fn of(text: Arc<str>) -> RuleUses {
+        let mut foreign: HashMap<String, Vec<TextRange>> = HashMap::new();
+        if let Ok(tree) = crate::parse(&text) {
+            let symbols = Symbols::build(&tree, &text);
+            let mut stack = vec![tree.root()];
+            while let Some(node) = stack.pop() {
+                stack.extend(tree.children(node));
+                if tree.kind(node) != SyntaxKind::NameRef {
+                    continue;
+                }
+                let range = tree.text_range(node);
+                let member = tree.parent(node).is_some_and(|p| {
+                    tree.kind(p) == SyntaxKind::FieldExpr && tree.children(p).next() != Some(node)
+                });
+                if !member && symbols.reference_at(range).is_none() {
+                    foreign
+                        .entry(text[range].to_ascii_uppercase())
+                        .or_default()
+                        .push(range);
+                }
+            }
+        }
+        for ranges in foreign.values_mut() {
+            ranges.sort_by_key(|r| r.start());
+        }
+        RuleUses {
+            index: crate::line_index::LineIndex::new(&text),
+            text,
+            foreign,
+        }
+    }
+
+    /// Usos de `name`, sem diferença de caixa, em ordem de texto.
+    pub fn of_name(&self, name: &str) -> &[TextRange] {
+        self.foreign
+            .get(&name.to_ascii_uppercase())
+            .map_or(&[], Vec::as_slice)
+    }
+}
+
+/// Usos de nomes de fora em cada regra que vem depois de `rule` no formulário, na ordem de
+/// compilação. Vazio se `rule` não está num formulário SGI. `skip` vem sem os usos, para a regra
+/// aberta no editor, que vale pelo texto dele. As outras valem como estão no disco, e o que foi
+/// lido de cada uma fica guardado enquanto o arquivo não muda.
+pub fn following_uses(rule: &Path, skip: Option<&Path>) -> Vec<(PathBuf, Option<Arc<RuleUses>>)> {
+    let Some(root) = form_dir(rule) else {
+        return Vec::new();
+    };
+    with_form(&root, |form| match position(&form.order, rule) {
+        Some(i) => form.uses_from(i + 1, skip),
+        None => Vec::new(),
+    })
 }
 
 /// Funções e variáveis que valem para `rule` num formulário SGI, as das regras que vêm antes dela
@@ -880,6 +982,50 @@ mod tests {
         // A regra da raiz não herda regra nenhuma, só os campos.
         let root = inherited_functions(&form.join("rule.txt"));
         assert!(!root.contains("Dois") && root.variable("T1_Campo").is_some());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn usos_nas_regras_seguintes() {
+        let base = std::env::temp_dir().join(format!("senior-lsp-usos-{}", std::process::id()));
+        let form = base.join("Formulários SGI/interface/F1");
+        fs::create_dir_all(form.join("actions/A1")).unwrap();
+        fs::create_dir_all(form.join("actions/A2")).unwrap();
+        let root = form.join("rule.txt");
+        fs::write(&root, "definir funcao F();").unwrap();
+        let a1 = form.join("actions/A1/rule.txt");
+        let a2 = form.join("actions/A2/rule.txt");
+        fs::write(
+            &a1,
+            "F();\nx = f + cur.F;\ndefinir numero Local;\nLocal = 1;",
+        )
+        .unwrap();
+        fs::write(&a2, "F();").unwrap();
+
+        let following = following_uses(&root, Some(&a2));
+        assert_eq!(following.len(), 2);
+        let (path, uses) = &following[0];
+        let uses = uses.as_ref().unwrap();
+        assert_eq!(path, &a1);
+        // O campo depois do ponto e o nome definido na própria regra ficam de fora.
+        let starts: Vec<u32> = uses.of_name("F").iter().map(|r| r.start().into()).collect();
+        assert_eq!(starts, [0, 9]);
+        assert_eq!(uses.of_name("f"), uses.of_name("F"));
+        assert!(uses.of_name("Local").is_empty() && uses.of_name("cur").len() == 1);
+        // O resultado é o mesmo de procurar um nome por vez.
+        assert_eq!(uses.of_name("F"), super::uses(&uses.text, "F", false));
+        // A regra pulada vem sem os usos, e a de fora de formulário não tem regras seguintes.
+        assert!(following[1].0 == a2 && following[1].1.is_none());
+        assert!(following_uses(&base.join("regras/R/Rule.txt"), None).is_empty());
+
+        // Sem mudança no disco, é o mesmo resultado guardado. Com mudança, é lido de novo.
+        let again = following_uses(&root, None);
+        assert!(Arc::ptr_eq(uses, again[0].1.as_ref().unwrap()));
+        assert_eq!(again[1].1.as_ref().unwrap().of_name("F").len(), 1);
+        tick();
+        fs::write(&a1, "x = 1;").unwrap();
+        let changed = following_uses(&root, None);
+        assert!(changed[0].1.as_ref().unwrap().of_name("F").is_empty());
         fs::remove_dir_all(&base).unwrap();
     }
 

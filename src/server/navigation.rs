@@ -7,7 +7,6 @@ use lsp_types::{
 use text_size::{TextRange, TextSize};
 
 use super::documents::Document;
-use std::fs;
 use std::path::Path;
 
 use crate::builtins;
@@ -122,21 +121,47 @@ impl Context<'_> {
     }
 
     /// Usos de `name` nas regras que vêm depois de `rule` no formulário que não o definem de novo. A
-    /// regra aberta no editor usa o texto do editor, e as outras são lidas do disco.
+    /// regra aberta no editor usa o texto do editor, e as outras valem como estão no disco.
     fn uses_after(&self, rule: &Path, name: &str) -> Vec<Location> {
         let current = crate::form::path_from_uri(self.uri.as_str());
+        let following = crate::form::following_uses(rule, current.as_deref());
+        self.uses_in(&following, name)
+    }
+
+    /// Usos de `name` nas regras de `following`, que vêm de [`crate::form::following_uses`].
+    pub(super) fn uses_in(
+        &self,
+        following: &[(
+            std::path::PathBuf,
+            Option<std::sync::Arc<crate::form::RuleUses>>,
+        )],
+        name: &str,
+    ) -> Vec<Location> {
+        let current = crate::form::path_from_uri(self.uri.as_str());
         let mut out = Vec::new();
-        for path in crate::form::following_rules(rule) {
+        for (path, uses) in following {
             if current.as_deref() == Some(path.as_path()) {
                 let ranges = crate::form::uses(&self.doc.text, name, false);
                 out.extend(ranges.into_iter().map(|r| self.location(r)));
                 continue;
             }
-            let Some(text) = fs::read(&path).ok().and_then(|b| crate::cp1252::decode(&b)) else {
+            let Some(uses) = uses else {
                 continue;
             };
-            for r in crate::form::uses(&text, name, false) {
-                out.extend(self.location_in(&path, &text, r));
+            let ranges = uses.of_name(name);
+            if ranges.is_empty() {
+                continue;
+            }
+            let Ok(uri) = crate::form::uri_from_path(path).parse::<Uri>() else {
+                continue;
+            };
+            for &range in ranges {
+                let p = |offset| {
+                    let lc = uses.index.line_col(&uses.text, offset, self.encoding);
+                    Position::new(lc.line, lc.col)
+                };
+                let range = Range::new(p(range.start()), p(range.end()));
+                out.push(Location::new(uri.clone(), range));
             }
         }
         out
