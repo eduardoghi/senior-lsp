@@ -430,6 +430,7 @@ dependencies = [
  "lsp-types",
  "memchr",
  "rustc-hash",
+ "serde",
  "serde_json",
  "sqlparser",
  "text-size",

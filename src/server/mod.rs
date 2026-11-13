@@ -20,6 +20,7 @@ mod lens;
 mod links;
 mod members;
 mod navigation;
+mod output;
 mod quickfix;
 mod related;
 mod selection;
@@ -35,7 +36,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
+use lsp_server::{Connection, ErrorCode, Message, Notification, Request};
 use lsp_types::notification::{
     DidChangeConfiguration, DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
     Notification as LspNotification, PublishDiagnostics,
@@ -59,6 +60,7 @@ use lsp_types::{
 use crate::builtins::Context;
 use crate::line_index::{ColumnEncoding, LineIndex};
 use documents::{Documents, is_report, is_report_rule, is_rule};
+use output::{Json, Output};
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -66,8 +68,22 @@ pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 /// customização no CBDS, sem esperar a conferência periódica.
 const RELOAD_DICTIONARY: &str = "senior-lsp.recarregarDicionario";
 
-/// Atende o editor pela conexão até o `shutdown` e o `exit`.
+/// Atende o editor pela conexão até o `shutdown` e o `exit`. As mensagens do servidor vão pelo
+/// canal da conexão, que é como os testes conversam com ele.
 pub fn run(connection: Connection) -> Result<()> {
+    serve(&connection, Output::Channel(&connection))
+}
+
+/// Atende o editor pelo stdin e pelo stdout do processo.
+pub fn run_stdio() -> Result<()> {
+    let (connection, threads) = output::stdio();
+    let result = serve(&connection, Output::Stdout);
+    // Sem a conexão, a thread de escrita termina.
+    drop(connection);
+    result.and(threads.join())
+}
+
+fn serve(connection: &Connection, out: Output) -> Result<()> {
     let (id, params) = connection.initialize_start()?;
     // Só os campos de que o servidor precisa são lidos, e um que falte ou venha fora do formato
     // vale como ausente. Um cliente que manda capacidades incompletas (um `semanticTokens` sem
@@ -149,10 +165,10 @@ pub fn run(connection: Connection) -> Result<()> {
         }),
     };
     connection.initialize_finish(id, serde_json::to_value(result)?)?;
-    log_option_warnings(&connection, params.options)?;
+    log_option_warnings(out, params.options)?;
 
     let mut server = Server {
-        connection: &connection,
+        out,
         documents: Documents::default(),
         encoding,
         default_kind,
@@ -270,19 +286,13 @@ fn option_warnings(options: Options) -> Vec<String> {
 /// Manda os avisos das opções para o log do editor. As opções são escritas à mão na configuração
 /// do editor. Uma fora do formato é ignorada como as capacidades, mas sem aviso a pessoa não
 /// saberia por que o dicionário ou a análise da pasta não ligaram.
-fn log_option_warnings(connection: &Connection, options: Options) -> Result<()> {
+fn log_option_warnings(out: Output, options: Options) -> Result<()> {
     for message in option_warnings(options) {
         let params = lsp_types::LogMessageParams {
             typ: lsp_types::MessageType::WARNING,
             message,
         };
-        connection.sender.send(
-            Notification::new(
-                lsp_types::notification::LogMessage::METHOD.to_owned(),
-                params,
-            )
-            .into(),
-        )?;
+        out.notify(lsp_types::notification::LogMessage::METHOD, &params)?;
     }
     Ok(())
 }
@@ -358,7 +368,7 @@ fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
 }
 
 struct Server<'a> {
-    connection: &'a Connection,
+    out: Output<'a>,
     documents: Documents,
     encoding: ColumnEncoding,
     default_kind: Context,
@@ -384,14 +394,8 @@ impl Server<'_> {
     fn request(&mut self, request: Request) -> Result<()> {
         let id = request.id.clone();
         let outcome = catch_unwind(AssertUnwindSafe(|| self.answer(request)));
-        let response = match outcome {
-            // O `Response::new_ok` passa o resultado por `serde_json::to_value`, que copia de novo
-            // uma árvore que já é JSON. Nos pedidos grandes, como os símbolos do documento, a
-            // cópia pesa.
-            Ok(Ok(result)) => Response {
-                id,
-                response_result: Ok(result),
-            },
+        match outcome {
+            Ok(Ok(result)) => self.out.respond(id, result),
             Ok(Err(error)) => {
                 let (code, message) = match error.downcast::<Failure>() {
                     Ok(failure) => (failure.code, failure.message),
@@ -402,26 +406,25 @@ impl Server<'_> {
                     ),
                     Err(error) => (ErrorCode::InternalError, error.to_string()),
                 };
-                Response::new_err(id, code as i32, message)
+                self.out.fail(id, code, message)
             }
-            Err(panic) => Response::new_err(
+            Err(panic) => self.out.fail(
                 id,
-                ErrorCode::InternalError as i32,
+                ErrorCode::InternalError,
                 format!("erro interno do senior-lsp: {}", panic_message(&*panic)),
             ),
-        };
-        self.connection.sender.send(response.into())?;
-        Ok(())
+        }
     }
 
     /// Resultado do pedido, ou o erro que vai na resposta.
-    fn answer(&mut self, request: Request) -> Result<serde_json::Value> {
+    fn answer(&mut self, request: Request) -> Result<Json> {
         match request.method.as_str() {
             GotoDefinition::METHOD => {
                 let params: GotoDefinitionParams = serde_json::from_value(request.params)?;
                 let at = params.text_document_position_params;
                 self.with(&at.text_document.uri, Some(at.position), |c| {
-                    serde_json::to_value(GotoDefinitionResponse::Array(c.definition(at.position)))
+                    self.out
+                        .json(&GotoDefinitionResponse::Array(c.definition(at.position)))
                 })
             }
             GotoImplementation::METHOD => {
@@ -429,7 +432,7 @@ impl Server<'_> {
                     serde_json::from_value(request.params)?;
                 let at = params.text_document_position_params;
                 self.with(&at.text_document.uri, Some(at.position), |c| {
-                    serde_json::to_value(GotoDefinitionResponse::Array(
+                    self.out.json(&GotoDefinitionResponse::Array(
                         c.implementation(at.position),
                     ))
                 })
@@ -439,21 +442,21 @@ impl Server<'_> {
                 let at = params.text_document_position;
                 let declaration = params.context.include_declaration;
                 self.with(&at.text_document.uri, Some(at.position), |c| {
-                    serde_json::to_value(c.references(at.position, declaration))
+                    self.out.json(&c.references(at.position, declaration))
                 })
             }
             HoverRequest::METHOD => {
                 let params: HoverParams = serde_json::from_value(request.params)?;
                 let at = params.text_document_position_params;
                 self.with(&at.text_document.uri, Some(at.position), |c| {
-                    serde_json::to_value(c.hover(at.position))
+                    self.out.json(&c.hover(at.position))
                 })
             }
             Completion::METHOD => {
                 let params: lsp_types::CompletionParams = serde_json::from_value(request.params)?;
                 let at = params.text_document_position;
                 self.with(&at.text_document.uri, Some(at.position), |c| {
-                    serde_json::to_value(lsp_types::CompletionResponse::Array(
+                    self.out.json(&lsp_types::CompletionResponse::Array(
                         c.completion(at.position),
                     ))
                 })
@@ -463,7 +466,8 @@ impl Server<'_> {
                     serde_json::from_value(request.params)?;
                 self.with(&params.text_document.uri, Some(params.position), |c| {
                     let range = c.prepare_rename(params.position);
-                    serde_json::to_value(range.map(lsp_types::PrepareRenameResponse::Range))
+                    self.out
+                        .json(&range.map(lsp_types::PrepareRenameResponse::Range))
                 })
             }
             Rename::METHOD => {
@@ -472,10 +476,10 @@ impl Server<'_> {
                 let mut failure = None;
                 let result = self.with(&at.text_document.uri, Some(at.position), |c| {
                     match c.rename(at.position, &params.new_name) {
-                        Ok(edit) => serde_json::to_value(edit),
+                        Ok(edit) => self.out.json(&edit),
                         Err(message) => {
                             failure = Some(message);
-                            Ok(serde_json::Value::Null)
+                            Ok(self.out.null())
                         }
                     }
                 });
@@ -497,12 +501,11 @@ impl Server<'_> {
                                 self.report_context(uri, report, rule).document_symbols()
                             })
                             .collect();
-                        Ok(serde_json::to_value(DocumentSymbolResponse::Nested(
-                            symbols,
-                        ))?)
+                        Ok(self.out.json(&DocumentSymbolResponse::Nested(symbols))?)
                     }
                     None => self.with(uri, None, |c| {
-                        serde_json::to_value(DocumentSymbolResponse::Nested(c.document_symbols()))
+                        self.out
+                            .json(&DocumentSymbolResponse::Nested(c.document_symbols()))
                     }),
                 }
             }
@@ -510,16 +513,16 @@ impl Server<'_> {
                 let params: lsp_types::WorkspaceSymbolParams =
                     serde_json::from_value(request.params)?;
                 let symbols = self.workspace_symbols(&params.query);
-                Ok(serde_json::to_value(
-                    lsp_types::WorkspaceSymbolResponse::Flat(symbols),
-                )?)
+                Ok(self
+                    .out
+                    .json(&lsp_types::WorkspaceSymbolResponse::Flat(symbols))?)
             }
             CallHierarchyPrepare::METHOD => {
                 let params: lsp_types::CallHierarchyPrepareParams =
                     serde_json::from_value(request.params)?;
                 let at = params.text_document_position_params;
                 self.with(&at.text_document.uri, Some(at.position), |c| {
-                    serde_json::to_value(c.prepare_call_hierarchy(at.position))
+                    self.out.json(&c.prepare_call_hierarchy(at.position))
                 })
             }
             CallHierarchyIncomingCalls::METHOD => {
@@ -527,7 +530,7 @@ impl Server<'_> {
                     serde_json::from_value(request.params)?;
                 let item = params.item;
                 self.with(&item.uri.clone(), Some(item.selection_range.start), |c| {
-                    serde_json::to_value(c.incoming_calls(&item))
+                    self.out.json(&c.incoming_calls(&item))
                 })
             }
             CallHierarchyOutgoingCalls::METHOD => {
@@ -535,7 +538,7 @@ impl Server<'_> {
                     serde_json::from_value(request.params)?;
                 let item = params.item;
                 self.with(&item.uri.clone(), Some(item.selection_range.start), |c| {
-                    serde_json::to_value(c.outgoing_calls(&item))
+                    self.out.json(&c.outgoing_calls(&item))
                 })
             }
             CodeLensRequest::METHOD => {
@@ -549,17 +552,17 @@ impl Server<'_> {
                             encoding: self.encoding,
                             embedding: None,
                         };
-                        serde_json::to_value(context.code_lenses())?
+                        self.out.json(&context.code_lenses())?
                     }
-                    None => serde_json::Value::Null,
+                    None => self.out.null(),
                 })
             }
             DocumentLinkRequest::METHOD => {
                 let params: lsp_types::DocumentLinkParams = serde_json::from_value(request.params)?;
                 let uri = &params.text_document.uri;
                 Ok(match self.documents.report(uri) {
-                    Some(report) => serde_json::to_value(links::links(report, uri, self.encoding))?,
-                    None => serde_json::Value::Null,
+                    Some(report) => self.out.json(&links::links(report, uri, self.encoding))?,
+                    None => self.out.null(),
                 })
             }
             SelectionRangeRequest::METHOD => {
@@ -574,9 +577,10 @@ impl Server<'_> {
                             encoding: self.encoding,
                             embedding: None,
                         };
-                        serde_json::to_value(context.selection_ranges(&params.positions))?
+                        self.out
+                            .json(&context.selection_ranges(&params.positions))?
                     }
-                    None => serde_json::Value::Null,
+                    None => self.out.null(),
                 })
             }
             InlayHintRequest::METHOD => {
@@ -590,17 +594,17 @@ impl Server<'_> {
                             encoding: self.encoding,
                             embedding: None,
                         };
-                        serde_json::to_value(context.inlay_hints(params.range))?
+                        self.out.json(&context.inlay_hints(params.range))?
                     }
-                    None => serde_json::Value::Null,
+                    None => self.out.null(),
                 })
             }
             FoldingRangeRequest::METHOD => {
                 let params: lsp_types::FoldingRangeParams = serde_json::from_value(request.params)?;
                 // Nos JSON de modelo, as linhas da regra não são as linhas do arquivo.
                 Ok(match self.documents.get(&params.text_document.uri) {
-                    Some(doc) => serde_json::to_value(folding::ranges(doc, self.encoding))?,
-                    None => serde_json::Value::Null,
+                    Some(doc) => self.out.json(&folding::ranges(doc, self.encoding))?,
+                    None => self.out.null(),
                 })
             }
             DocumentHighlightRequest::METHOD => {
@@ -608,7 +612,7 @@ impl Server<'_> {
                     serde_json::from_value(request.params)?;
                 let at = params.text_document_position_params;
                 self.with(&at.text_document.uri, Some(at.position), |c| {
-                    serde_json::to_value(c.document_highlight(at.position))
+                    self.out.json(&c.document_highlight(at.position))
                 })
             }
             SemanticTokensFullRequest::METHOD => {
@@ -617,8 +621,8 @@ impl Server<'_> {
                 // Nos JSON de modelo de relatório não há destaque, porque a posição de cada regra
                 // dentro do JSON mudaria a conta das colunas.
                 Ok(match self.documents.get(&params.text_document.uri) {
-                    Some(doc) => serde_json::to_value(semantic::tokens(doc, self.encoding))?,
-                    None => serde_json::Value::Null,
+                    Some(doc) => self.out.json(&semantic::tokens(doc, self.encoding))?,
+                    None => self.out.null(),
                 })
             }
             SignatureHelpRequest::METHOD => {
@@ -626,7 +630,7 @@ impl Server<'_> {
                     serde_json::from_value(request.params)?;
                 let at = params.text_document_position_params;
                 self.with(&at.text_document.uri, Some(at.position), |c| {
-                    serde_json::to_value(c.signature_help(at.position))
+                    self.out.json(&c.signature_help(at.position))
                 })
             }
             CodeActionRequest::METHOD => {
@@ -666,7 +670,7 @@ impl Server<'_> {
                     );
                 }
                 actions.extend(self.kind_actions(uri));
-                Ok(serde_json::to_value(actions)?)
+                Ok(self.out.json(&actions)?)
             }
             ExecuteCommand::METHOD => {
                 let params: lsp_types::ExecuteCommandParams =
@@ -674,16 +678,16 @@ impl Server<'_> {
                 if let Err(message) = self.execute(&params) {
                     return Err(Failure::boxed(ErrorCode::InvalidParams, message));
                 }
-                Ok(serde_json::Value::Null)
+                Ok(self.out.null())
             }
             kind::REQUEST => {
                 let uri: Uri = serde_json::from_value(request.params["uri"].clone())?;
                 Ok(match self.documents.get(&uri) {
-                    Some(doc) => serde_json::json!({
+                    Some(doc) => self.out.json(&serde_json::json!({
                         "tipo": kind::name(doc.context),
                         "fixo": kind::fixed(uri.as_str()),
-                    }),
-                    None => serde_json::Value::Null,
+                    }))?,
+                    None => self.out.null(),
                 })
             }
             #[cfg(test)]
@@ -702,8 +706,8 @@ impl Server<'_> {
         &self,
         uri: &Uri,
         position: Option<lsp_types::Position>,
-        f: impl FnOnce(&navigation::Context) -> serde_json::Result<serde_json::Value>,
-    ) -> Result<serde_json::Value> {
+        f: impl FnOnce(&navigation::Context) -> serde_json::Result<Json>,
+    ) -> Result<Json> {
         if let Some(doc) = self.documents.get(uri) {
             let context = navigation::Context {
                 doc,
@@ -714,7 +718,7 @@ impl Server<'_> {
             return Ok(f(&context)?);
         }
         let (Some(report), Some(position)) = (self.documents.report(uri), position) else {
-            return Ok(serde_json::Value::Null);
+            return Ok(self.out.null());
         };
         let lc = crate::line_index::LineCol {
             line: position.line,
@@ -723,7 +727,7 @@ impl Server<'_> {
         let offset = report.index().offset(&report.json, lc, self.encoding);
         match report.rule_at(offset) {
             Some(rule) => Ok(f(&self.report_context(uri, report, rule))?),
-            None => Ok(serde_json::Value::Null),
+            None => Ok(self.out.null()),
         }
     }
 
@@ -1029,12 +1033,10 @@ impl Server<'_> {
                 typ: lsp_types::MessageType::WARNING,
                 message,
             };
-            let notification = Notification::new(
-                lsp_types::notification::ShowMessage::METHOD.to_owned(),
-                params,
-            );
-            // Sem conexão o servidor já está terminando, e o aviso não faz falta.
-            let _ = self.connection.sender.send(notification.into());
+            // Sem saída o servidor já está terminando, e o aviso não faz falta.
+            let _ = self
+                .out
+                .notify(lsp_types::notification::ShowMessage::METHOD, &params);
         }
         levels
     }
@@ -1044,7 +1046,7 @@ impl Server<'_> {
     /// novo os documentos abertos e a pasta, o tipo padrão só os abertos, e a análise da pasta roda
     /// ao ligar e limpa os diagnósticos dos arquivos fechados ao desligar.
     fn configure(&mut self, options: Options) -> Result<()> {
-        log_option_warnings(self.connection, options)?;
+        log_option_warnings(self.out, options)?;
         let mut dictionaries = false;
         for (test, option) in [(false, TBS_PRODUCTION), (true, TBS_TEST)] {
             if options.get(option.0).is_some() {
@@ -1134,9 +1136,7 @@ impl Server<'_> {
             diagnostics,
             version,
         };
-        let notification = Notification::new(PublishDiagnostics::METHOD.to_owned(), params);
-        self.connection.sender.send(notification.into())?;
-        Ok(())
+        self.out.notify(PublishDiagnostics::METHOD, &params)
     }
 }
 

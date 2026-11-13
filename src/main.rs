@@ -3,21 +3,13 @@
 
 use std::process::ExitCode;
 
-use lsp_server::Connection;
-
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.first().is_some_and(|a| a == "tbs") {
         return tbs(&args[1..]);
     }
     eprintln!("senior-lsp {} iniciado", env!("CARGO_PKG_VERSION"));
-    let (connection, io_threads) = Connection::stdio();
-    let result = senior_lsp::server::run(connection);
-    let joined = io_threads.join();
-    match result
-        .map_err(|e| e.to_string())
-        .and(joined.map_err(|e| e.to_string()))
-    {
+    match senior_lsp::server::run_stdio() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("senior-lsp: {e}");
