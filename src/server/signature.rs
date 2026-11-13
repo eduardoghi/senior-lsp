@@ -73,9 +73,11 @@ pub(crate) fn open_call(text: &str, offset: TextSize) -> Option<OpenCall<'_>> {
 /// Nome logo antes do parêntese em `paren`, pulando espaços. Vazio quando não há.
 fn name_before(text: &str, paren: usize) -> &str {
     let head = text[..paren].trim_end();
+    // O caractere antes do nome pode ter mais de um byte, como `ç`.
     let start = head
-        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
-        .map_or(0, |p| p + 1);
+        .char_indices()
+        .rfind(|&(_, c)| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+        .map_or(0, |(p, c)| p + c.len_utf8());
     let name = &head[start..];
     if name.starts_with(|c: char| c.is_ascii_digit()) {
         ""
@@ -175,6 +177,14 @@ mod tests {
         assert_eq!(call("F(a;\nx = |"), None);
         assert_eq!(call("F(a);|"), None);
         assert_eq!(call("x = (1 + |"), None);
+    }
+
+    #[test]
+    fn caractere_de_mais_de_um_byte_antes_do_nome() {
+        assert_eq!(call("çF(1, |"), Some(("F".into(), 1)));
+        assert_eq!(call("x = é(|"), None);
+        assert_eq!(call("ação(1, |"), Some(("o".into(), 1)));
+        assert_eq!(call("😀F(|"), Some(("F".into(), 0)));
     }
 
     #[test]

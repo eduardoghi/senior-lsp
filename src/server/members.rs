@@ -153,9 +153,11 @@ fn last_name(head: &str) -> Option<(&str, &str)> {
         Some(h) => h[..h.rfind('[')?].trim_end(),
         None => head,
     };
+    // O caractere antes do nome pode ter mais de um byte, como `é`.
     let start = head
-        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .map_or(0, |i| i + 1);
+        .char_indices()
+        .rfind(|&(_, c)| !(c.is_ascii_alphanumeric() || c == '_'))
+        .map_or(0, |(i, c)| i + c.len_utf8());
     let base = &head[start..];
     (!base.is_empty()).then_some((&head[..start], base))
 }
@@ -299,4 +301,23 @@ fn table_fields(tree: &Tree, text: &str, table: NodeId) -> Vec<(String, Option<V
         fields.push((text[tree.text_range(name)].to_owned(), ty));
     }
     fields
+}
+
+#[cfg(test)]
+mod tests {
+    use super::last_name;
+
+    #[test]
+    fn ultimo_nome_antes_do_ponto() {
+        assert_eq!(last_name("x = cur."), Some(("x = ", "cur")));
+        assert_eq!(last_name("ws.tb[i]."), Some(("ws.", "tb")));
+        assert_eq!(last_name("x = ."), None);
+    }
+
+    #[test]
+    fn caractere_de_mais_de_um_byte_antes_do_nome() {
+        assert_eq!(last_name("écur."), Some(("é", "cur")));
+        assert_eq!(last_name("é."), None);
+        assert_eq!(last_name("😀tb[é]."), Some(("😀", "tb")));
+    }
 }
