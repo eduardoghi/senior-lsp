@@ -1,6 +1,6 @@
 {
     "name": "senior-lsp",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "description": "Servidor de linguagem para as regras LSP do ERP Senior (regras, telas SGI, web services e modelos de relatório)",
     "userConfig": {
         "tbs_producao": {
