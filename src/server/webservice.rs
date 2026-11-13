@@ -13,6 +13,7 @@ use text_size::TextSize;
 
 use super::navigation::Context;
 use crate::SyntaxKind;
+use crate::form::Watch;
 
 impl Context<'_> {
     /// Regra da porta do web service cujo nome qualificado está em `offset`.
@@ -90,6 +91,11 @@ impl Context<'_> {
 impl Context<'_> {
     /// Pasta da porta na exportação, pelo nome qualificado `provedor.serviço.porta`.
     pub(crate) fn port_dir(&self, qualified: &str) -> Option<PathBuf> {
+        self.find_port_dir(qualified, &mut Watch::default())
+    }
+
+    /// A pasta de [`Context::port_dir`], registrando em `watch` cada pasta listada na procura.
+    fn find_port_dir(&self, qualified: &str, watch: &mut Watch) -> Option<PathBuf> {
         let parts: Vec<&str> = qualified.split('.').map(str::trim).collect();
         let [provider, service @ .., port] = parts.as_slice() else {
             return None;
@@ -100,8 +106,14 @@ impl Context<'_> {
         let service = service.join(".");
         let file = crate::form::path_from_uri(self.uri.as_str())?;
         file.ancestors().skip(1).find_map(|dir| {
+            watch.add(dir);
             let root = child(dir, "Web Services")?;
-            child(&child(&child(&root, provider)?, &service)?, port)
+            watch.add(&root);
+            let provider = child(&root, provider)?;
+            watch.add(&provider);
+            let service = child(&provider, &service)?;
+            watch.add(&service);
+            child(&service, port)
         })
     }
 
@@ -129,50 +141,68 @@ impl Context<'_> {
     /// tecla. A porta guardada vale enquanto o `Port.json` tiver a mesma data e o mesmo tamanho.
     /// Uma pasta `Web Services` criada mais perto do arquivo depois da primeira leitura só é vista
     /// quando o `Port.json` guardado mudar ou o servidor reiniciar.
+    ///
+    /// A porta que não está na exportação, como a de um web service nativo do ERP, também fica
+    /// guardada, com a data de cada pasta listada na procura. Sem isso a procura inteira, até a
+    /// raiz do disco, se repetia a cada tecla e a cada pedido de ação de código.
     fn port(&self, qualified: &str) -> Option<Arc<Port>> {
         let file = crate::form::path_from_uri(self.uri.as_str())?;
         let key = (file.parent()?.to_path_buf(), qualified.to_ascii_uppercase());
-        let cached = PORTS.with_borrow(|ports| ports.get(&key).cloned());
-        if let Some(cached) = cached
-            && stamp(&cached.json) == Some(cached.stamp)
-        {
-            return Some(cached.port);
-        }
-        let dir = self.port_dir(qualified)?;
-        let json = child(&dir, "Port.json")?;
-        let stamp = stamp(&json)?;
-        let port = Arc::new(read_port(&dir)?);
-        PORTS.with_borrow_mut(|ports| {
-            ports.insert(
-                key,
-                CachedPort {
-                    json,
-                    stamp,
-                    port: port.clone(),
-                },
-            )
+        let cached = PORTS.with_borrow(|ports| match ports.get(&key) {
+            Some(Cached::Found { json, stamp, port }) if crate::form::stamp(json) == *stamp => {
+                Some(Some(port.clone()))
+            }
+            Some(Cached::Missing(watch)) if watch.unchanged() => Some(None),
+            _ => None,
         });
-        Some(port)
+        if let Some(port) = cached {
+            return port;
+        }
+        let mut watch = Watch::default();
+        let found = self.read_port(qualified, &mut watch);
+        let port = found.as_ref().map(|(_, _, port)| port.clone());
+        let entry = match found {
+            Some((json, stamp, port)) => Cached::Found { json, stamp, port },
+            None => Cached::Missing(watch),
+        };
+        PORTS.with_borrow_mut(|ports| ports.insert(key, entry));
+        port
+    }
+
+    /// Lê a porta da exportação, com o caminho e a data do `Port.json`. Registra em `watch` o que
+    /// foi listado e lido, para a porta que falta ser procurada de novo só quando algo mudar.
+    fn read_port(
+        &self,
+        qualified: &str,
+        watch: &mut Watch,
+    ) -> Option<(PathBuf, crate::form::Stamp, Arc<Port>)> {
+        let dir = self.find_port_dir(qualified, watch)?;
+        watch.add(&dir);
+        let json = child(&dir, "Port.json")?;
+        watch.add(&json);
+        let stamp @ Some(_) = crate::form::stamp(&json) else {
+            return None;
+        };
+        let port = Arc::new(parse_port(&json)?);
+        Some((json, stamp, port))
     }
 }
 
-#[derive(Clone)]
-struct CachedPort {
-    json: PathBuf,
-    stamp: (std::time::SystemTime, u64),
-    port: Arc<Port>,
+/// Resultado guardado da procura de uma porta.
+enum Cached {
+    Found {
+        json: PathBuf,
+        stamp: crate::form::Stamp,
+        port: Arc<Port>,
+    },
+    /// A porta não está na exportação ou o `Port.json` dela não pôde ser lido.
+    Missing(Watch),
 }
 
 thread_local! {
-    /// Portas já lidas, pela pasta do arquivo da regra e pelo nome qualificado em maiúsculas.
-    static PORTS: std::cell::RefCell<rustc_hash::FxHashMap<(PathBuf, String), CachedPort>> =
+    /// Portas já procuradas, pela pasta do arquivo da regra e pelo nome qualificado em maiúsculas.
+    static PORTS: std::cell::RefCell<rustc_hash::FxHashMap<(PathBuf, String), Cached>> =
         Default::default();
-}
-
-/// Data de alteração e tamanho do arquivo, para saber se ele mudou.
-fn stamp(path: &Path) -> Option<(std::time::SystemTime, u64)> {
-    let meta = std::fs::metadata(path).ok()?;
-    Some((meta.modified().ok()?, meta.len()))
 }
 
 /// Parâmetros que o ERP acrescenta a toda porta, com o tipo e a descrição que ele registra
@@ -229,8 +259,8 @@ impl PortParam {
 }
 
 /// Lê o `Port.json`, que o gerenciador grava em cp1252.
-fn read_port(dir: &Path) -> Option<Port> {
-    let bytes = std::fs::read(child(dir, "Port.json")?).ok()?;
+fn parse_port(json: &Path) -> Option<Port> {
+    let bytes = std::fs::read(json).ok()?;
     let text = match std::str::from_utf8(&bytes) {
         Ok(t) => t.to_owned(),
         Err(_) => crate::cp1252::decode(&bytes)?,

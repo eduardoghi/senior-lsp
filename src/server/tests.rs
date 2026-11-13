@@ -1959,6 +1959,69 @@ fn parametro_que_nao_esta_na_porta() {
 }
 
 #[test]
+fn web_service_fora_da_exportacao_e_visto_quando_ela_chega() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-ws-falta-{}", std::process::id()));
+    let regra = base.join("regras/R1.LSP/Rule.txt");
+    std::fs::create_dir_all(regra.parent().unwrap()).unwrap();
+    let uri = crate::form::uri_from_path(&regra);
+    let text = "Definir interno.com.empresa.vendas.Consultar ws;\n\
+                ws.CodEmp = 1;\n\
+                ws.Nada = 2;\n\
+                ws.Executar();";
+    let sen069 = |editor: &Editor| -> Vec<u32> {
+        editor
+            .diagnostics()
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(lsp_types::NumberOrString::String("SEN069".into())))
+            .map(|d| d.range.start.line)
+            .collect()
+    };
+
+    // Sem a porta na exportação nada é conferido, e a resposta fica guardada entre as análises.
+    let (editor, _) = Editor::start(None);
+    editor.open(&uri, 1, text);
+    assert!(sen069(&editor).is_empty());
+    editor.change(&uri, 2, text);
+    assert!(sen069(&editor).is_empty());
+
+    // A porta chegou na exportação, primeiro só a pasta e depois o `Port.json`.
+    let porta = base.join("Web Services/interno/com.empresa.vendas/Consultar");
+    std::thread::sleep(Duration::from_millis(30));
+    std::fs::create_dir_all(&porta).unwrap();
+    editor.change(&uri, 3, text);
+    assert!(sen069(&editor).is_empty());
+    std::thread::sleep(Duration::from_millis(30));
+    std::fs::write(
+        porta.join("Port.json"),
+        "{\"params\":[{\"name\":\"CodEmp\",\"kind\":\"pkIn\",\"type\":\"ptInteger\"}]}",
+    )
+    .unwrap();
+    editor.change(&uri, 4, text);
+    assert_eq!(sen069(&editor), [2]);
+
+    // A porta mudou, e depois saiu da exportação.
+    std::thread::sleep(Duration::from_millis(30));
+    std::fs::write(
+        porta.join("Port.json"),
+        "{\"params\":[{\"name\":\"CodEmp\",\"kind\":\"pkIn\",\"type\":\"ptInteger\"},\
+         {\"name\":\"Nada\",\"kind\":\"pkIn\",\"type\":\"ptInteger\"}]}",
+    )
+    .unwrap();
+    editor.change(&uri, 5, text);
+    assert!(sen069(&editor).is_empty());
+    std::fs::write(porta.join("Port.json"), "{\"params\":[]}").unwrap();
+    editor.change(&uri, 6, text);
+    assert_eq!(sen069(&editor), [1, 2]);
+    std::thread::sleep(Duration::from_millis(30));
+    std::fs::remove_dir_all(base.join("Web Services")).unwrap();
+    editor.change(&uri, 7, text);
+    assert!(sen069(&editor).is_empty());
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
 fn hierarquia_de_chamadas() {
     let (mut editor, _) = Editor::start(None);
     let text = "Definir Funcao A();\n\
