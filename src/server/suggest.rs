@@ -128,6 +128,16 @@ pub(super) fn suggestion(check: &Check, doc: &Document) -> Option<(text_size::Te
             let found = closest(written, defined.chain(inherited).chain(erp))?;
             (written, check.range, found.to_owned())
         }
+        // O nome solto do WHERE, do SET ou dos valores, procurado nos campos das tabelas que o
+        // comando cita nessa posição.
+        CheckKind::Sql2UnknownSymbol if !written.contains('.') => {
+            let tables = super::sql::cited_tables(text, &doc.tree, check.range.start());
+            let names = tables
+                .iter()
+                .filter_map(|table| fields(doc, table))
+                .flat_map(|fields| fields.iter().map(|f| f.name.as_str()));
+            (written, check.range, closest(written, names)?.to_owned())
+        }
         CheckKind::CursorFieldNotInSelect => {
             let columns = crate::validate::cursor_columns(
                 &doc.tree,

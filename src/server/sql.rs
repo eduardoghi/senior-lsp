@@ -504,6 +504,32 @@ impl Context<'_> {
     }
 }
 
+/// Tabelas que o SQL do literal em `offset` cita e que valem nessa posição, as do parêntese dela
+/// e as de fora dele. Vazio fora de um literal de texto.
+pub(super) fn cited_tables(text: &str, tree: &crate::Tree, offset: TextSize) -> Vec<String> {
+    let tokens = tree.tokens();
+    let (mut i, mut end) = (0, tokens.len());
+    while i < end {
+        let mid = (i + end) / 2;
+        if tokens.range(mid).end() <= offset {
+            i = mid + 1;
+        } else {
+            end = mid;
+        }
+    }
+    if i >= tokens.len() || tokens.kind(i) != SyntaxKind::String {
+        return Vec::new();
+    }
+    let literal = tokens.range(i);
+    let at = usize::from(offset.max(literal.start()) - literal.start());
+    let source = &text[literal];
+    from_tables(&mask(source))
+        .into_iter()
+        .filter(|t| t.scope.start <= at && at <= t.scope.end)
+        .map(|t| source[t.table].to_owned())
+        .collect()
+}
+
 /// Trecho do literal de texto, dado em posições dentro dele, no texto da regra.
 fn shift(literal: TextRange, inside: &Range<usize>) -> TextRange {
     let start = literal.start();
@@ -954,6 +980,11 @@ mod tests {
 
     /// Documento de teste com o dicionário `E070EMP` (`CodEmp` e `NomEmp`, chave em `CodEmp`).
     fn document(text: &str) -> crate::server::documents::Document {
+        document_with(text, None)
+    }
+
+    /// Como [`document`], com a opção de Senior SQL 2 da regra.
+    fn document_with(text: &str, senior_sql2: Option<bool>) -> crate::server::documents::Document {
         use crate::tbs::{Dictionary, Field, FieldKind, FieldType, Table};
         let field = |name: &str, description: &str, kind| Field {
             name: name.to_owned(),
@@ -983,6 +1014,7 @@ mod tests {
             })),
             test: None,
         };
+        inherited.senior_sql2 = senior_sql2;
         let tree = crate::parse(text).unwrap();
         let symbols = crate::symbols::Symbols::build(&tree, text);
         let index = crate::line_index::LineIndex::new(text);
@@ -1042,6 +1074,33 @@ mod tests {
                 ("CodEmpp", "CODEMP".to_owned()),
                 ("E070EMPP", "E070EMP".to_owned()),
                 ("IntParaAlfaa", "IntParaAlfa".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn sugere_o_campo_das_tabelas_do_comando_no_nome_solto() {
+        let doc = document_with(
+            "definir cursor c;\n\
+             c.SQL \"SELECT CodEmp FROM E070EMP E WHERE NomEnp = 'A' AND Descricao = 1 \\\n\
+             AND EXISTS (SELECT 1 FROM X WHERE CodEnp = 1)\";\n\
+             ExecSql \"UPDATE E070EMP SET NomEmp = NonEmp\";",
+            Some(true),
+        );
+        let found: Vec<(&str, String)> = doc
+            .checks()
+            .iter()
+            .filter(|c| c.kind == crate::validate::CheckKind::Sql2UnknownSymbol)
+            .filter_map(|c| crate::server::suggest::suggestion(c, &doc))
+            .map(|(range, name)| (&doc.text[range], name))
+            .collect();
+        // Vale a tabela do apelido, a de fora da subconsulta e a do UPDATE. O que não parece com
+        // nada fica sem sugestão.
+        assert_eq!(
+            found,
+            [
+                ("NomEnp", "NomEmp".to_owned()),
+                ("NonEmp", "NomEmp".to_owned())
             ]
         );
     }
