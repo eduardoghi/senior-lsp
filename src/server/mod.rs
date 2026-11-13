@@ -33,6 +33,7 @@ mod workspace_symbols;
 
 use std::collections::HashMap;
 use std::error::Error;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::notification::{
@@ -326,6 +327,36 @@ fn negotiate_encoding(params: &ClientInit) -> ColumnEncoding {
     }
 }
 
+/// Erro que vai na resposta de um pedido, como o renomear para um nome inválido.
+#[derive(Debug)]
+struct Failure {
+    code: ErrorCode,
+    message: String,
+}
+
+impl Failure {
+    fn boxed(code: ErrorCode, message: String) -> Box<dyn Error + Send + Sync> {
+        Box::new(Failure { code, message })
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for Failure {}
+
+/// Texto de um pânico, que o `panic!` guarda como `&str` ou `String`.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("pânico sem mensagem")
+}
+
 struct Server<'a> {
     connection: &'a Connection,
     documents: Documents,
@@ -348,9 +379,44 @@ struct Server<'a> {
 }
 
 impl Server<'_> {
+    /// Responde o pedido. Parâmetros fora do formato e um pânico no meio do atendimento viram
+    /// resposta de erro, e o servidor segue atendendo os outros pedidos.
     fn request(&mut self, request: Request) -> Result<()> {
         let id = request.id.clone();
-        let result = match request.method.as_str() {
+        let outcome = catch_unwind(AssertUnwindSafe(|| self.answer(request)));
+        let response = match outcome {
+            // O `Response::new_ok` passa o resultado por `serde_json::to_value`, que copia de novo
+            // uma árvore que já é JSON. Nos pedidos grandes, como os símbolos do documento, a
+            // cópia pesa.
+            Ok(Ok(result)) => Response {
+                id,
+                response_result: Ok(result),
+            },
+            Ok(Err(error)) => {
+                let (code, message) = match error.downcast::<Failure>() {
+                    Ok(failure) => (failure.code, failure.message),
+                    // Fora o `Failure`, o atendimento só falha ao ler os parâmetros do pedido.
+                    Err(error) if error.is::<serde_json::Error>() => (
+                        ErrorCode::InvalidParams,
+                        format!("parâmetros inválidos: {error}"),
+                    ),
+                    Err(error) => (ErrorCode::InternalError, error.to_string()),
+                };
+                Response::new_err(id, code as i32, message)
+            }
+            Err(panic) => Response::new_err(
+                id,
+                ErrorCode::InternalError as i32,
+                format!("erro interno do senior-lsp: {}", panic_message(&*panic)),
+            ),
+        };
+        self.connection.sender.send(response.into())?;
+        Ok(())
+    }
+
+    /// Resultado do pedido, ou o erro que vai na resposta.
+    fn answer(&mut self, request: Request) -> Result<serde_json::Value> {
+        match request.method.as_str() {
             GotoDefinition::METHOD => {
                 let params: GotoDefinitionParams = serde_json::from_value(request.params)?;
                 let at = params.text_document_position_params;
@@ -414,10 +480,7 @@ impl Server<'_> {
                     }
                 });
                 if let Some(message) = failure {
-                    let code = ErrorCode::InvalidParams as i32;
-                    let response = Response::new_err(id, code, message);
-                    self.connection.sender.send(response.into())?;
-                    return Ok(());
+                    return Err(Failure::boxed(ErrorCode::InvalidParams, message));
                 }
                 result
             }
@@ -609,10 +672,7 @@ impl Server<'_> {
                 let params: lsp_types::ExecuteCommandParams =
                     serde_json::from_value(request.params)?;
                 if let Err(message) = self.execute(&params) {
-                    let code = ErrorCode::InvalidParams as i32;
-                    let response = Response::new_err(id, code, message);
-                    self.connection.sender.send(response.into())?;
-                    return Ok(());
+                    return Err(Failure::boxed(ErrorCode::InvalidParams, message));
                 }
                 Ok(serde_json::Value::Null)
             }
@@ -626,24 +686,13 @@ impl Server<'_> {
                     None => serde_json::Value::Null,
                 })
             }
-            method => {
-                let response = Response::new_err(
-                    id,
-                    ErrorCode::MethodNotFound as i32,
-                    format!("método não suportado: {method}"),
-                );
-                self.connection.sender.send(response.into())?;
-                return Ok(());
-            }
-        };
-        // O `Response::new_ok` passa o resultado por `serde_json::to_value`, que copia de novo uma
-        // árvore que já é JSON. Nos pedidos grandes, como os símbolos do documento, a cópia pesa.
-        let response = Response {
-            id,
-            response_result: Ok(result?),
-        };
-        self.connection.sender.send(response.into())?;
-        Ok(())
+            #[cfg(test)]
+            tests::PANIC => panic!("pânico de teste"),
+            method => Err(Failure::boxed(
+                ErrorCode::MethodNotFound,
+                format!("método não suportado: {method}"),
+            )),
+        }
     }
 
     /// Resposta de um pedido sobre o documento, ou `null` se ele não está aberto, como uma regra
@@ -696,7 +745,31 @@ impl Server<'_> {
         }
     }
 
+    /// Trata a notificação. Uma fora do formato, ou que dá pânico, é registrada no log e
+    /// ignorada, porque notificação não tem resposta. O documento que estava sendo analisado pode
+    /// ficar sem análise até ser reaberto. Só a conexão fechada encerra o servidor.
     fn notification(&mut self, notification: Notification) -> Result<()> {
+        let method = notification.method.clone();
+        match catch_unwind(AssertUnwindSafe(|| self.handle(notification))) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error))
+                if error.is::<serde_json::Error>() || error.is::<crate::TextTooLarge>() =>
+            {
+                eprintln!("senior-lsp: {method} ignorado ({error})");
+                Ok(())
+            }
+            Ok(Err(error)) => Err(error),
+            Err(panic) => {
+                eprintln!(
+                    "senior-lsp: erro interno em {method}: {}",
+                    panic_message(&*panic)
+                );
+                Ok(())
+            }
+        }
+    }
+
+    fn handle(&mut self, notification: Notification) -> Result<()> {
         match notification.method.as_str() {
             DidOpenTextDocument::METHOD => {
                 let params: DidOpenTextDocumentParams =
@@ -801,6 +874,8 @@ impl Server<'_> {
                     self.configure(Options(Some(settings)))?;
                 }
             }
+            #[cfg(test)]
+            tests::PANIC => panic!("pânico de teste"),
             _ => {}
         }
         Ok(())

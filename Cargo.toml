@@ -32,6 +32,8 @@ criterion = { version = "0.8.2", default-features = false, features = ["cargo_be
 name = "vazao"
 harness = false
 
+# Sem `panic = "abort"`. O servidor segura o pânico de um pedido com `catch_unwind` para seguir
+# atendendo os outros.
 [profile.release]
 lto = "fat"
 codegen-units = 1

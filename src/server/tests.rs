@@ -199,6 +199,9 @@ impl Editor {
 
 const RULE: &str = "file:///regras/EXEMPLO.LSP/Rule.txt";
 
+/// Pedido e notificação que só existem nos testes e dão pânico no servidor.
+pub(super) const PANIC: &str = "senior-lsp/panicoDeTeste";
+
 fn uri(s: &str) -> Uri {
     s.parse().unwrap()
 }
@@ -430,6 +433,70 @@ fn pedido_desconhecido_nao_derruba_o_servidor() {
     // O servidor continua atendendo depois.
     editor.open(RULE, 1, "x = 1;");
     assert!(editor.diagnostics().diagnostics.is_empty());
+    editor.stop();
+}
+
+#[test]
+fn pedido_fora_do_formato_vira_erro_e_o_servidor_segue() {
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, "x = 1;");
+    assert!(editor.diagnostics().diagnostics.is_empty());
+
+    let malformados = [
+        (
+            HoverRequest::METHOD,
+            json!({ "textDocument": { "uri": RULE } }),
+        ),
+        (HoverRequest::METHOD, json!(null)),
+        (Rename::METHOD, json!([1, 2])),
+        ("senior-lsp/tipoRegra", json!({})),
+        ("senior-lsp/tipoRegra", json!("x")),
+    ];
+    for (method, params) in malformados {
+        let error = editor.request(method, params).response_result.unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidParams as i32, "{method}");
+        assert!(
+            error.message.starts_with("parâmetros inválidos"),
+            "{method}"
+        );
+    }
+
+    // Notificação não tem resposta, então a que vem fora do formato é só ignorada.
+    editor.notify(
+        DidChangeTextDocument::METHOD,
+        json!({ "textDocument": { "uri": RULE }, "contentChanges": [] }),
+    );
+    editor.notify(DidOpenTextDocument::METHOD, json!(null));
+    editor.notify(DidCloseTextDocument::METHOD, json!({ "textDocument": 5 }));
+    editor.quiet();
+
+    editor.change(RULE, 2, "x = ;");
+    assert!(!editor.diagnostics().diagnostics.is_empty());
+    editor.stop();
+}
+
+#[test]
+fn panico_vira_erro_interno_e_o_servidor_segue() {
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, "x = 1;");
+    assert!(editor.diagnostics().diagnostics.is_empty());
+
+    let error = editor
+        .request(PANIC, json!(null))
+        .response_result
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::InternalError as i32);
+    assert_eq!(error.message, "erro interno do senior-lsp: pânico de teste");
+    editor.notify(PANIC, json!(null));
+
+    // O documento aberto antes continua valendo.
+    let hover = editor.request(
+        HoverRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE }, "position": { "line": 0, "character": 0 } }),
+    );
+    assert!(hover.response_result.is_ok());
+    editor.change(RULE, 2, "x = ;");
+    assert!(!editor.diagnostics().diagnostics.is_empty());
     editor.stop();
 }
 
