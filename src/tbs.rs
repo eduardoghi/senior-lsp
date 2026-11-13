@@ -326,6 +326,14 @@ impl Dictionary {
             .map(|i| &self.tables[i])
     }
 
+    /// Visão pelo nome, sem diferença de caixa.
+    pub fn view(&self, name: &str) -> Option<&View> {
+        self.views
+            .binary_search_by(|v| cmp_upper(&v.name, name))
+            .ok()
+            .map(|i| &self.views[i])
+    }
+
     /// Relacionamentos em que a tabela é origem ou destino.
     pub fn relations_of<'a>(&'a self, table: &'a Table) -> impl Iterator<Item = &'a Relation> {
         table

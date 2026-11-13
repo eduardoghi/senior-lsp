@@ -65,6 +65,11 @@ pub enum CheckKind {
     NativeSqlWithScope,
     /// `cur.CAMPO` com um campo que não está no SELECT do cursor nem é operação dele.
     CursorFieldNotInSelect,
+    /// Coluna do SELECT de um cursor com uma tabela que não está no dicionário de dados, como um
+    /// apelido de tabela.
+    CursorUnknownTable,
+    /// Coluna do SELECT de um cursor com um campo que a tabela não tem no dicionário de dados.
+    CursorUnknownField,
     /// `SQL_Retornar*(obj, "coluna", ...)` com uma coluna que não está no SELECT. Compila, e a
     /// execução para.
     ReturnedColumnNotInSelect,
@@ -98,6 +103,8 @@ impl CheckKind {
                 | CheckKind::UnknownFunction
                 | CheckKind::CursorConstantColumn
                 | CheckKind::CursorFieldNotInSelect
+                | CheckKind::CursorUnknownTable
+                | CheckKind::CursorUnknownField
         )
     }
 }

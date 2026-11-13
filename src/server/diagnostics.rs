@@ -337,6 +337,30 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                 &text[check.range]
             ),
         ),
+        CheckKind::CursorUnknownTable => (
+            "SEN074",
+            format!(
+                "O SELECT do cursor lê {name} como tabela, e ela não está no dicionário de dados \
+                 (RowSet inexistente: {name}). As colunas do cursor não aceitam apelido de tabela \
+                 nem função."
+            ),
+        ),
+        CheckKind::CursorUnknownField => {
+            let (table, field) = name.split_once('.').unwrap_or(("", name));
+            // A coluna escrita sem a tabela é a única em que o trecho marcado não tem ponto.
+            let first_table = if text[check.range].contains('.') {
+                ""
+            } else {
+                " A coluna sem tabela é procurada na primeira tabela do FROM."
+            };
+            (
+                "SEN075",
+                format!(
+                    "O campo {field} não existe na tabela {table} (Campo \"{field}\" inexistente \
+                     na tabela/view \"{table}\").{first_table}"
+                ),
+            )
+        }
         CheckKind::ReturnedColumnNotInSelect => (
             "SEN067",
             format!(
@@ -421,6 +445,45 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn mensagens_das_colunas_do_cursor() {
+        let text = "c.SQL \"SELECT A.B, C FROM T\";";
+        let tree = crate::parse(text).unwrap();
+        let message = |kind, piece: &str, label: &str| {
+            let at = text.find(piece).unwrap() as u32;
+            let check = Check {
+                kind,
+                range: text_size::TextRange::at(at.into(), (piece.len() as u32).into()),
+                name: None,
+                label: Some(label.to_owned()),
+            };
+            describe_check(&check, &tree, text)
+        };
+        assert_eq!(
+            message(CheckKind::CursorUnknownTable, "A", "A"),
+            (
+                "SEN074",
+                "O SELECT do cursor lê A como tabela, e ela não está no dicionário de dados \
+                 (RowSet inexistente: A). As colunas do cursor não aceitam apelido de tabela nem \
+                 função."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            message(CheckKind::CursorUnknownField, "A.B", "A.B"),
+            (
+                "SEN075",
+                "O campo B não existe na tabela A (Campo \"B\" inexistente na tabela/view \"A\")."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            message(CheckKind::CursorUnknownField, "C", "T.C").1,
+            "O campo C não existe na tabela T (Campo \"C\" inexistente na tabela/view \"T\"). A \
+             coluna sem tabela é procurada na primeira tabela do FROM."
+        );
     }
 
     #[test]

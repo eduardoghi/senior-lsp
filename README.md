@@ -336,6 +336,8 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN071 | aviso | instruções depois de `Pare`, `Cancel` ou `VaPara` no mesmo bloco, que nunca executam |
 | SEN072 | aviso | diretiva `senior-lsp-*` mal escrita, como sem código, com código que não existe ou de erro de sintaxe, e `senior-lsp-enable` sem `senior-lsp-disable` antes |
 | SEN073 | aviso | diretiva que não escondeu nenhum diagnóstico do código citado |
+| SEN074 | erro | coluna do SELECT de um cursor com uma tabela que não está no dicionário de dados, como um apelido de tabela ou uma função |
+| SEN075 | erro | coluna do SELECT de um cursor com um campo que a tabela não tem no dicionário de dados |
 
 O SEN068 e o SEN070 saem como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
 conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da
@@ -407,6 +409,12 @@ O ERP guarda as tabelas do banco, com o tipo e a descrição de cada campo, no a
 o `sapiens.tbs` da pasta do ERP). Com ele configurado, o servidor confere o tipo de `TABELA.Campo`
 nas regras e dá tipo ao campo de busca da tela SGI, pela tabela de destino da ligação. O campo alfa
 de um caractere fica sem tipo, porque o compilador aceita ele como texto e como número.
+
+O SELECT de um cursor (`cur.SQL "..."`) também é conferido com o dicionário, do jeito que o
+compilador confere ao compilar a regra. Ele lê o que vem antes do primeiro ponto de cada coluna
+como tabela ou visão, e por isso recusa apelido de tabela e função (SEN074). A coluna sem tabela é
+procurada na primeira tabela do FROM (SEN075). O `*`, o WHERE e o ORDER BY ficam sem conferência,
+porque o compilador não confere nenhum dos três.
 
 São dois caminhos, ambos opcionais, o `.tbs` de produção e o da base de teste. O tipo vem do de
 produção. Com os dois, o servidor avisa (SEN065) quando a regra usa um campo que só existe no de

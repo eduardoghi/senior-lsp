@@ -537,11 +537,10 @@ mod tests {
                 "definir alfa aTxt; definir numero n; definir cursor c;\nc.SQL \"{sql}\";\n{uso}"
             )
         };
-        // Com e sem a tabela na frente, com apelido e pelo *, o tipo vem do dicionário.
+        // Com e sem a tabela na frente e pelo *, o tipo vem do dicionário.
         for sql in [
             "SELECT E070EMP.CodEmp, E070EMP.NomEmp FROM E070EMP",
             "SELECT CodEmp, NomEmp FROM E070EMP",
-            "SELECT E.CodEmp, E.NomEmp FROM E070EMP E",
             "SELECT * FROM E070EMP",
         ] {
             let ok = cursor(sql, "aTxt = c.NomEmp; n = c.CodEmp;");
@@ -559,6 +558,64 @@ mod tests {
             checks_com_dicionario(&fora),
             [(CursorFieldNotInSelect, "NomEmp")]
         );
+    }
+
+    #[test]
+    fn colunas_do_cursor_pelo_dicionario() {
+        let cursor = |sql: &str| format!("definir cursor c;\nc.SQL \"{sql}\";");
+        let checks = |sql: &str| -> Vec<(CheckKind, std::string::String)> {
+            checks_com_dicionario(&cursor(sql))
+                .into_iter()
+                .map(|(kind, text)| (kind, text.to_owned()))
+                .collect()
+        };
+        let um = |kind, text: &str| vec![(kind, text.to_owned())];
+        // O que vem antes do ponto é lido como tabela, e apelido e função não são.
+        assert_eq!(
+            checks("SELECT E.CodEmp, E.NomEmp FROM E070EMP E"),
+            um(CursorUnknownTable, "E")
+        );
+        assert_eq!(
+            checks("SELECT MAX(E070EMP.CodEmp) FROM E070EMP"),
+            um(CursorUnknownTable, "MAX(E070EMP")
+        );
+        // A coluna sem tabela é procurada na primeira tabela do FROM, e o erro fica nela.
+        assert_eq!(
+            checks("SELECT CodEmp FROM E999XXX, E070EMP WHERE 1 = 1"),
+            um(CursorUnknownTable, "E999XXX")
+        );
+        assert_eq!(
+            checks("SELECT CodEmp, Nome FROM E070EMP"),
+            um(CursorUnknownField, "Nome")
+        );
+        assert_eq!(
+            checks("select e070emp.codemp, e070emp.nome x from e070emp"),
+            um(CursorUnknownField, "e070emp.nome")
+        );
+        assert_eq!(
+            checks("SELECT COUNT(*) FROM E070EMP"),
+            um(CursorUnknownField, "COUNT(*)")
+        );
+        assert_eq!(
+            checks("SELECT USU_Nova FROM E070EMP"),
+            um(OnlyInTest, "USU_Nova")
+        );
+        // A posição vale com o SQL emendado em várias linhas.
+        assert_eq!(
+            checks("SELECT CodEmp, \\\n   E070EMP.Nome \\\n FROM E070EMP"),
+            um(CursorUnknownField, "E070EMP.Nome")
+        );
+        // O compilador não confere o *, o WHERE, o ORDER BY nem o que vem depois do espaço.
+        for sql in [
+            "SELECT * FROM E999XXX",
+            "SELECT CodEmp FROM E070EMP WHERE Nada = 1 AND X.Y = 2 ORDER BY Outro",
+            "SELECT E070EMP.CodEmp Apelido FROM E070EMP",
+            "SELECT CodEmp FROM E070EMP INNER JOIN E999XXX ON 1 = 1",
+        ] {
+            assert!(checks(sql).is_empty(), "{sql}");
+        }
+        // Sem dicionário não há o que conferir.
+        assert!(super::super::tests::checks(&cursor("SELECT X.Y, Z FROM W")).is_empty());
     }
 
     #[test]
