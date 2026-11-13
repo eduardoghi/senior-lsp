@@ -163,6 +163,18 @@
                 },
                 "SEN079": {
                     "$ref": "#/definitions/nivel"
+                },
+                "SEN080": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN081": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN082": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN083": {
+                    "$ref": "#/definitions/nivel"
                 }
             },
             "additionalProperties": false

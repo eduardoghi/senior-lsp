@@ -395,6 +395,54 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                 ),
             )
         }
+        CheckKind::Sql2Join => (
+            "SEN080",
+            format!(
+                "A regra usa o Senior SQL 2, que não aceita JOIN no SQL do cursor (Era esperado \
+                 <fim-de-arquivo>, mas {name} foi encontrado). Junte as tabelas pela vírgula no \
+                 FROM e pela condição no WHERE."
+            ),
+        ),
+        CheckKind::Sql2UnknownTable => (
+            "SEN081",
+            format!(
+                "A tabela {name} não está no dicionário de dados, e o Senior SQL 2 confere as \
+                 tabelas do FROM (Tabela ou view \"{name}\" inexistente na base de dados)."
+            ),
+        ),
+        CheckKind::Sql2UnknownSymbol => (
+            "SEN082",
+            format!(
+                "O Senior SQL 2 não acha {name} nas tabelas do FROM (Símbolo não encontrado no \
+                 comando: \"{name}\")."
+            ),
+        ),
+        CheckKind::Sql2UnknownField => {
+            let (table, field) = name.split_once('.').unwrap_or(("", name));
+            (
+                "SEN082",
+                format!(
+                    "O campo {field} não existe na tabela {table} (Campo não encontrado na \
+                     tabela \"{table}\": \"{field}\")."
+                ),
+            )
+        }
+        CheckKind::Sql2AmbiguousField => (
+            "SEN082",
+            format!(
+                "Mais de uma tabela do FROM tem o campo {name}, e o Senior SQL 2 exige a tabela \
+                 na frente (Ambiguidade detectada: há mais de uma tabela que possui o campo \
+                 \"{name}\")."
+            ),
+        ),
+        CheckKind::Sql2OrderBy => (
+            "SEN083",
+            format!(
+                "A regra usa o Senior SQL 2, que só aceita no ORDER BY o que está no SELECT (A \
+                 expressão \"{name}\" não aparece na lista de expressões selecionadas e por \
+                 isso não pode ser utilizado no Order By)."
+            ),
+        ),
         CheckKind::CursorColumnUnused => (
             "SEN076",
             format!(

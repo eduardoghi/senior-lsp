@@ -77,6 +77,19 @@ pub enum CheckKind {
     CursorRepeatedField,
     /// `:nome` no SQL de um cursor que ainda não foi definido nem usado na regra.
     CursorUnknownParameter,
+    /// JOIN no SQL de um cursor de regra que usa o Senior SQL 2.
+    Sql2Join,
+    /// Tabela do FROM que não está no dicionário de dados, com o Senior SQL 2.
+    Sql2UnknownTable,
+    /// Nome do WHERE que o Senior SQL 2 não acha nas tabelas do FROM.
+    Sql2UnknownSymbol,
+    /// Campo do WHERE que a tabela escrita na frente dele não tem, com o Senior SQL 2.
+    Sql2UnknownField,
+    /// Campo do WHERE sem tabela na frente que mais de uma tabela do FROM tem, com o Senior
+    /// SQL 2.
+    Sql2AmbiguousField,
+    /// Campo do ORDER BY que não está no SELECT, com o Senior SQL 2.
+    Sql2OrderBy,
     /// `SQL_Retornar*(obj, "coluna", ...)` com uma coluna que não está no SELECT. Compila, e a
     /// execução para.
     ReturnedColumnNotInSelect,
@@ -119,6 +132,12 @@ impl CheckKind {
                 | CheckKind::CursorColumnWithoutTable
                 | CheckKind::CursorRepeatedField
                 | CheckKind::CursorUnknownParameter
+                | CheckKind::Sql2Join
+                | CheckKind::Sql2UnknownTable
+                | CheckKind::Sql2UnknownSymbol
+                | CheckKind::Sql2UnknownField
+                | CheckKind::Sql2AmbiguousField
+                | CheckKind::Sql2OrderBy
         )
     }
 }

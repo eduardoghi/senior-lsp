@@ -53,6 +53,8 @@ pub struct Inherited {
     entries: std::collections::HashSet<String>,
     /// Dicionários de dados configurados, para o tipo de `TABELA.Campo`.
     pub dictionaries: crate::dictionary::Dictionaries,
+    /// A regra usa o Senior SQL 2, pela exportação. `None` quando a exportação não diz.
+    pub senior_sql2: Option<bool>,
 }
 
 impl Inherited {
@@ -86,6 +88,16 @@ impl Inherited {
     pub fn with_dictionaries(dictionaries: crate::dictionary::Dictionaries) -> Inherited {
         Inherited {
             dictionaries,
+            ..Inherited::default()
+        }
+    }
+
+    /// O que vale para uma regra fora de tela SGI e de modelo de relatório, os dicionários de
+    /// dados e as opções que a exportação guarda ao lado dela.
+    pub fn of_rule(rule: &Path) -> Inherited {
+        Inherited {
+            dictionaries: crate::dictionary::current(),
+            senior_sql2: uses_senior_sql2(rule),
             ..Inherited::default()
         }
     }
@@ -419,6 +431,14 @@ impl Form {
         let mut inherited = Inherited::merge(rules, false);
         inherited.add_entries(self.fields.iter().map(|(p, j, e)| (p, j, e)));
         inherited.dictionaries = self.dictionaries.clone();
+        // A opção fica no JSON da própria regra, que entra na vigia para o que foi montado
+        // aqui não valer depois de ele mudar.
+        if let Some(rule) = self.order.get(before) {
+            inherited.senior_sql2 = uses_senior_sql2(rule);
+            for name in RULE_OPTIONS {
+                self.watch.add(&rule.with_file_name(name));
+            }
+        }
         let inherited = Arc::new(inherited);
         self.merged.insert(before, inherited.clone());
         inherited
@@ -527,11 +547,55 @@ pub fn following_uses(rule: &Path, skip: Option<&Path>) -> Vec<(PathBuf, Option<
 /// dados. As regras vizinhas valem como estão no disco.
 pub fn inherited_functions(rule: &Path) -> Arc<Inherited> {
     let Some(root) = form_dir(rule) else {
-        return Arc::new(Inherited::with_dictionaries(crate::dictionary::current()));
+        return Arc::new(Inherited::of_rule(rule));
     };
     with_form(&root, |form| {
         let before = position(&form.order, rule).unwrap_or(0);
         form.inherited(before)
+    })
+}
+
+/// Arquivos da exportação que ficam ao lado do texto da regra e guardam as opções dela, o da
+/// regra comum, o do web service e o da tela SGI.
+const RULE_OPTIONS: [&str; 3] = ["General_Infos.json", "Rule.json", "definition.json"];
+
+/// Quantas pastas ficam guardadas. Passando disso o cache recomeça vazio.
+const MAX_SQL_MODES: usize = 256;
+
+thread_local! {
+    /// A opção de cada pasta de regra já lida, com os arquivos que foram consultados.
+    static SQL_MODES: RefCell<HashMap<PathBuf, (Watch, Option<bool>)>> = RefCell::default();
+}
+
+/// Diz se a regra usa o Senior SQL 2, pela opção `useSQLSenior2` do JSON que a exportação grava
+/// ao lado do texto dela. `None` quando não há o arquivo ou ele não tem a opção, como na regra
+/// fora de uma exportação. O arquivo só é lido de novo quando muda.
+pub fn uses_senior_sql2(rule: &Path) -> Option<bool> {
+    let dir = rule.parent()?;
+    SQL_MODES.with_borrow_mut(|modes| {
+        if let Some((watch, mode)) = modes.get(dir)
+            && watch.unchanged()
+        {
+            return *mode;
+        }
+        let mut watch = Watch::default();
+        let mut mode = None;
+        for name in RULE_OPTIONS {
+            let path = dir.join(name);
+            watch.add(&path);
+            mode = fs::read(&path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .and_then(|json| json.get("useSQLSenior2")?.as_bool());
+            if mode.is_some() {
+                break;
+            }
+        }
+        if modes.len() >= MAX_SQL_MODES {
+            modes.clear();
+        }
+        modes.insert(dir.to_path_buf(), (watch, mode));
+        mode
     })
 }
 
@@ -866,6 +930,41 @@ fn rule_file(dir: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opcao_de_senior_sql_2_da_exportacao() {
+        let base = std::env::temp_dir().join(format!("senior-lsp-sql2-{}", std::process::id()));
+        let rule = base.join("regras/R1.LSP/Rule.txt");
+        fs::create_dir_all(rule.parent().unwrap()).unwrap();
+        assert_eq!(uses_senior_sql2(&rule), None);
+        // O arquivo criado depois é visto, e a mudança dele também.
+        let options = rule.with_file_name("General_Infos.json");
+        fs::write(&options, r#"{"debug": false, "useSQLSenior2": true}"#).unwrap();
+        assert_eq!(uses_senior_sql2(&rule), Some(true));
+        assert_eq!(Inherited::of_rule(&rule).senior_sql2, Some(true));
+        fs::write(&options, r#"{"debug": false,  "useSQLSenior2": false}"#).unwrap();
+        assert_eq!(uses_senior_sql2(&rule), Some(false));
+        fs::write(&options, r#"{"debug": false}"#).unwrap();
+        assert_eq!(uses_senior_sql2(&rule), None);
+        // Web service e tela SGI guardam a opção em arquivos de outro nome.
+        fs::write(
+            rule.with_file_name("Rule.json"),
+            r#"{"useSQLSenior2": true}"#,
+        )
+        .unwrap();
+        assert_eq!(uses_senior_sql2(&rule), Some(true));
+        let table = base.join("Formulários SGI/interface/F1/tables/T1/rule.txt");
+        fs::create_dir_all(table.parent().unwrap()).unwrap();
+        fs::write(&table, "definir numero n;").unwrap();
+        assert_eq!(inherited_functions(&table).senior_sql2, None);
+        fs::write(
+            table.with_file_name("definition.json"),
+            r#"{"name": "T1", "useSQLSenior2": true, "actions": []}"#,
+        )
+        .unwrap();
+        assert_eq!(inherited_functions(&table).senior_sql2, Some(true));
+        fs::remove_dir_all(&base).unwrap();
+    }
 
     #[test]
     fn junta_as_funcoes_das_regras_anteriores() {

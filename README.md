@@ -342,6 +342,10 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN077 | erro | coluna do SELECT de um cursor com apelido ou `DISTINCT` e sem a tabela na frente |
 | SEN078 | erro | o mesmo nome de campo vindo de duas tabelas no SELECT de um cursor |
 | SEN079 | erro | `:variavel` no SQL de um cursor que ainda não foi definida nem usada na regra, só na regra comum |
+| SEN080 | erro | JOIN no SQL de um cursor, na regra que usa o Senior SQL 2 |
+| SEN081 | erro | tabela do FROM de um cursor que não está no dicionário de dados, na regra que usa o Senior SQL 2 |
+| SEN082 | erro | nome no WHERE de um cursor que não é campo das tabelas do FROM, ou que mais de uma delas tem, na regra que usa o Senior SQL 2 |
+| SEN083 | erro | campo do ORDER BY de um cursor que não está no SELECT, na regra que usa o Senior SQL 2 |
 
 O SEN068 e o SEN070 saem como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
 conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da
@@ -424,8 +428,15 @@ de um caractere fica sem tipo, porque o compilador aceita ele como texto e como 
 O SELECT de um cursor (`cur.SQL "..."`) também é conferido com o dicionário, do jeito que o
 compilador confere ao compilar a regra. Ele lê o que vem antes do primeiro ponto de cada coluna
 como tabela ou visão, e por isso recusa apelido de tabela e função (SEN074). A coluna sem tabela é
-procurada na primeira tabela do FROM (SEN075). O `*`, o WHERE e o ORDER BY ficam sem conferência.
-O compilador só confere os três quando a regra usa o Senior SQL 2, opção que o servidor não lê.
+procurada na primeira tabela do FROM (SEN075).
+
+O compilador confere mais quando a regra usa o Senior SQL 2. Ele não aceita JOIN (SEN080), cobra
+que as tabelas do FROM existam (SEN081), procura nelas cada nome do WHERE (SEN082) e só aceita no
+ORDER BY o que está no SELECT (SEN083). No SQL nativo nada disso é conferido na compilação. O
+servidor sabe o modo da regra pela opção `useSQLSenior2` do JSON que a exportação grava ao lado do
+texto dela (`General_Infos.json` na regra, `Rule.json` no web service e `definition.json` na tela
+SGI). Sem esse arquivo, como numa regra solta ou num modelo de relatório, essas quatro
+conferências não saem.
 
 São dois caminhos, ambos opcionais, o `.tbs` de produção e o da base de teste. O tipo vem do de
 produção. Com os dois, o servidor avisa (SEN065) quando a regra usa um campo que só existe no de

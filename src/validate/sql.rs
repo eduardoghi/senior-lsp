@@ -17,7 +17,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use sqlparser::ast::{
-    Expr, Select, SelectItem, SetExpr, Statement, TableFactor, TableWithJoins, UnaryOperator,
+    Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Ident, OrderByKind, Query, Select,
+    SelectItem, SetExpr, Statement, TableFactor, TableWithJoins, UnaryOperator,
 };
 use sqlparser::dialect::OracleDialect;
 use sqlparser::parser::Parser;
@@ -120,6 +121,8 @@ pub(super) struct Analysis {
     pub(super) selection: Option<Selection>,
     /// Os `:nome` fora de aspas simples, com o trecho do nome no literal.
     pub(super) params: Vec<(String, std::ops::Range<usize>)>,
+    /// O que o Senior SQL 2 recusa a mais, que só vale na regra que o usa.
+    pub(super) sql2: Vec<Unknown>,
 }
 
 /// Campos que o SELECT dá ao cursor, como o compilador os monta.
@@ -220,6 +223,10 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
         selection
     });
     let mut params = params_of(&sql);
+    let mut sql2 = match statements.as_deref() {
+        Some(statements) => Sql2::check(&sql, statements, dictionaries),
+        None => Vec::new(),
+    };
     // As posições saem no SQL montado e vão para o literal, que pode ter escape e emenda.
     let offsets = value_offsets(literal);
     let in_literal = |range: &mut std::ops::Range<usize>| {
@@ -229,7 +236,16 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
             Some(last) if last >= range.start => at(last) + 1,
             _ => start,
         };
-        *range = start..end.clamp(start, literal.len());
+        // O compilador corta o texto por byte, e um corte pode cair no meio de uma letra com
+        // acento. O trecho é alargado até as letras inteiras.
+        let (mut start, mut end) = (start.min(literal.len()), end.clamp(start, literal.len()));
+        while !literal.is_char_boundary(start) {
+            start -= 1;
+        }
+        while !literal.is_char_boundary(end) {
+            end += 1;
+        }
+        *range = start..end;
     };
     unknown.iter_mut().for_each(|u| in_literal(&mut u.range));
     if let Some(selection) = &mut selection {
@@ -242,12 +258,14 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
         }
     }
     params.iter_mut().for_each(|(_, range)| in_literal(range));
+    sql2.iter_mut().for_each(|u| in_literal(&mut u.range));
     let analysis = Rc::new(Analysis {
         constants: statements.as_deref().map(constants_of).unwrap_or_default(),
         columns: statements.and_then(|s| select_columns(&s, dictionaries)),
         unknown,
         selection,
         params,
+        sql2,
     });
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -641,6 +659,355 @@ fn selection(reading: &Reading, dictionaries: &Dictionaries) -> (Selection, Vec<
         });
     }
     (selection, repeated)
+}
+
+/// Tabela do FROM de uma consulta, pelo nome e pelo apelido em maiúsculas.
+struct FromTable<'a> {
+    name: String,
+    alias: Option<String>,
+    /// Os campos, ou `None` quando o dicionário de dados não tem a tabela.
+    fields: Option<&'a [Field]>,
+}
+
+/// Palavras que começam uma junção no FROM.
+const JOIN_WORDS: [&str; 7] = ["INNER", "LEFT", "RIGHT", "FULL", "CROSS", "NATURAL", "JOIN"];
+
+/// O que o Senior SQL 2 recusa a mais no SQL de um cursor. Com ele ligado na regra, o compilador
+/// passa o comando por um segundo leitor antes de separar as colunas, e esse leitor não aceita
+/// JOIN, cobra que as tabelas do FROM existam, procura nelas cada nome do WHERE, inclusive o das
+/// subconsultas, e só aceita no ORDER BY o que está no SELECT. No SQL nativo nada disso é
+/// conferido na compilação. Todos os casos foram conferidos no ERP.
+///
+/// Só é conferido o que foi testado. Uma construção fora disso, como o `CASE` no WHERE ou uma
+/// subconsulta com junção, deixa o WHERE sem conferência.
+struct Sql2<'a> {
+    sql: &'a str,
+    dictionaries: &'a Dictionaries,
+    /// As tabelas de cada consulta aberta, da de fora para a de dentro.
+    scopes: Vec<Vec<FromTable<'a>>>,
+    found: Vec<Unknown>,
+}
+
+impl<'a> Sql2<'a> {
+    fn check(
+        sql: &'a str,
+        statements: &[Statement],
+        dictionaries: &'a Dictionaries,
+    ) -> Vec<Unknown> {
+        let [Statement::Query(query)] = statements else {
+            return Vec::new();
+        };
+        let SetExpr::Select(select) = query.body.as_ref() else {
+            return Vec::new();
+        };
+        let mut sql2 = Sql2 {
+            sql,
+            dictionaries,
+            scopes: Vec::new(),
+            found: Vec::new(),
+        };
+        if select.from.iter().any(|from| !from.joins.is_empty()) {
+            return sql2.join().into_iter().collect();
+        }
+        let Some(tables) = sql2.tables(select) else {
+            return Vec::new();
+        };
+        sql2.scopes.push(tables);
+        let tables_found = sql2.found.len();
+        let walked = match &select.selection {
+            Some(selection) => sql2.expr(selection),
+            None => Some(()),
+        };
+        if walked.is_none() {
+            sql2.found.truncate(tables_found);
+        }
+        sql2.order_by(query, select);
+        sql2.found
+    }
+
+    /// Posição de um nome no texto do SQL, pela linha e coluna que o `sqlparser` guarda.
+    fn range(&self, first: &Ident, last: &Ident) -> std::ops::Range<usize> {
+        let offset = |ident: &Ident| {
+            let location = ident.span.start;
+            let mut lines = self.sql.split_inclusive('\n');
+            let before: usize = lines
+                .by_ref()
+                .take((location.line as usize).checked_sub(1)?)
+                .map(str::len)
+                .sum();
+            let line = lines.next()?;
+            let column = (location.column as usize).checked_sub(1)?;
+            let start = before + line.char_indices().nth(column)?.0;
+            let quotes = if ident.quote_style.is_some() { 2 } else { 0 };
+            let end = start + ident.value.len() + quotes;
+            // O trecho tem que ser o nome, senão a posição não é confiável.
+            let text = self.sql.get(start + quotes / 2..end - quotes / 2)?;
+            text.eq_ignore_ascii_case(&ident.value)
+                .then_some(start..end)
+        };
+        match (offset(first), offset(last)) {
+            (Some(first), Some(last)) if first.start <= last.end => first.start..last.end,
+            _ => 0..self.sql.len(),
+        }
+    }
+
+    fn push(&mut self, kind: CheckKind, range: std::ops::Range<usize>, label: String) {
+        self.found.push(Unknown {
+            kind,
+            range,
+            label: Some(label),
+        });
+    }
+
+    /// A primeira palavra de junção depois do FROM, que é onde o compilador para.
+    fn join(&self) -> Option<Unknown> {
+        let upper = self.sql.to_ascii_uppercase();
+        let bytes = upper.as_bytes();
+        let from = upper.find("FROM")?;
+        let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        let mut at = from;
+        while at < bytes.len() {
+            if !word(bytes[at]) {
+                at += 1;
+                continue;
+            }
+            let end = at + bytes[at..].iter().take_while(|&&b| word(b)).count();
+            if JOIN_WORDS.contains(&&upper[at..end]) {
+                return Some(Unknown {
+                    kind: CheckKind::Sql2Join,
+                    range: at..end,
+                    label: Some(upper[at..end].to_owned()),
+                });
+            }
+            at = end;
+        }
+        None
+    }
+
+    /// Tabelas do FROM de uma consulta, acusando a que o dicionário não tem. `None` quando o
+    /// FROM tem junção ou algo que não é uma tabela pelo nome.
+    fn tables(&mut self, select: &Select) -> Option<Vec<FromTable<'a>>> {
+        let mut tables = Vec::new();
+        for TableWithJoins { relation, joins } in &select.from {
+            if !joins.is_empty() {
+                return None;
+            }
+            let TableFactor::Table { name, alias, .. } = relation else {
+                return None;
+            };
+            let [part] = name.0.as_slice() else {
+                return None;
+            };
+            let ident = part.as_ident()?;
+            let table = ident.value.to_uppercase();
+            let dictionaries = self.dictionaries;
+            let fields = rowset(&dictionaries.production, &table)
+                .or_else(|| rowset(&dictionaries.test, &table));
+            if fields.is_none() && !dictionaries.is_empty() {
+                self.push(
+                    CheckKind::Sql2UnknownTable,
+                    self.range(ident, ident),
+                    table.clone(),
+                );
+            }
+            tables.push(FromTable {
+                name: table,
+                alias: alias.as_ref().map(|a| a.name.value.to_uppercase()),
+                fields,
+            });
+        }
+        Some(tables)
+    }
+
+    /// Percorre uma expressão do WHERE. `None` numa construção que não foi testada no ERP.
+    fn expr(&mut self, expr: &Expr) -> Option<()> {
+        match expr {
+            Expr::Identifier(field) => self.name(None, field),
+            Expr::CompoundIdentifier(parts) => {
+                if let [table, field] = parts.as_slice() {
+                    self.name(Some(table), field);
+                }
+            }
+            Expr::Value(_) => {}
+            Expr::Nested(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+                self.expr(inner)?
+            }
+            Expr::UnaryOp { expr, .. } => self.expr(expr)?,
+            Expr::BinaryOp { left, right, .. } => {
+                self.expr(left)?;
+                self.expr(right)?;
+            }
+            Expr::Between {
+                expr, low, high, ..
+            } => {
+                self.expr(expr)?;
+                self.expr(low)?;
+                self.expr(high)?;
+            }
+            Expr::Like { expr, pattern, .. } => {
+                self.expr(expr)?;
+                self.expr(pattern)?;
+            }
+            Expr::InList { expr, list, .. } => {
+                self.expr(expr)?;
+                for item in list {
+                    self.expr(item)?;
+                }
+            }
+            Expr::InSubquery { expr, subquery, .. } => {
+                self.expr(expr)?;
+                self.query(subquery)?;
+            }
+            Expr::Exists { subquery, .. } => self.query(subquery)?,
+            Expr::Subquery(query) => self.query(query)?,
+            Expr::Function(function) => match &function.args {
+                FunctionArguments::None => {}
+                FunctionArguments::List(list) => {
+                    for arg in &list.args {
+                        match arg {
+                            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => self.expr(expr)?,
+                            FunctionArg::Unnamed(_) => {}
+                            _ => return None,
+                        }
+                    }
+                }
+                FunctionArguments::Subquery(_) => return None,
+            },
+            _ => return None,
+        }
+        Some(())
+    }
+
+    /// Percorre uma subconsulta, com as tabelas dela valendo junto com as de fora.
+    fn query(&mut self, query: &Query) -> Option<()> {
+        let SetExpr::Select(select) = query.body.as_ref() else {
+            return None;
+        };
+        let tables = self.tables(select)?;
+        self.scopes.push(tables);
+        let walked = (|| {
+            for item in &select.projection {
+                match item {
+                    SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => {
+                        self.expr(expr)?
+                    }
+                    SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => {}
+                    _ => return None,
+                }
+            }
+            match &select.selection {
+                Some(selection) => self.expr(selection),
+                None => Some(()),
+            }
+        })();
+        self.scopes.pop();
+        walked
+    }
+
+    /// Confere um nome do WHERE. Com a tabela na frente, ela tem que estar no FROM, pelo apelido
+    /// quando tem um, e ter o campo. Sem a tabela, o campo tem que existir em alguma tabela do
+    /// FROM, e em uma só quando a consulta não é uma subconsulta.
+    fn name(&mut self, table: Option<&Ident>, field: &Ident) {
+        if field.quote_style.is_some() || table.is_some_and(|t| t.quote_style.is_some()) {
+            return;
+        }
+        let name = field.value.to_uppercase();
+        let has = |t: &FromTable, name: &str| {
+            t.fields
+                .is_some_and(|f| f.iter().any(|f| f.name.eq_ignore_ascii_case(name)))
+        };
+        let Some(table) = table else {
+            let mut tables = self.scopes.iter().flatten();
+            if tables.clone().any(|t| t.fields.is_none()) {
+                return;
+            }
+            let holders = tables.by_ref().filter(|t| has(t, &name)).count();
+            let range = self.range(field, field);
+            if holders == 0 {
+                self.push(CheckKind::Sql2UnknownSymbol, range, name);
+            } else if holders > 1 && self.scopes.len() == 1 {
+                self.push(CheckKind::Sql2AmbiguousField, range, name);
+            }
+            return;
+        };
+        let qualifier = table.value.to_uppercase();
+        let range = self.range(table, field);
+        let owner = self.scopes.iter().rev().flatten().find(|t| match &t.alias {
+            Some(alias) => *alias == qualifier,
+            None => t.name == qualifier,
+        });
+        match owner {
+            None => self.push(
+                CheckKind::Sql2UnknownSymbol,
+                range,
+                format!("{qualifier}.{name}"),
+            ),
+            Some(owner) if owner.fields.is_some() && !has(owner, &name) => {
+                let label = format!("{}.{name}", owner.name);
+                self.push(CheckKind::Sql2UnknownField, range, label);
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Campo do ORDER BY que não está no SELECT. Vale o campo de mesmo nome, com a tabela igual
+    /// quando os dois lados a escrevem, e o apelido da coluna. Com o `*` no SELECT, vale qualquer
+    /// campo das tabelas do FROM. Posição, como `ORDER BY 1`, e expressão não são conferidas.
+    fn order_by(&mut self, query: &Query, select: &Select) {
+        let Some(OrderByKind::Expressions(order)) = query.order_by.as_ref().map(|o| &o.kind) else {
+            return;
+        };
+        let upper = |ident: &Ident| ident.value.to_uppercase();
+        // Tabela, campo e apelido de cada coluna do SELECT.
+        let mut columns: Vec<(Option<String>, String, Option<String>)> = Vec::new();
+        let mut star = false;
+        for item in &select.projection {
+            let (expr, alias) = match item {
+                SelectItem::UnnamedExpr(expr) => (expr, None),
+                SelectItem::ExprWithAlias { expr, alias } => (expr, Some(upper(alias))),
+                SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => {
+                    star = true;
+                    continue;
+                }
+                _ => return,
+            };
+            match column_ref(expr) {
+                Some((table, field)) => {
+                    columns.push((table.map(str::to_uppercase), field.to_uppercase(), alias))
+                }
+                None => return,
+            }
+        }
+        for item in order {
+            let (table, field) = match &item.expr {
+                Expr::Identifier(field) if field.quote_style.is_none() => (None, field),
+                Expr::CompoundIdentifier(parts) => match parts.as_slice() {
+                    [table, field] => (Some(table), field),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            let (qualifier, name) = (table.map(upper), upper(field));
+            let selected = columns.iter().any(|(t, f, alias)| {
+                (qualifier.is_none() && alias.as_deref() == Some(&name))
+                    || (*f == name && (qualifier.is_none() || t.is_none() || *t == qualifier))
+            });
+            let in_star = star
+                && (qualifier.is_some()
+                    || self.scopes.iter().flatten().any(|t| {
+                        t.fields
+                            .is_none_or(|f| f.iter().any(|f| f.name.eq_ignore_ascii_case(&name)))
+                    }));
+            if !selected && !in_star {
+                let label = match &qualifier {
+                    Some(qualifier) => format!("{qualifier}.{name}"),
+                    None => name,
+                };
+                let range = self.range(table.unwrap_or(field), field);
+                self.push(CheckKind::Sql2OrderBy, range, label);
+            }
+        }
+    }
 }
 
 /// Os `:nome` do SQL, que o compilador troca pelo valor da variável da regra, com o trecho de
@@ -1297,6 +1664,21 @@ pub(super) fn cursor_sql(
             label: unknown.label.clone(),
         });
     }
+    if scope.inherited.senior_sql2 == Some(true) {
+        // A tabela do FROM que as colunas já acusaram não sai de novo.
+        let reported = |u: &Unknown| {
+            let twice = |o: &Unknown| o.kind == CheckKind::CursorUnknownTable && o.range == u.range;
+            u.kind == CheckKind::Sql2UnknownTable && analysis.unknown.iter().any(twice)
+        };
+        for unknown in analysis.sql2.iter().filter(|u| !reported(u)) {
+            checks.push(Check {
+                kind: unknown.kind,
+                range: text_size::TextRange::new(at(unknown.range.start), at(unknown.range.end)),
+                name: None,
+                label: unknown.label.clone(),
+            });
+        }
+    }
     if scope.context != crate::builtins::Context::Rule {
         return;
     }
@@ -1490,6 +1872,10 @@ mod tests {
     #[test]
     fn sql_cortado_em_qualquer_ponto() {
         let sql = " SELECT é.ç, 'INTO' x, FROMé INTO :á FROM ã, T WHERE ORDER BY SELECT FROM é ";
+        let dictionaries = Dictionaries {
+            production: Some(Arc::new(crate::tbs::Dictionary::default())),
+            test: None,
+        };
         let cuts: Vec<usize> = sql.char_indices().map(|(at, _)| at).collect();
         for &start in &cuts {
             for &end in cuts.iter().filter(|&&end| end >= start) {
@@ -1502,6 +1888,26 @@ mod tests {
                         piece.start <= piece.end && piece.end <= part.len(),
                         "{part}"
                     );
+                }
+                // No literal, todo trecho fica em letras inteiras.
+                let literal = literal(part);
+                let analysis = analysis(&literal, &dictionaries);
+                let selection = analysis.selection.as_ref();
+                let ranges = (analysis.unknown.iter().map(|u| &u.range))
+                    .chain(analysis.sql2.iter().map(|u| &u.range))
+                    .chain(analysis.params.iter().map(|p| &p.1))
+                    .chain(
+                        selection
+                            .iter()
+                            .flat_map(|s| s.columns.iter().map(|c| &c.range)),
+                    )
+                    .chain(
+                        selection
+                            .iter()
+                            .flat_map(|s| s.star.iter().map(|s| &s.range)),
+                    );
+                for range in ranges {
+                    assert!(literal.get(range.clone()).is_some(), "{part} {range:?}");
                 }
             }
         }
@@ -1554,6 +1960,108 @@ mod tests {
             .label
             .as_deref(),
             Some("V.1")
+        );
+    }
+
+    #[test]
+    fn o_que_o_senior_sql_2_recusa() {
+        use crate::tbs::{Dictionary, Table};
+        let table = |name: &str, fields: &[&str]| Table {
+            name: name.to_owned(),
+            fields: fields
+                .iter()
+                .map(|f| Field {
+                    name: (*f).to_owned(),
+                    ..Field::default()
+                })
+                .collect(),
+            ..Table::default()
+        };
+        let dictionaries = Dictionaries {
+            production: Some(Arc::new(Dictionary {
+                tables: vec![table("T", &["A", "B"]), table("U", &["A", "C"])],
+                ..Dictionary::default()
+            })),
+            test: None,
+        };
+        let found = |sql: &str, dictionaries: &Dictionaries| -> Vec<(CheckKind, String)> {
+            let statements = Parser::parse_sql(&OracleDialect {}, sql).unwrap();
+            Sql2::check(sql, &statements, dictionaries)
+                .into_iter()
+                .map(|u| (u.kind, sql[u.range].to_owned()))
+                .collect()
+        };
+        let check = |sql: &str| found(sql, &dictionaries);
+        let um = |kind, text: &str| vec![(kind, text.to_owned())];
+        use CheckKind::*;
+
+        assert_eq!(
+            check("SELECT T.A FROM T LEFT OUTER JOIN U ON U.A = T.A WHERE Z = 1"),
+            um(Sql2Join, "LEFT")
+        );
+        assert_eq!(
+            check("SELECT A FROM T JOIN U ON 1 = 1"),
+            um(Sql2Join, "JOIN")
+        );
+        assert_eq!(check("SELECT * FROM X, T"), um(Sql2UnknownTable, "X"));
+        assert_eq!(
+            check(
+                "SELECT A FROM T WHERE Z = 1 AND (u.a = 2 OR T.Z IS NULL)\n AND UPPER(Z2) LIKE 'x' \
+                 AND B IN (1, ROWNUM) AND B BETWEEN 1 AND :n AND T.B = -B"
+            ),
+            [
+                (Sql2UnknownSymbol, "Z".to_owned()),
+                (Sql2UnknownSymbol, "u.a".to_owned()),
+                (Sql2UnknownField, "T.Z".to_owned()),
+                (Sql2UnknownSymbol, "Z2".to_owned()),
+                (Sql2UnknownSymbol, "ROWNUM".to_owned())
+            ]
+        );
+        // Sem a tabela na frente, o campo que duas tabelas têm é ambíguo.
+        assert_eq!(
+            check("SELECT T.B FROM T, U WHERE A = 1 AND C = B"),
+            um(Sql2AmbiguousField, "A")
+        );
+        // Com apelido, o nome da tabela deixa de valer.
+        assert_eq!(
+            check("SELECT A FROM T E WHERE E.A = 1 AND T.A = 2"),
+            um(Sql2UnknownSymbol, "T.A")
+        );
+        // A subconsulta enxerga as tabelas de fora, e nela o campo das duas não é cobrado.
+        assert_eq!(
+            check(
+                "SELECT A FROM T WHERE EXISTS (SELECT 1 FROM U WHERE U.A = T.A AND C = A AND B = 1) \
+                 AND A IN (SELECT Z FROM U) AND A IN (SELECT A FROM X)"
+            ),
+            [
+                (Sql2UnknownSymbol, "Z".to_owned()),
+                (Sql2UnknownTable, "X".to_owned())
+            ]
+        );
+        // O ORDER BY aceita o campo do SELECT, com a tabela igual, o apelido e a posição.
+        assert!(check("SELECT T.A X, B FROM T ORDER BY X, A, T.B DESC, 1").is_empty());
+        assert!(check("SELECT * FROM T ORDER BY B").is_empty());
+        assert_eq!(check("SELECT A FROM T ORDER BY B"), um(Sql2OrderBy, "B"));
+        assert_eq!(
+            check("SELECT T.A FROM T, U ORDER BY U.A, T.A"),
+            um(Sql2OrderBy, "U.A")
+        );
+        assert_eq!(check("SELECT * FROM T ORDER BY Z"), um(Sql2OrderBy, "Z"));
+        // O que não foi testado no ERP deixa o WHERE sem conferência, e a tabela continua.
+        assert_eq!(
+            check("SELECT A FROM T, X WHERE CASE WHEN Z = 1 THEN 1 ELSE 2 END = 1 AND Z2 = 1"),
+            um(Sql2UnknownTable, "X")
+        );
+        // Sem dicionário só sai o que não depende dos campos.
+        assert_eq!(
+            found(
+                "SELECT A FROM T WHERE Z = 1 AND U.A = 2 ORDER BY Z",
+                &Dictionaries::default()
+            ),
+            [
+                (Sql2UnknownSymbol, "U.A".to_owned()),
+                (Sql2OrderBy, "Z".to_owned())
+            ]
         );
     }
 

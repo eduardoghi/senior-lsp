@@ -37,11 +37,12 @@ pub(crate) const SYNTAX: [&str; 17] = [
 ];
 
 /// Códigos que uma diretiva pode esconder, os do validador e os do servidor.
-pub(crate) const SUPPRESSIBLE: [&str; 34] = [
+pub(crate) const SUPPRESSIBLE: [&str; 38] = [
     "SEN040", "SEN041", "SEN042", "SEN043", "SEN044", "SEN045", "SEN046", "SEN047", "SEN048",
     "SEN049", "SEN050", "SEN051", "SEN052", "SEN053", "SEN054", "SEN055", "SEN060", "SEN061",
     "SEN062", "SEN063", "SEN064", "SEN065", "SEN066", "SEN067", "SEN068", "SEN069", "SEN070",
-    "SEN071", "SEN074", "SEN075", "SEN076", "SEN077", "SEN078", "SEN079",
+    "SEN071", "SEN074", "SEN075", "SEN076", "SEN077", "SEN078", "SEN079", "SEN080", "SEN081",
+    "SEN082", "SEN083",
 ];
 
 /// O código existe e pode ser escondido por uma diretiva. Espera o código em maiúsculas.

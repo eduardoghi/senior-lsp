@@ -706,6 +706,34 @@ mod tests {
     }
 
     #[test]
+    fn senior_sql_2_so_vale_na_regra_que_o_usa() {
+        let text = "definir cursor c;\nc.SQL \"SELECT CodEmp FROM E070EMP, E999XXX \\\n\
+                    WHERE Nada = 1 ORDER BY NomEmp\";";
+        let checks = |senior_sql2| -> Vec<(CheckKind, std::string::String)> {
+            let tree = crate::parse(text).unwrap();
+            let symbols = crate::symbols::Symbols::build(&tree, text);
+            let mut inherited = crate::form::Inherited::default();
+            inherited.dictionaries = dicionarios();
+            inherited.senior_sql2 = senior_sql2;
+            let context = crate::builtins::Context::Report;
+            crate::validate::validate(&tree, &symbols, text, context, &inherited)
+                .into_iter()
+                .map(|c| (c.kind, text[c.range].to_owned()))
+                .collect()
+        };
+        assert!(checks(None).is_empty());
+        assert!(checks(Some(false)).is_empty());
+        // O nome sem tabela não é cobrado enquanto uma tabela do FROM é desconhecida.
+        assert_eq!(
+            checks(Some(true)),
+            [
+                (Sql2UnknownTable, "E999XXX".to_owned()),
+                (Sql2OrderBy, "NomEmp".to_owned())
+            ]
+        );
+    }
+
+    #[test]
     fn campo_de_tabela_pelo_dicionario() {
         let ok = com_defs("aTxt = e070emp.NOMEMP; n = E070EMP.CodEmp + 1;");
         assert!(checks_com_dicionario(&ok).is_empty());

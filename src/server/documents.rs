@@ -142,6 +142,7 @@ impl Documents {
             (Context::Report, Some(path)) if crate::report::is_rule_file(&path) => {
                 model_inherited(&crate::report::model(&path, &text))
             }
+            (_, Some(path)) => Arc::new(Inherited::of_rule(&path)),
             _ => Arc::new(Inherited::with_dictionaries(crate::dictionary::current())),
         };
         self.set_with(uri, text, version, context, inherited)
