@@ -111,16 +111,10 @@ impl Inherited {
     /// As entradas do relatório entram como variáveis, menos as que alguma regra define com
     /// `definir`, que vale primeiro.
     pub fn from_model(model: &crate::report::Model) -> Inherited {
-        let rules: Vec<RuleDefs> = model
-            .rules
-            .iter()
-            .map(|(_, embedded)| RuleDefs::of(Arc::from(embedded.rule.text.as_str())))
-            .collect();
         let rules = model
             .rules
             .iter()
-            .zip(&rules)
-            .map(|((path, embedded), defs)| (path.as_path(), defs, Some(embedded)));
+            .map(|(path, embedded)| (path.as_path(), embedded.defs(), Some(embedded)));
         let mut inherited = Inherited::merge(rules, true);
         // A regra que o ERP monta antes das outras define as entradas e depois as descrições. Os
         // outros controles só valem se nada definiu o nome.
@@ -260,7 +254,7 @@ impl Inherited {
 /// O que uma regra define para as outras, tirado dela com um parse só. Juntar as definições de
 /// várias regras ([`Inherited::merge`]) não lê mais o texto, então o resultado de cada regra pode
 /// ser guardado enquanto ela não muda.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct RuleDefs {
     /// Texto da regra, onde ficam as posições das definições.
     text: Arc<str>,
@@ -269,7 +263,7 @@ pub(crate) struct RuleDefs {
 
 /// Variável, cursor, lista, tabela, web service ou função que a regra define. Parâmetro e rótulo
 /// ficam de fora, porque só valem na regra deles.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RuleDef {
     /// Nome em maiúsculas.
     key: String,

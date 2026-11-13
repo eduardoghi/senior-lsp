@@ -166,7 +166,7 @@ impl Documents {
     }
 
     /// Guarda o JSON de um modelo de relatório. As outras regras do modelo, nos outros JSON da
-    /// pasta, são lidas do disco a cada mudança.
+    /// pasta, valem como estão no disco.
     pub(crate) fn set_report(
         &mut self,
         uri: Uri,

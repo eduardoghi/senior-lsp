@@ -63,7 +63,7 @@ impl Server<'_> {
         let Some(first_json) = read(first, false) else {
             return Ok(());
         };
-        let model = crate::report::model(first, &first_json);
+        let model = crate::report::model_uncached(first, &first_json);
         let inherited = super::documents::model_inherited(&model);
         for path in paths {
             let Ok(uri) = crate::form::uri_from_path(path).parse::<Uri>() else {

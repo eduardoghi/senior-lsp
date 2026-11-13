@@ -16,6 +16,25 @@ use text_size::{TextRange, TextSize};
 pub struct Embedded {
     pub json: std::sync::Arc<str>,
     pub rule: EmbeddedRule,
+    /// O que a regra define para as outras do modelo, tirado dela no primeiro uso.
+    defs: std::sync::OnceLock<crate::form::RuleDefs>,
+}
+
+impl Embedded {
+    pub fn new(json: std::sync::Arc<str>, rule: EmbeddedRule) -> Embedded {
+        Embedded {
+            json,
+            rule,
+            defs: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Definições da regra, com um parse só enquanto ela existir. A regra de um JSON que não
+    /// mudou é a mesma de uma tecla para a outra, então o parse dela não se repete.
+    pub(crate) fn defs(&self) -> &crate::form::RuleDefs {
+        self.defs
+            .get_or_init(|| crate::form::RuleDefs::of(self.rule.text.as_str().into()))
+    }
 }
 
 /// Nome cadastrado no modelo fora das regras, que vale nelas como variável sem `definir`. É uma
@@ -187,19 +206,74 @@ pub fn is_rule_file(path: &std::path::Path) -> bool {
     txt && in_rules && in_models
 }
 
+/// O que foi lido de um arquivo do modelo, um JSON ou uma regra separada.
+struct FileScan {
+    /// Texto do arquivo.
+    text: std::sync::Arc<str>,
+    rules: Vec<std::sync::Arc<Embedded>>,
+    entries: Vec<Entry>,
+}
+
+/// O que já foi lido de cada arquivo de um modelo, com a data e o tamanho dele. `None` para o
+/// arquivo que não pôde ser lido.
+type ModelFiles = std::collections::HashMap<
+    std::path::PathBuf,
+    (crate::form::Stamp, Option<std::sync::Arc<FileScan>>),
+>;
+
+/// Quantos modelos ficam guardados. Passando disso o cache recomeça vazio.
+const MAX_MODELS: usize = 4;
+
+thread_local! {
+    /// Arquivos já lidos de cada modelo, pela pasta dele. Com um JSON do modelo aberto no editor,
+    /// cada tecla precisa das regras e das entradas dos outros arquivos da pasta, que só mudam
+    /// quando o arquivo muda no disco.
+    static MODELS: std::cell::RefCell<std::collections::HashMap<std::path::PathBuf, ModelFiles>> =
+        std::cell::RefCell::default();
+}
+
 /// Regras e entradas de todos os JSON do modelo de `json_path`, a pasta dele, e das regras
 /// separadas na pasta `regras`. `json_path` pode ser um JSON ou uma regra separada. O arquivo aberto
-/// no editor entra com `current`, e os outros são lidos do disco, em UTF-8 ou cp1252.
+/// no editor entra com `current`, e os outros valem como estão no disco, em UTF-8 ou cp1252. O que
+/// foi lido de cada um fica guardado enquanto a data e o tamanho dele não mudam.
 pub fn model(json_path: &std::path::Path, current: &str) -> Model {
-    let mut out = Model::default();
-    let dir = if is_rule_file(json_path) {
+    let Some(dir) = model_dir(json_path) else {
+        return Model::default();
+    };
+    MODELS.with_borrow_mut(|models| {
+        if !models.contains_key(dir) && models.len() >= MAX_MODELS {
+            models.clear();
+        }
+        let files = models.entry(dir.to_path_buf()).or_default();
+        build(dir, json_path, current, Some(files))
+    })
+}
+
+/// Como [`model`], sem guardar nada. Serve à análise da pasta inteira, que passa uma vez só por
+/// cada modelo.
+pub fn model_uncached(json_path: &std::path::Path, current: &str) -> Model {
+    match model_dir(json_path) {
+        Some(dir) => build(dir, json_path, current, None),
+        None => Model::default(),
+    }
+}
+
+/// Pasta do modelo de um JSON ou de uma regra separada, que fica em `regras`, um nível abaixo.
+fn model_dir(json_path: &std::path::Path) -> Option<&std::path::Path> {
+    if is_rule_file(json_path) {
         json_path.parent().and_then(|p| p.parent())
     } else {
         json_path.parent()
-    };
-    let Some(dir) = dir else {
-        return out;
-    };
+    }
+}
+
+fn build(
+    dir: &std::path::Path,
+    json_path: &std::path::Path,
+    current: &str,
+    mut cache: Option<&mut ModelFiles>,
+) -> Model {
+    let mut out = Model::default();
     let mut files: Vec<_> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -211,35 +285,6 @@ pub fn model(json_path: &std::path::Path, current: &str) -> Model {
         })
         .collect();
     files.sort();
-    for path in files {
-        let text = if path == json_path {
-            Some(current.to_owned())
-        } else {
-            std::fs::read(&path)
-                .ok()
-                .and_then(|b| match String::from_utf8(b) {
-                    Ok(t) => Some(t),
-                    Err(e) => crate::cp1252::decode(e.as_bytes()),
-                })
-        };
-        let Some(text) = text else {
-            continue;
-        };
-        let json: std::sync::Arc<str> = text.into();
-        out.texts.push((path.clone(), json.clone()));
-        let (rules, entries) = scan(&json);
-        for rule in rules {
-            let embedded = Embedded {
-                json: json.clone(),
-                rule,
-            };
-            out.rules
-                .push((path.clone(), std::sync::Arc::new(embedded)));
-        }
-        for entry in entries {
-            out.entries.push((path.clone(), json.clone(), entry));
-        }
-    }
     let rules_dir = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -258,37 +303,105 @@ pub fn model(json_path: &std::path::Path, current: &str) -> Model {
         .filter(|p| is_rule_file(p))
         .collect();
     separated.sort();
-    for path in separated {
-        let text = if path == json_path {
-            Some(current.to_owned())
-        } else {
-            std::fs::read(&path)
-                .ok()
-                .and_then(|b| match String::from_utf8(b) {
-                    Ok(t) => Some(t),
-                    Err(e) => crate::cp1252::decode(e.as_bytes()),
-                })
-        };
-        let Some(text) = text else {
+    if let Some(cache) = cache.as_deref_mut() {
+        // O arquivo que saiu da pasta não fica guardado.
+        cache.retain(|path, _| files.contains(path) || separated.contains(path));
+    }
+
+    for path in files {
+        let Some(scan) = file_scan(&path, json_path, current, cache.as_deref_mut(), scan_json)
+        else {
             continue;
         };
-        // O evento é a última parte do nome, como `SOnPrint` em `Detalhe.Campo01.SOnPrint.txt`.
-        let prop = path
-            .file_stem()
-            .map(|s| s.to_string_lossy())
-            .and_then(|s| s.rsplit('.').next().map(str::to_owned))
-            .unwrap_or_default();
-        let rule = from_text(prop, &text);
-        if rule.text.trim().is_empty() {
-            continue;
+        out.texts.push((path.clone(), scan.text.clone()));
+        for rule in &scan.rules {
+            out.rules.push((path.clone(), rule.clone()));
         }
-        let embedded = Embedded {
-            json: text.into(),
-            rule,
+        for entry in &scan.entries {
+            out.entries
+                .push((path.clone(), scan.text.clone(), entry.clone()));
+        }
+    }
+    for path in separated {
+        let read = |text| scan_rule_file(&path, text);
+        let Some(scan) = file_scan(&path, json_path, current, cache.as_deref_mut(), read) else {
+            continue;
         };
-        out.rules.push((path, std::sync::Arc::new(embedded)));
+        for rule in &scan.rules {
+            out.rules.push((path.clone(), rule.clone()));
+        }
     }
     out
+}
+
+/// O que `read` tira do arquivo. O aberto no editor é lido de `current` a cada vez, e os outros
+/// vêm do disco, ou do `cache` quando a data e o tamanho não mudaram.
+fn file_scan(
+    path: &std::path::Path,
+    json_path: &std::path::Path,
+    current: &str,
+    cache: Option<&mut ModelFiles>,
+    read: impl FnOnce(String) -> FileScan,
+) -> Option<std::sync::Arc<FileScan>> {
+    if path == json_path {
+        return Some(std::sync::Arc::new(read(current.to_owned())));
+    }
+    // A data vem antes da leitura. Uma mudança entre as duas só faz o arquivo ser lido de novo
+    // na próxima consulta.
+    let now = cache.as_ref().map(|_| crate::form::stamp(path));
+    if let (Some(cache), Some(now)) = (&cache, now)
+        && let Some((before, scan)) = cache.get(path)
+        && *before == now
+    {
+        return scan.clone();
+    }
+    let scan = std::fs::read(path)
+        .ok()
+        .and_then(|b| match String::from_utf8(b) {
+            Ok(t) => Some(t),
+            Err(e) => crate::cp1252::decode(e.as_bytes()),
+        })
+        .map(|text| std::sync::Arc::new(read(text)));
+    if let (Some(cache), Some(now)) = (cache, now) {
+        cache.insert(path.to_path_buf(), (now, scan.clone()));
+    }
+    scan
+}
+
+/// Regras e entradas de um JSON do modelo.
+fn scan_json(text: String) -> FileScan {
+    let text: std::sync::Arc<str> = text.into();
+    let (rules, entries) = scan(&text);
+    FileScan {
+        rules: rules
+            .into_iter()
+            .map(|rule| std::sync::Arc::new(Embedded::new(text.clone(), rule)))
+            .collect(),
+        entries,
+        text,
+    }
+}
+
+/// Regra de um arquivo separado, ou nenhuma se o arquivo está vazio.
+fn scan_rule_file(path: &std::path::Path, text: String) -> FileScan {
+    // O evento é a última parte do nome, como `SOnPrint` em `Detalhe.Campo01.SOnPrint.txt`.
+    let prop = path
+        .file_stem()
+        .map(|s| s.to_string_lossy())
+        .and_then(|s| s.rsplit('.').next().map(str::to_owned))
+        .unwrap_or_default();
+    let rule = from_text(prop, &text);
+    let text: std::sync::Arc<str> = text.into();
+    let rules = if rule.text.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![std::sync::Arc::new(Embedded::new(text.clone(), rule))]
+    };
+    FileScan {
+        text,
+        rules,
+        entries: Vec::new(),
+    }
 }
 
 /// Regra de um arquivo de texto. O "JSON" dela é o próprio arquivo, e cada linha anda junto com
@@ -832,6 +945,110 @@ mod tests {
         }
         let rule = &extract("{\"rule\": {\"lines\": [\"a\\\u{e9}b\"]}}")[0];
         assert_eq!(rule.text, "a\u{e9}b");
+    }
+
+    #[test]
+    fn ve_a_mudanca_dos_outros_arquivos_do_modelo() {
+        let base = std::env::temp_dir().join(format!("senior-lsp-modelo-{}", std::process::id()));
+        let dir = base.join("Modelos/M1.GER");
+        std::fs::create_dir_all(dir.join("regras")).unwrap();
+        let rule =
+            |code: &str| format!(r#"{{"rule": {{"prop_name": "SOnPrint", "lines": ["{code}"]}}}}"#);
+        let open = dir.join("Aberto.json");
+        let other = dir.join("Outro.json");
+        let separated = dir.join("regras/Outro.Campo.SOnPrint.txt");
+        std::fs::write(&open, rule("no disco")).unwrap();
+        std::fs::write(&other, rule("definir numero nUm;")).unwrap();
+        std::fs::write(&separated, "definir alfa aSeparada;").unwrap();
+        let texts = |model: &Model| -> Vec<String> {
+            model
+                .rules
+                .iter()
+                .map(|(_, e)| e.rule.text.clone())
+                .collect()
+        };
+
+        // O arquivo aberto vale pelo texto do editor, e os outros pelo disco.
+        let first = model(&open, &rule("do editor"));
+        assert_eq!(
+            texts(&first),
+            [
+                "do editor",
+                "definir numero nUm;",
+                "definir alfa aSeparada;"
+            ]
+        );
+        // Sem mudança no disco, a regra dos outros arquivos é a mesma em memória, com as
+        // definições já tiradas, e a do arquivo aberto é lida de novo.
+        first.rules[1].1.defs();
+        let again = model(&open, &rule("do editor"));
+        assert!(std::sync::Arc::ptr_eq(&first.rules[1].1, &again.rules[1].1));
+        assert!(std::sync::Arc::ptr_eq(&first.rules[2].1, &again.rules[2].1));
+        assert!(!std::sync::Arc::ptr_eq(
+            &first.rules[0].1,
+            &again.rules[0].1
+        ));
+        // Sem guardar, tudo vem do disco, menos o aberto.
+        let uncached = model_uncached(&open, &rule("do editor"));
+        assert_eq!(texts(&uncached), texts(&first));
+        assert!(!std::sync::Arc::ptr_eq(
+            &first.rules[1].1,
+            &uncached.rules[1].1
+        ));
+
+        // Outro arquivo alterado, com tamanho diferente.
+        std::fs::write(&other, rule("definir numero nDois; nDois = 2;")).unwrap();
+        std::fs::write(&separated, "definir alfa aOutra; aOutra = \"x\";").unwrap();
+        let changed = model(&open, &rule("do editor"));
+        assert_eq!(
+            texts(&changed),
+            [
+                "do editor",
+                "definir numero nDois; nDois = 2;",
+                "definir alfa aOutra; aOutra = \"x\";"
+            ]
+        );
+
+        // A regra separada aberta no editor também vale pelo texto do editor.
+        let from_rule = model(&separated, "definir data dEditor;");
+        assert_eq!(
+            texts(&from_rule),
+            [
+                "no disco",
+                "definir numero nDois; nDois = 2;",
+                "definir data dEditor;"
+            ]
+        );
+
+        // Arquivo apagado e arquivo novo.
+        std::fs::remove_file(&other).unwrap();
+        std::fs::remove_file(&separated).unwrap();
+        std::fs::write(dir.join("Novo.json"), rule("definir numero nNovo;")).unwrap();
+        let removed = model(&open, &rule("do editor"));
+        assert_eq!(texts(&removed), ["do editor", "definir numero nNovo;"]);
+        assert_eq!(removed.texts.len(), 2);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn guarda_poucos_modelos() {
+        let base = std::env::temp_dir().join(format!("senior-lsp-modelos-{}", std::process::id()));
+        let file = |n: usize| base.join(format!("Modelos/M{n}.GER/A.json"));
+        for n in 0..=MAX_MODELS {
+            std::fs::create_dir_all(file(n).parent().unwrap()).unwrap();
+            std::fs::write(file(n), "{}").unwrap();
+            let other = file(n).with_file_name("B.json");
+            let json = format!(r#"{{"rule": {{"lines": ["definir numero n{n};"]}}}}"#);
+            std::fs::write(other, json).unwrap();
+        }
+        // Passando do limite o cache recomeça vazio, e o resultado continua certo.
+        for n in 0..=MAX_MODELS {
+            let rules = model(&file(n), "{}").rules;
+            assert_eq!(rules[0].1.rule.text, format!("definir numero n{n};"));
+        }
+        assert_eq!(MODELS.with_borrow(std::collections::HashMap::len), 1);
+        assert_eq!(model(&file(0), "{}").rules.len(), 1);
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
