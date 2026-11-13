@@ -726,6 +726,9 @@ impl Context {
             fields.push(self.field(r)?);
         }
         r.list_end()?;
+        // A lista cresce dobrando e não muda mais depois de lida. No dicionário inteiro a folga
+        // passava de um quarto dos campos, cada um com centenas de bytes.
+        fields.shrink_to_fit();
         let positions = |list: Vec<i32>| -> Vec<usize> {
             list.into_iter()
                 .filter_map(|f| usize::try_from(f).ok())
