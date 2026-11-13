@@ -90,6 +90,8 @@ pub enum CheckKind {
     Sql2AmbiguousField,
     /// Campo do ORDER BY que não está no SELECT, com o Senior SQL 2.
     Sql2OrderBy,
+    /// INSERT com menos valores do que campos, com o Senior SQL 2.
+    Sql2InsertValues,
     /// `SQL_Retornar*(obj, "coluna", ...)` com uma coluna que não está no SELECT. Compila, e a
     /// execução para.
     ReturnedColumnNotInSelect,
@@ -138,6 +140,7 @@ impl CheckKind {
                 | CheckKind::Sql2UnknownField
                 | CheckKind::Sql2AmbiguousField
                 | CheckKind::Sql2OrderBy
+                | CheckKind::Sql2InsertValues
         )
     }
 }
@@ -227,7 +230,9 @@ pub fn validate(
                 unknown_function(tree, symbols, text, context, inherited, node, &mut checks);
                 native_sql.visit(tree, text, node);
                 sources.check_returned_column(tree, text, node, &mut checks);
+                sql::exec_sql(tree, &scope, &first_uses, node, &mut checks);
             }
+            KeywordStmt => sql::exec_sql(tree, &scope, &first_uses, node, &mut checks),
             FieldCommand => {
                 sql::cursor_sql(tree, &scope, &first_uses, node, &mut checks);
                 if let Some(uses) = &mut column_uses {

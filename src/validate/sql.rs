@@ -17,8 +17,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use sqlparser::ast::{
-    Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Ident, OrderByKind, Query, Select,
-    SelectItem, SetExpr, Statement, TableFactor, TableWithJoins, UnaryOperator,
+    AssignmentTarget, Delete, Expr, FromTable as DeleteFrom, FunctionArg, FunctionArgExpr,
+    FunctionArguments, Ident, Insert, ObjectName, OrderByKind, Query, Select, SelectItem, SetExpr,
+    Statement, TableFactor, TableObject, TableWithJoins, UnaryOperator, Update,
 };
 use sqlparser::dialect::OracleDialect;
 use sqlparser::parser::Parser;
@@ -694,35 +695,144 @@ impl<'a> Sql2<'a> {
         statements: &[Statement],
         dictionaries: &'a Dictionaries,
     ) -> Vec<Unknown> {
-        let [Statement::Query(query)] = statements else {
-            return Vec::new();
-        };
-        let SetExpr::Select(select) = query.body.as_ref() else {
-            return Vec::new();
-        };
         let mut sql2 = Sql2 {
             sql,
             dictionaries,
             scopes: Vec::new(),
             found: Vec::new(),
         };
-        if select.from.iter().any(|from| !from.joins.is_empty()) {
-            return sql2.join().into_iter().collect();
+        match statements {
+            [Statement::Query(query)] => {
+                let SetExpr::Select(select) = query.body.as_ref() else {
+                    return Vec::new();
+                };
+                if select.from.iter().any(|from| !from.joins.is_empty()) {
+                    return sql2.join().into_iter().collect();
+                }
+                if sql2.filtered(&select.from, select.selection.as_ref()) {
+                    sql2.order_by(query, select);
+                }
+            }
+            [Statement::Update(update)] => sql2.update(update),
+            [Statement::Delete(delete)] => sql2.delete(delete),
+            [Statement::Insert(insert)] => sql2.insert(insert),
+            _ => {}
         }
-        let Some(tables) = sql2.tables(select) else {
-            return Vec::new();
-        };
-        sql2.scopes.push(tables);
-        let tables_found = sql2.found.len();
-        let walked = match &select.selection {
-            Some(selection) => sql2.expr(selection),
-            None => Some(()),
-        };
-        if walked.is_none() {
-            sql2.found.truncate(tables_found);
-        }
-        sql2.order_by(query, select);
         sql2.found
+    }
+
+    /// Abre as tabelas de um comando e confere o WHERE dele. Uma construção do WHERE que não
+    /// foi testada tira o que já tinha sido achado nele. `false` quando as tabelas não puderam
+    /// ser lidas.
+    fn filtered(&mut self, from: &[TableWithJoins], selection: Option<&Expr>) -> bool {
+        let Some(tables) = self.tables(from) else {
+            return false;
+        };
+        self.scopes.push(tables);
+        let tables_found = self.found.len();
+        if selection.is_some_and(|selection| self.expr(selection).is_none()) {
+            self.found.truncate(tables_found);
+        }
+        true
+    }
+
+    /// Nome de um só identificador, como o de uma tabela sem o esquema na frente.
+    fn single(name: &ObjectName) -> Option<&Ident> {
+        match name.0.as_slice() {
+            [part] => part.as_ident(),
+            _ => None,
+        }
+    }
+
+    /// Acusa o campo que a tabela do comando não tem. O campo com a tabela na frente, que o
+    /// Senior SQL 2 não aceita no SET, fica de fora.
+    fn column(&mut self, name: &ObjectName) {
+        let Some(field) = Sql2::single(name).filter(|f| f.quote_style.is_none()) else {
+            return;
+        };
+        let Some(table) = self.scopes.last().and_then(|tables| tables.first()) else {
+            return;
+        };
+        let missing = table
+            .fields
+            .is_some_and(|f| !f.iter().any(|f| f.name.eq_ignore_ascii_case(&field.value)));
+        if missing {
+            let label = format!("{}.{}", table.name, field.value.to_uppercase());
+            self.push(CheckKind::Sql2UnknownField, self.range(field, field), label);
+        }
+    }
+
+    /// `UPDATE T SET A = ... WHERE ...`, com a tabela, os campos do SET e os nomes do WHERE.
+    fn update(&mut self, update: &Update) {
+        if update.from.is_none()
+            && self.filtered(
+                std::slice::from_ref(&update.table),
+                update.selection.as_ref(),
+            )
+        {
+            for assignment in &update.assignments {
+                if let AssignmentTarget::ColumnName(name) = &assignment.target {
+                    self.column(name);
+                }
+            }
+        }
+    }
+
+    /// `DELETE FROM T WHERE ...`, com a tabela e os nomes do WHERE.
+    fn delete(&mut self, delete: &Delete) {
+        let (DeleteFrom::WithFromKeyword(from) | DeleteFrom::WithoutKeyword(from)) = &delete.from;
+        if delete.tables.is_empty() && delete.using.is_none() {
+            self.filtered(from, delete.selection.as_ref());
+        }
+    }
+
+    /// `INSERT INTO T (A, B) VALUES (...)`, com a tabela, os campos e a quantidade de valores,
+    /// que não pode ser menor que a de campos.
+    fn insert(&mut self, insert: &Insert) {
+        let TableObject::TableName(name) = &insert.table else {
+            return;
+        };
+        let Some(ident) = Sql2::single(name) else {
+            return;
+        };
+        let table = ident.value.to_uppercase();
+        let fields = self.rowset(&table);
+        if fields.is_none() && !self.dictionaries.is_empty() {
+            self.push(
+                CheckKind::Sql2UnknownTable,
+                self.range(ident, ident),
+                table.clone(),
+            );
+        }
+        self.scopes.push(vec![FromTable {
+            name: table,
+            alias: None,
+            fields,
+        }]);
+        for column in &insert.columns {
+            self.column(column);
+        }
+        let values = insert
+            .source
+            .as_ref()
+            .and_then(|query| match query.body.as_ref() {
+                SetExpr::Values(values) => values.rows.first().map(|row| row.content.len()),
+                _ => None,
+            });
+        let columns = insert.columns.len();
+        if let (Some(values), Some(first), Some(last)) = (
+            values.filter(|&values| values < columns),
+            insert.columns.first().and_then(Sql2::single),
+            insert.columns.last().and_then(Sql2::single),
+        ) {
+            let label = format!("{columns}|{values}");
+            self.push(CheckKind::Sql2InsertValues, self.range(first, last), label);
+        }
+    }
+
+    fn rowset(&self, table: &str) -> Option<&'a [Field]> {
+        let dictionaries = self.dictionaries;
+        rowset(&dictionaries.production, table).or_else(|| rowset(&dictionaries.test, table))
     }
 
     /// Posição de um nome no texto do SQL, pela linha e coluna que o `sqlparser` guarda.
@@ -786,9 +896,9 @@ impl<'a> Sql2<'a> {
 
     /// Tabelas do FROM de uma consulta, acusando a que o dicionário não tem. `None` quando o
     /// FROM tem junção ou algo que não é uma tabela pelo nome.
-    fn tables(&mut self, select: &Select) -> Option<Vec<FromTable<'a>>> {
+    fn tables(&mut self, from: &[TableWithJoins]) -> Option<Vec<FromTable<'a>>> {
         let mut tables = Vec::new();
-        for TableWithJoins { relation, joins } in &select.from {
+        for TableWithJoins { relation, joins } in from {
             if !joins.is_empty() {
                 return None;
             }
@@ -883,7 +993,7 @@ impl<'a> Sql2<'a> {
         let SetExpr::Select(select) = query.body.as_ref() else {
             return None;
         };
-        let tables = self.tables(select)?;
+        let tables = self.tables(&select.from)?;
         self.scopes.push(tables);
         let walked = (|| {
             for item in &select.projection {
@@ -1618,9 +1728,7 @@ fn string_literal(tree: &Tree, node: NodeId) -> Option<text_size::TextRange> {
 
 /// `cur.SQL "SELECT ..."` com uma coluna que o compilador recusa, como a constante e a tabela ou
 /// o campo que o dicionário de dados não tem, ou com um `:nome` que ainda não apareceu na regra.
-/// O compilador só aceita como parâmetro o nome que já foi definido ou usado antes do comando. O
-/// parâmetro só é conferido na regra comum, porque na tela e no relatório o nome pode ter sido
-/// usado, sem `definir`, numa regra que o compilador lê antes desta.
+/// O compilador só aceita como parâmetro o nome que já foi definido ou usado antes do comando.
 pub(super) fn cursor_sql(
     tree: &Tree,
     scope: &super::types::Scope,
@@ -1664,24 +1772,50 @@ pub(super) fn cursor_sql(
             label: unknown.label.clone(),
         });
     }
-    if scope.inherited.senior_sql2 == Some(true) {
-        // A tabela do FROM que as colunas já acusaram não sai de novo.
-        let reported = |u: &Unknown| {
-            let twice = |o: &Unknown| o.kind == CheckKind::CursorUnknownTable && o.range == u.range;
-            u.kind == CheckKind::Sql2UnknownTable && analysis.unknown.iter().any(twice)
-        };
-        for unknown in analysis.sql2.iter().filter(|u| !reported(u)) {
-            checks.push(Check {
-                kind: unknown.kind,
-                range: text_size::TextRange::new(at(unknown.range.start), at(unknown.range.end)),
-                name: None,
-                label: unknown.label.clone(),
-            });
-        }
+    senior_sql2(scope, &analysis, range, checks);
+    parameters(scope, first_uses, &analysis, range, checks);
+}
+
+/// O que o Senior SQL 2 recusa no SQL do literal em `range`, quando a regra o usa.
+fn senior_sql2(
+    scope: &super::types::Scope,
+    analysis: &Analysis,
+    range: text_size::TextRange,
+    checks: &mut Vec<Check>,
+) {
+    if scope.inherited.senior_sql2 != Some(true) {
+        return;
     }
+    let at = |offset: usize| range.start() + text_size::TextSize::new(offset as u32);
+    // A tabela do FROM que as colunas já acusaram não sai de novo.
+    let reported = |u: &Unknown| {
+        let twice = |o: &Unknown| o.kind == CheckKind::CursorUnknownTable && o.range == u.range;
+        u.kind == CheckKind::Sql2UnknownTable && analysis.unknown.iter().any(twice)
+    };
+    for unknown in analysis.sql2.iter().filter(|u| !reported(u)) {
+        checks.push(Check {
+            kind: unknown.kind,
+            range: text_size::TextRange::new(at(unknown.range.start), at(unknown.range.end)),
+            name: None,
+            label: unknown.label.clone(),
+        });
+    }
+}
+
+/// Os `:nome` do SQL do literal em `range` que ainda não apareceram na regra. Só na regra comum,
+/// porque na tela e no relatório o nome pode ter sido usado, sem `definir`, numa regra que o
+/// compilador lê antes desta.
+fn parameters(
+    scope: &super::types::Scope,
+    first_uses: &FirstUses,
+    analysis: &Analysis,
+    range: text_size::TextRange,
+    checks: &mut Vec<Check>,
+) {
     if scope.context != crate::builtins::Context::Rule {
         return;
     }
+    let at = |offset: usize| range.start() + text_size::TextSize::new(offset as u32);
     for (name, param) in &analysis.params {
         let known = first_uses.before(name, range.start())
             || scope.inherited.variable(name).is_some()
@@ -1694,6 +1828,50 @@ pub(super) fn cursor_sql(
                 label: None,
             });
         }
+    }
+}
+
+/// `ExecSql "UPDATE ..."` e `ExecSqlEx("UPDATE ...", nErro, aMsg)` com o texto do comando escrito
+/// na regra. No SQL nativo o compilador só confere o `:nome` do `ExecSql`, que tem de já ter
+/// aparecido na regra. Com o Senior SQL 2 ele lê o comando dos dois, e cobra a tabela, os campos
+/// do SET e do INSERT, os nomes do WHERE e a quantidade de valores. O SELECT fica de fora, porque
+/// só foi testado o que compila. Todos os casos foram conferidos no ERP.
+pub(super) fn exec_sql(
+    tree: &Tree,
+    scope: &super::types::Scope,
+    first_uses: &FirstUses,
+    node: NodeId,
+    checks: &mut Vec<Check>,
+) {
+    let keyword = tree.tokens().kind(tree.token_range(node).start);
+    let value = match (tree.kind(node), keyword) {
+        (SyntaxKind::KeywordStmt, SyntaxKind::ExecSqlKw) => tree.children(node).next(),
+        (SyntaxKind::CallStmt, SyntaxKind::ExecSqlExKw) => tree
+            .children(node)
+            .next()
+            .and_then(|call| {
+                tree.children(call)
+                    .find(|&c| tree.kind(c) == SyntaxKind::ArgList)
+            })
+            .and_then(|args| tree.children(args).next()),
+        _ => return,
+    };
+    let Some(range) = value.and_then(|value| string_literal(tree, value)) else {
+        return;
+    };
+    let literal = &scope.text[range];
+    let is_select = literal
+        .get(1..)
+        .map(str::trim_start)
+        .and_then(|sql| sql.get(.."SELECT".len()))
+        .is_some_and(|word| word.eq_ignore_ascii_case("SELECT"));
+    if is_select {
+        return;
+    }
+    let analysis = analysis(literal, &scope.inherited.dictionaries);
+    senior_sql2(scope, &analysis, range, checks);
+    if keyword == SyntaxKind::ExecSqlKw {
+        parameters(scope, first_uses, &analysis, range, checks);
     }
 }
 
@@ -2052,6 +2230,37 @@ mod tests {
             check("SELECT A FROM T, X WHERE CASE WHEN Z = 1 THEN 1 ELSE 2 END = 1 AND Z2 = 1"),
             um(Sql2UnknownTable, "X")
         );
+        // UPDATE, DELETE e INSERT têm a tabela, os campos e o WHERE conferidos.
+        assert_eq!(
+            check("UPDATE X SET A = 1 WHERE B = 2"),
+            um(Sql2UnknownTable, "X")
+        );
+        assert_eq!(
+            check("UPDATE T SET A = 1, Z = :n, T.Z2 = 3 WHERE B = 2 AND Z3 = 4"),
+            [
+                (Sql2UnknownSymbol, "Z3".to_owned()),
+                (Sql2UnknownField, "Z".to_owned())
+            ]
+        );
+        assert_eq!(
+            check("DELETE FROM T WHERE Z = 1 AND A = 2"),
+            um(Sql2UnknownSymbol, "Z")
+        );
+        assert_eq!(check("DELETE FROM X"), um(Sql2UnknownTable, "X"));
+        assert_eq!(
+            check("INSERT INTO T (A, Z, B) VALUES (1, 'x', :n)"),
+            um(Sql2UnknownField, "Z")
+        );
+        assert_eq!(
+            check("INSERT INTO T (A, B) VALUES (1)"),
+            um(Sql2InsertValues, "A, B")
+        );
+        assert_eq!(
+            check("INSERT INTO X (A) VALUES (1)"),
+            um(Sql2UnknownTable, "X")
+        );
+        assert!(check("INSERT INTO T (A, B) VALUES (1, 2)").is_empty());
+        assert!(check("UPDATE T SET A = B + 1 WHERE A = 1").is_empty());
         // Sem dicionário só sai o que não depende dos campos.
         assert_eq!(
             found(

@@ -406,8 +406,8 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
         CheckKind::Sql2UnknownTable => (
             "SEN081",
             format!(
-                "A tabela {name} não está no dicionário de dados, e o Senior SQL 2 confere as \
-                 tabelas do FROM (Tabela ou view \"{name}\" inexistente na base de dados)."
+                "A tabela {name} não está no dicionário de dados, e o Senior SQL 2 só compila \
+                 o comando com a tabela existindo (\"{name}\" inexistente na base de dados)."
             ),
         ),
         CheckKind::Sql2UnknownSymbol => (
@@ -443,6 +443,16 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                  isso não pode ser utilizado no Order By)."
             ),
         ),
+        CheckKind::Sql2InsertValues => {
+            let (columns, values) = name.split_once('|').unwrap_or((name, ""));
+            (
+                "SEN084",
+                format!(
+                    "O INSERT tem {columns} campos e {values} valores, e a regra usa o Senior \
+                     SQL 2 (Cláusula VALUES tem menos valores do que o necessário)."
+                ),
+            )
+        }
         CheckKind::CursorColumnUnused => (
             "SEN076",
             format!(

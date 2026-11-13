@@ -734,6 +734,43 @@ mod tests {
     }
 
     #[test]
+    fn execsql_com_e_sem_senior_sql_2() {
+        let text = "definir numero nErr; definir alfa aMsg;\n\
+                    ExecSql \"UPDATE E070EMP SET Nada = :nErr WHERE CodEmp = :nDepois\";\n\
+                    ExecSqlEx(\"DELETE FROM E999XXX WHERE A = :nSolto\", nErr, aMsg);\n\
+                    ExecSql \"SELECT Nada FROM E999XXX\";\nExecSql aMsg;\nnDepois = 1;";
+        let checks = |senior_sql2, context| -> Vec<(CheckKind, std::string::String)> {
+            let tree = crate::parse(text).unwrap();
+            let symbols = crate::symbols::Symbols::build(&tree, text);
+            let mut inherited = crate::form::Inherited::default();
+            inherited.dictionaries = dicionarios();
+            inherited.senior_sql2 = senior_sql2;
+            crate::validate::validate(&tree, &symbols, text, context, &inherited)
+                .into_iter()
+                .filter(|c| c.kind != Unused)
+                .map(|c| (c.kind, text[c.range].to_owned()))
+                .collect()
+        };
+        let (rule, sgi) = (
+            crate::builtins::Context::Rule,
+            crate::builtins::Context::Sgi,
+        );
+        // No SQL nativo só o parâmetro do ExecSql é conferido, e só na regra comum.
+        let parametro = vec![(CursorUnknownParameter, "nDepois".to_owned())];
+        assert_eq!(checks(None, rule), parametro);
+        assert_eq!(checks(Some(false), rule), parametro);
+        assert!(checks(Some(false), sgi).is_empty());
+        // Com o Senior SQL 2 o comando dos dois é lido, e o SELECT fica de fora.
+        assert_eq!(
+            checks(Some(true), sgi),
+            [
+                (Sql2UnknownField, "Nada".to_owned()),
+                (Sql2UnknownTable, "E999XXX".to_owned())
+            ]
+        );
+    }
+
+    #[test]
     fn campo_de_tabela_pelo_dicionario() {
         let ok = com_defs("aTxt = e070emp.NOMEMP; n = E070EMP.CodEmp + 1;");
         assert!(checks_com_dicionario(&ok).is_empty());

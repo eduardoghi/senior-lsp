@@ -342,11 +342,12 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN076 | dica | coluna do SELECT de um cursor que a regra não lê, ou `*` de que ela só lê parte dos campos, só na regra comum |
 | SEN077 | erro | coluna do SELECT de um cursor com apelido ou `DISTINCT` e sem a tabela na frente |
 | SEN078 | erro | o mesmo nome de campo vindo de duas tabelas no SELECT de um cursor |
-| SEN079 | erro | `:variavel` no SQL de um cursor que ainda não foi definida nem usada na regra, só na regra comum |
+| SEN079 | erro | `:variavel` no SQL de um cursor ou de um `ExecSql` que ainda não foi definida nem usada na regra, só na regra comum |
 | SEN080 | erro | JOIN no SQL de um cursor, na regra que usa o Senior SQL 2 |
-| SEN081 | erro | tabela do FROM de um cursor que não está no dicionário de dados, na regra que usa o Senior SQL 2 |
-| SEN082 | erro | nome no WHERE de um cursor que não é campo das tabelas do FROM, ou que mais de uma delas tem, na regra que usa o Senior SQL 2 |
+| SEN081 | erro | tabela do SQL de um cursor, de um `ExecSql` ou de um `ExecSqlEx` que não está no dicionário de dados, na regra que usa o Senior SQL 2 |
+| SEN082 | erro | nome no WHERE que não é campo das tabelas do comando, ou que mais de uma delas tem, e campo do SET ou do INSERT que a tabela não tem, na regra que usa o Senior SQL 2 |
 | SEN083 | erro | campo do ORDER BY de um cursor que não está no SELECT, na regra que usa o Senior SQL 2 |
+| SEN084 | erro | INSERT com menos valores do que campos, na regra que usa o Senior SQL 2 |
 
 O SEN068 e o SEN070 saem como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
 conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da
@@ -433,7 +434,9 @@ procurada na primeira tabela do FROM (SEN075).
 
 O compilador confere mais quando a regra usa o Senior SQL 2. Ele não aceita JOIN (SEN080), cobra
 que as tabelas do FROM existam (SEN081), procura nelas cada nome do WHERE (SEN082) e só aceita no
-ORDER BY o que está no SELECT (SEN083). No SQL nativo nada disso é conferido na compilação. O
+ORDER BY o que está no SELECT (SEN083). No `ExecSql "..."` e no `ExecSqlEx("...", ...)` com o
+comando escrito na regra, ele cobra a tabela, os campos do SET e do INSERT, os nomes do WHERE e a
+quantidade de valores do INSERT (SEN084). No SQL nativo nada disso é conferido na compilação. O
 servidor sabe o modo da regra pela opção `useSQLSenior2` do JSON que a exportação grava ao lado do
 texto dela (`General_Infos.json` na regra, `Rule.json` no web service e `definition.json` na tela
 SGI). Sem esse arquivo, como numa regra solta ou num modelo de relatório, essas quatro
