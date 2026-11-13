@@ -286,6 +286,10 @@ fn unused(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
 }
 
 /// Dos nomes em `wanted` (em maiúsculas), os que aparecem como palavra em algum texto do arquivo.
+///
+/// Roda a cada tecla e passa por todos os textos, que numa regra com muito SQL somam mais de 1 MB.
+/// Os nomes procurados são poucos, então quase nenhuma palavra tem o tamanho e a primeira letra de
+/// um deles, e a palavra é descartada por aí antes de ser copiada e consultada no conjunto.
 fn names_in_strings(
     tree: &Tree,
     text: &str,
@@ -295,29 +299,74 @@ fn names_in_strings(
     if wanted.is_empty() {
         return found;
     }
+    let longest = wanted.iter().map(|w| w.len()).max().unwrap_or(0);
+    let mut lengths = vec![false; longest + 1];
+    let mut firsts = [false; 256];
+    for name in wanted {
+        lengths[name.len()] = true;
+        if let Some(&b) = name.as_bytes().first() {
+            firsts[b as usize] = true;
+            firsts[b.to_ascii_lowercase() as usize] = true;
+        }
+    }
     let tokens = tree.tokens();
     let mut upper = std::string::String::new();
     for i in 0..tokens.len() {
         if tokens.kind(i) != SyntaxKind::String {
             continue;
         }
-        for name in words(tokens.text(i, text)) {
+        for word in words(tokens.text(i, text)) {
+            if word.len() > longest || !lengths[word.len()] || !firsts[word.as_bytes()[0] as usize]
+            {
+                continue;
+            }
             upper.clear();
-            upper.push_str(name);
+            upper.push_str(word);
             upper.make_ascii_uppercase();
             if wanted.contains(&upper) && !found.contains(&upper) {
                 found.insert(upper.clone());
+                // Com todos achados, o resto dos textos não muda nada.
+                if found.len() == wanted.len() {
+                    return found;
+                }
             }
         }
     }
     found
 }
 
-/// Palavras de um texto que podem ser nome, como `nCodEmp` em `"WHERE CODEMP = :nCodEmp"`.
+/// Bytes que formam nome: letras sem acento, dígitos e `_`.
+static WORD: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut b = 0;
+    while b < 256 {
+        table[b] = (b as u8).is_ascii_alphanumeric() || b as u8 == b'_';
+        b += 1;
+    }
+    table
+};
+
+/// Palavras de um texto que podem ser nome, como `nCodEmp` em `"WHERE CODEMP = :nCodEmp"`. A
+/// varredura é por bytes. Os de um caractere acentuado nunca são de nome, então separam as
+/// palavras como qualquer outro, sem decodificar o texto.
 fn words(literal: &str) -> impl Iterator<Item = &str> {
-    literal
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter(|w| w.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'))
+    let bytes = literal.as_bytes();
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        loop {
+            let start = at + bytes[at..].iter().position(|&b| WORD[b as usize])?;
+            let len = bytes[start..]
+                .iter()
+                .position(|&b| !WORD[b as usize])
+                .unwrap_or(bytes.len() - start);
+            at = start + len;
+            // Nome não começa com dígito.
+            if !bytes[start].is_ascii_digit() {
+                // A palavra começa e termina em byte ASCII, que é fronteira de caractere.
+                return Some(&literal[start..at]);
+            }
+        }
+    })
 }
 
 fn binary(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {
@@ -645,6 +694,40 @@ mod tests {
     fn palavras_de_um_texto() {
         let found: Vec<_> = words("\"A = :nCodEmp AND B=:x_1, 9x\"").collect();
         assert_eq!(found, ["A", "nCodEmp", "AND", "B", "x_1"]);
+        // Caractere acentuado separa as palavras, e a palavra pode encostar nas pontas do texto.
+        let found: Vec<_> = words("açãoX é_1 fim").collect();
+        assert_eq!(found, ["a", "oX", "_1", "fim"]);
+        assert_eq!(
+            words("").count() + words("\"\"").count() + words("12 3.4").count(),
+            0
+        );
+    }
+
+    #[test]
+    fn nome_no_texto_so_conta_como_palavra_inteira() {
+        // Mesmo tamanho ou mesma primeira letra de um nome procurado não bastam, e o nome dentro
+        // de outra palavra também não.
+        let text = "definir numero nValor; definir numero nOutro; definir alfa aLonga_1;\n\
+                    definir alfa aTexto;\n\
+                    aTexto = \"nValo1 nValorX XnValor nOutr0 9nOutro aLonga_\";\n\
+                    Mensagem(Retorna, aTexto);";
+        let unused: Vec<_> = checks(text)
+            .into_iter()
+            .filter(|(kind, _)| *kind == CheckKind::Unused)
+            .map(|(_, name)| name)
+            .collect();
+        assert_eq!(unused, ["nValor", "nOutro", "aLonga_1"]);
+
+        // Entre pontuação, com acento encostado, em outra caixa e num texto de várias linhas.
+        let text = "definir numero nValor; definir numero nOutro; definir alfa aLonga_1;\n\
+                    definir alfa aTexto;\n\
+                    aTexto = \"(:NVALOR),énoutroé \\\n  =ALONGA_1\";\n\
+                    Mensagem(Retorna, aTexto);";
+        assert!(
+            checks(text)
+                .iter()
+                .all(|(kind, _)| *kind != CheckKind::Unused)
+        );
     }
 
     pub(super) fn checks(text: &str) -> Vec<(CheckKind, &str)> {
