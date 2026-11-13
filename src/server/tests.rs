@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
-    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, Initialized,
-    Notification as _, PublishDiagnostics, ShowMessage,
+    DidChangeConfiguration, DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit,
+    Initialized, Notification as _, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::request::{
     Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest, Initialize,
@@ -1104,6 +1104,59 @@ fn tipo_padrao_vale_para_arquivo_solto_e_nao_para_rule_txt() {
 }
 
 #[test]
+fn configuracao_nova_troca_o_tipo_padrao_sem_reiniciar() {
+    let (editor, _) = Editor::start(None);
+    let solto = "untitled:Untitled-1";
+    editor.open(solto, 1, TELA);
+    assert_eq!(codes(&editor.diagnostics()), ["SEN052"]);
+    editor.open(RULE, 1, TELA);
+    assert_eq!(codes(&editor.diagnostics()), ["SEN052"]);
+
+    // Os dois abertos são analisados de novo, e só o arquivo solto muda de tipo.
+    editor.notify(
+        DidChangeConfiguration::METHOD,
+        json!({ "settings": { "tipo_padrao": "tela" } }),
+    );
+    let mut depois = [editor.diagnostics(), editor.diagnostics()];
+    depois.sort_by(|a, b| a.uri.as_str().cmp(b.uri.as_str()));
+    assert_eq!(depois[0].uri.as_str(), RULE);
+    assert_eq!(codes(&depois[0]), ["SEN052"]);
+    assert_eq!(depois[1].uri.as_str(), solto);
+    assert!(codes(&depois[1]).is_empty());
+
+    // O mesmo valor, uma opção que não veio e um aviso sem opções não refazem nada.
+    for settings in [json!({ "tipo_padrao": "tela" }), json!({}), json!(null)] {
+        editor.notify(
+            DidChangeConfiguration::METHOD,
+            json!({ "settings": settings }),
+        );
+    }
+    editor.notify(DidChangeConfiguration::METHOD, json!({}));
+    editor.quiet();
+
+    // Opção fora do formato vira aviso, como no initialize, e vale o tipo comum.
+    editor.notify(
+        DidChangeConfiguration::METHOD,
+        json!({ "settings": { "tipo_padrao": "identificador" } }),
+    );
+    let aviso = loop {
+        if let Message::Notification(n) = editor.recv()
+            && n.method == lsp_types::notification::LogMessage::METHOD
+        {
+            break n.params["message"].as_str().unwrap().to_owned();
+        }
+    };
+    assert_eq!(
+        aviso,
+        "senior-lsp: a opção tipo_padrao = \"identificador\" não é comum, tela nem relatorio, e vale regra comum."
+    );
+    let mut depois = [editor.diagnostics(), editor.diagnostics()];
+    depois.sort_by(|a, b| a.uri.as_str().cmp(b.uri.as_str()));
+    assert_eq!(codes(&depois[1]), ["SEN052"]);
+    editor.stop();
+}
+
+#[test]
 fn tipo_da_pasta_de_tela_nao_troca() {
     let (mut editor, _) = Editor::start(None);
     let tela = "file:///x/Formul%C3%A1rios%20SGI/F1/rule.txt";
@@ -1857,6 +1910,54 @@ fn analisa_a_pasta_inteira_quando_ligado() {
         lsp_types::notification::DidChangeWatchedFiles::METHOD,
         json!({ "changes": [{ "uri": erro_uri, "type": 2 }] }),
     );
+    assert!(editor.diagnostics().diagnostics.is_empty());
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn configuracao_nova_liga_e_desliga_a_analise_da_pasta() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-liga-{}", std::process::id()));
+    let fechada = base.join("regras/R1.LSP/Rule.txt");
+    let aberta = base.join("regras/R2.LSP/Rule.txt");
+    std::fs::create_dir_all(fechada.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(aberta.parent().unwrap()).unwrap();
+    std::fs::write(&fechada, "x = ;").unwrap();
+    std::fs::write(&aberta, "x = 1;").unwrap();
+    let folder = crate::form::uri_from_path(&base);
+    let fechada_uri = crate::form::uri_from_path(&fechada);
+    let aberta_uri = crate::form::uri_from_path(&aberta);
+
+    let (editor, _) = Editor::start_with(
+        None,
+        json!({ "workspaceFolders": [{ "uri": folder, "name": "x" }] }),
+    );
+    editor.open(&aberta_uri, 1, "y = ;");
+    assert_eq!(editor.diagnostics().uri.as_str(), aberta_uri);
+    editor.quiet();
+
+    // Ligar analisa a pasta. O arquivo aberto vale pelo texto do editor e não é publicado de novo.
+    editor.notify(
+        DidChangeConfiguration::METHOD,
+        json!({ "settings": { "analisar_pasta": true } }),
+    );
+    let d = editor.diagnostics();
+    assert_eq!(d.uri.as_str(), fechada_uri);
+    assert!(!d.diagnostics.is_empty());
+    editor.quiet();
+
+    // Desligar limpa só o arquivo fechado.
+    editor.notify(
+        DidChangeConfiguration::METHOD,
+        json!({ "settings": { "analisar_pasta": false } }),
+    );
+    let d = editor.diagnostics();
+    assert_eq!(d.uri.as_str(), fechada_uri);
+    assert!(d.diagnostics.is_empty());
+    editor.quiet();
+
+    // Com a análise desligada, fechar o arquivo limpa os diagnósticos em vez de ler o disco.
+    editor.close(&aberta_uri);
     assert!(editor.diagnostics().diagnostics.is_empty());
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();

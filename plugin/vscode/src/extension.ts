@@ -76,8 +76,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
             }
         }),
         vscode.workspace.onDidChangeConfiguration((e) => {
-            if (e.affectsConfiguration("seniorLsp")) {
+            if (!e.affectsConfiguration("seniorLsp")) {
+                return;
+            }
+            // Só o caminho do executável pede outro processo. As outras opções o servidor aplica
+            // rodando, sem perder o dicionário e o que já analisou.
+            if (!client || e.affectsConfiguration("seniorLsp.server.path")) {
                 void restart(context, output);
+            } else {
+                // O servidor atende em ordem, então a barra já pergunta o tipo depois da troca.
+                void client
+                    .sendNotification("workspace/didChangeConfiguration", {
+                        settings: serverOptions(vscode.workspace.getConfiguration("seniorLsp")),
+                    })
+                    .then(() => updateStatusBar());
             }
         }),
     );
@@ -95,6 +107,16 @@ async function restart(context: vscode.ExtensionContext, output: vscode.LogOutpu
     await start(context, output);
 }
 
+/** Opções do servidor, no `initialize` e no aviso de que a configuração mudou. */
+function serverOptions(config: vscode.WorkspaceConfiguration): Record<string, string | boolean> {
+    return {
+        tbs_producao: config.get<string>("tbsProducao", ""),
+        tbs_teste: config.get<string>("tbsTeste", ""),
+        tipo_padrao: config.get<string>("tipoPadrao", "comum"),
+        analisar_pasta: config.get<boolean>("analisarPasta", false),
+    };
+}
+
 async function start(context: vscode.ExtensionContext, output: vscode.LogOutputChannel): Promise<void> {
     const config = vscode.workspace.getConfiguration("seniorLsp");
     let command: string;
@@ -107,7 +129,7 @@ async function start(context: vscode.ExtensionContext, output: vscode.LogOutputC
         return;
     }
 
-    const serverOptions: ServerOptions = { command, args: [] };
+    const server: ServerOptions = { command, args: [] };
     const clientOptions: LanguageClientOptions = {
         // As regras dos modelos de relatório ficam dentro dos JSON do modelo, que continuam com a
         // linguagem JSON. Os outros JSON do workspace não vão para o servidor.
@@ -116,12 +138,7 @@ async function start(context: vscode.ExtensionContext, output: vscode.LogOutputC
             { scheme: "untitled", language: "lsp-senior" },
             { scheme: "file", language: "json", pattern: "**/Modelos/**/*.json" },
         ],
-        initializationOptions: {
-            tbs_producao: config.get<string>("tbsProducao", ""),
-            tbs_teste: config.get<string>("tbsTeste", ""),
-            tipo_padrao: config.get<string>("tipoPadrao", "comum"),
-            analisar_pasta: config.get<boolean>("analisarPasta", false),
-        },
+        initializationOptions: serverOptions(config),
         // Com a pasta inteira analisada, o servidor precisa saber das regras que mudam no disco
         // sem estar abertas, como depois de um git pull.
         synchronize: {
@@ -166,7 +183,7 @@ async function start(context: vscode.ExtensionContext, output: vscode.LogOutputC
         },
     };
 
-    client = new LanguageClient("seniorLsp", "Senior LSP", serverOptions, clientOptions);
+    client = new LanguageClient("seniorLsp", "Senior LSP", server, clientOptions);
     await client.start();
     void updateStatusBar();
 }

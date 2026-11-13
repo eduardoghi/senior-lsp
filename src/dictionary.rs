@@ -95,13 +95,24 @@ static WATCHER: Once = Once::new();
 
 /// Define os caminhos do `.tbs` de produção e do de teste. Caminho vazio desliga o dicionário.
 pub fn configure(production: Option<PathBuf>, test: Option<PathBuf>) {
+    set_path(false, production);
+    set_path(true, test);
+}
+
+/// Troca o caminho do `.tbs` de produção ou, com `test`, do de teste, e diz se ele mudou. O mesmo
+/// caminho mantém o dicionário já lido, que costuma vir de um compartilhamento de rede.
+pub fn set_path(test: bool, path: Option<PathBuf>) -> bool {
+    let path = path.filter(|p| !p.as_os_str().is_empty());
     let mut slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
-    for (slot, path) in slots.iter_mut().zip([production, test]) {
-        *slot = path.filter(|p| !p.as_os_str().is_empty()).map(|path| Slot {
-            path: Some(path),
-            ..Slot::default()
-        });
+    let slot = &mut slots[usize::from(test)];
+    if slot.as_ref().and_then(|s| s.path.as_ref()) == path.as_ref() {
+        return false;
     }
+    *slot = path.map(|path| Slot {
+        path: Some(path),
+        ..Slot::default()
+    });
+    true
 }
 
 /// Os dicionários configurados, lendo o arquivo na primeira vez. Depois disso a consulta não toca

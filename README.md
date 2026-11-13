@@ -207,7 +207,10 @@ code --install-extension senior-lsp-*.vsix
 As configurações são `seniorLsp.server.path`, para usar outro executável, `seniorLsp.tipoPadrao`,
 com o tipo dos [arquivos fora da exportação](#arquivos-fora-da-exportação), e `seniorLsp.tbsProducao`
 e `seniorLsp.tbsTeste`, com os dicionários descritos em [Dicionário de dados](#dicionário-de-dados).
-Mudar qualquer uma reinicia o servidor.
+Mudar o caminho do executável reinicia o servidor. As outras valem na hora, sem reiniciar. A
+extensão manda as opções no `settings` do `workspace/didChangeConfiguration`, com as mesmas chaves
+das opções de inicialização (`tbs_producao`, `tbs_teste`, `tipo_padrao` e `analisar_pasta`), e
+qualquer editor pode mandar o mesmo aviso. Só as chaves que vêm no aviso mudam.
 
 Num arquivo fora da exportação, a barra de status mostra o tipo da regra e troca ao clicar, como o
 comando "Senior LSP: Escolher o tipo da regra". A extensão guarda a escolha de cada arquivo no

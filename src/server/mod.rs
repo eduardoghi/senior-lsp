@@ -36,7 +36,7 @@ use std::error::Error;
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::notification::{
-    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
+    DidChangeConfiguration, DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
     Notification as LspNotification, PublishDiagnostics,
 };
 use lsp_types::request::{
@@ -72,10 +72,13 @@ pub fn run(connection: Connection) -> Result<()> {
     // vale como ausente. Um cliente que manda capacidades incompletas (um `semanticTokens` sem
     // `tokenTypes`, por exemplo) não derruba o `initialize`.
     let params = ClientInit::read(&params);
-    configure_dictionaries(&params);
-    let default_kind = default_kind(&params);
+    crate::dictionary::configure(
+        dictionary_path(params.options, TBS_PRODUCTION),
+        dictionary_path(params.options, TBS_TEST),
+    );
+    let default_kind = default_kind(params.options);
     let folders = params.folders.clone();
-    let analyze_folders = analyze_folders(&params);
+    let analyze_folders = analyze_folders(params.options);
     let encoding = negotiate_encoding(&params);
     let result = InitializeResult {
         capabilities: ServerCapabilities {
@@ -145,22 +148,7 @@ pub fn run(connection: Connection) -> Result<()> {
         }),
     };
     connection.initialize_finish(id, serde_json::to_value(result)?)?;
-    // As opções são escritas à mão na configuração do editor. Uma fora do formato é ignorada como
-    // as capacidades, mas sem aviso a pessoa não saberia por que o dicionário ou a análise da pasta
-    // não ligaram.
-    for message in option_warnings(&params) {
-        let params = lsp_types::LogMessageParams {
-            typ: lsp_types::MessageType::WARNING,
-            message,
-        };
-        connection.sender.send(
-            Notification::new(
-                lsp_types::notification::LogMessage::METHOD.to_owned(),
-                params,
-            )
-            .into(),
-        )?;
-    }
+    log_option_warnings(&connection, params.options)?;
 
     let mut server = Server {
         connection: &connection,
@@ -191,9 +179,24 @@ pub fn run(connection: Connection) -> Result<()> {
     Ok(())
 }
 
+/// Opções do servidor, como o editor as manda no `initializationOptions` do `initialize` e, com o
+/// servidor rodando, no `settings` do `workspace/didChangeConfiguration`.
+#[derive(Clone, Copy)]
+struct Options<'a>(Option<&'a serde_json::Value>);
+
+impl<'a> Options<'a> {
+    fn get(self, key: &str) -> Option<&'a serde_json::Value> {
+        self.0?.get(key)
+    }
+}
+
+/// Opção e variável de ambiente com o caminho do `.tbs` de produção e do de teste.
+const TBS_PRODUCTION: (&str, &str) = ("tbs_producao", "SENIOR_LSP_TBS_PRODUCAO");
+const TBS_TEST: (&str, &str) = ("tbs_teste", "SENIOR_LSP_TBS_TESTE");
+
 /// O que o servidor lê do `initialize` do editor.
 struct ClientInit<'a> {
-    options: Option<&'a serde_json::Value>,
+    options: Options<'a>,
     /// Pastas do workspace, onde ficam as regras da análise da pasta inteira e da busca de
     /// símbolos. Sem `workspaceFolders`, vale o `rootUri`.
     folders: Vec<std::path::PathBuf>,
@@ -219,7 +222,7 @@ impl<'a> ClientInit<'a> {
             .and_then(|e| e.as_array())
             .is_some_and(|kinds| kinds.iter().any(|k| k.as_str() == Some("utf-8")));
         ClientInit {
-            options: params.get("initializationOptions"),
+            options: Options(params.get("initializationOptions")),
             folders: uris
                 .into_iter()
                 .filter_map(crate::form::path_from_uri)
@@ -227,23 +230,16 @@ impl<'a> ClientInit<'a> {
             utf8,
         }
     }
-
-    fn option(&self, key: &str) -> Option<&serde_json::Value> {
-        self.options?.get(key)
-    }
 }
 
-/// Avisos sobre as opções de inicialização que o servidor ignorou por estarem fora do formato, com
-/// nome desconhecido ou com um tipo de regra que não existe.
-fn option_warnings(params: &ClientInit) -> Vec<String> {
-    let Some(options) = params.options.filter(|o| !o.is_null()) else {
+/// Avisos sobre as opções que o servidor ignorou por estarem fora do formato, com nome
+/// desconhecido ou com um tipo de regra que não existe.
+fn option_warnings(options: Options) -> Vec<String> {
+    let Some(options) = options.0.filter(|o| !o.is_null()) else {
         return Vec::new();
     };
     let Some(options) = options.as_object() else {
-        return vec![
-            "senior-lsp: as opções de inicialização não são um objeto JSON e foram ignoradas."
-                .to_owned(),
-        ];
+        return vec!["senior-lsp: as opções não são um objeto JSON e foram ignoradas.".to_owned()];
     };
     let mut warnings = Vec::new();
     for (key, value) in options {
@@ -270,42 +266,52 @@ fn option_warnings(params: &ClientInit) -> Vec<String> {
     warnings
 }
 
-/// Caminhos do `.tbs` de produção e do de teste, pelas opções de inicialização do editor
-/// (`tbs_producao` e `tbs_teste`) ou pelas variáveis `SENIOR_LSP_TBS_PRODUCAO` e
-/// `SENIOR_LSP_TBS_TESTE`. As opções do editor valem primeiro.
-fn configure_dictionaries(params: &ClientInit) {
-    let option = |key: &str, var: &str| {
-        let from_editor = params
-            .option(key)
-            .and_then(|v| v.as_str())
-            .map(str::to_owned);
-        from_editor
-            .or_else(|| std::env::var(var).ok())
-            .map(|v| v.trim().to_owned())
-            // Valor ainda com `${...}` é uma opção do plugin que ninguém preencheu.
-            .filter(|v| !v.is_empty() && !v.starts_with("${"))
-            .map(std::path::PathBuf::from)
-    };
-    crate::dictionary::configure(
-        option("tbs_producao", "SENIOR_LSP_TBS_PRODUCAO"),
-        option("tbs_teste", "SENIOR_LSP_TBS_TESTE"),
-    );
+/// Manda os avisos das opções para o log do editor. As opções são escritas à mão na configuração
+/// do editor. Uma fora do formato é ignorada como as capacidades, mas sem aviso a pessoa não
+/// saberia por que o dicionário ou a análise da pasta não ligaram.
+fn log_option_warnings(connection: &Connection, options: Options) -> Result<()> {
+    for message in option_warnings(options) {
+        let params = lsp_types::LogMessageParams {
+            typ: lsp_types::MessageType::WARNING,
+            message,
+        };
+        connection.sender.send(
+            Notification::new(
+                lsp_types::notification::LogMessage::METHOD.to_owned(),
+                params,
+            )
+            .into(),
+        )?;
+    }
+    Ok(())
+}
+
+/// Caminho de um `.tbs`, pela opção do editor (`tbs_producao` ou `tbs_teste`) ou pela variável de
+/// ambiente (`SENIOR_LSP_TBS_PRODUCAO` ou `SENIOR_LSP_TBS_TESTE`). A opção do editor vale primeiro.
+fn dictionary_path(options: Options, (key, var): (&str, &str)) -> Option<std::path::PathBuf> {
+    let from_editor = options.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+    from_editor
+        .or_else(|| std::env::var(var).ok())
+        .map(|v| v.trim().to_owned())
+        // Valor ainda com `${...}` é uma opção do plugin que ninguém preencheu.
+        .filter(|v| !v.is_empty() && !v.starts_with("${"))
+        .map(std::path::PathBuf::from)
 }
 
 /// Tipo dos arquivos soltos que não se chamam `Rule.txt`, pela opção `tipo_padrao`. Sem ela, ou
 /// com um nome desconhecido, é regra comum.
-fn default_kind(params: &ClientInit) -> Context {
-    params
-        .option("tipo_padrao")
+fn default_kind(options: Options) -> Context {
+    options
+        .get("tipo_padrao")
         .and_then(|v| v.as_str())
         .and_then(kind::parse)
         .unwrap_or(Context::Rule)
 }
 
 /// Opção `analisar_pasta`, que liga os diagnósticos da pasta inteira.
-fn analyze_folders(params: &ClientInit) -> bool {
-    params
-        .option("analisar_pasta")
+fn analyze_folders(options: Options) -> bool {
+    options
+        .get("analisar_pasta")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
 }
@@ -789,6 +795,12 @@ impl Server<'_> {
                     self.reload_config()?;
                 }
             }
+            DidChangeConfiguration::METHOD => {
+                // Lido sem o tipo do protocolo, para um aviso sem `settings` não virar erro.
+                if let Some(settings) = notification.params.get("settings") {
+                    self.configure(Options(Some(settings)))?;
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -952,11 +964,55 @@ impl Server<'_> {
         levels
     }
 
-    /// Lê os `senior-lsp.json` de novo e publica outra vez os diagnósticos dos arquivos abertos e,
-    /// com a pasta inteira analisada, dos arquivos do disco.
-    /// Analisa de novo os documentos abertos, que guardam o dicionário de quando foram analisados,
-    /// e a pasta, se a análise dela estiver ligada.
-    fn reanalyze_open(&mut self) -> Result<()> {
+    /// Aplica as opções que o editor mandou com o servidor rodando. Só as que vieram contam, e a
+    /// que falta continua como está. Cada uma refaz só o que depende dela. O `.tbs` novo analisa de
+    /// novo os documentos abertos e a pasta, o tipo padrão só os abertos, e a análise da pasta roda
+    /// ao ligar e limpa os diagnósticos dos arquivos fechados ao desligar.
+    fn configure(&mut self, options: Options) -> Result<()> {
+        log_option_warnings(self.connection, options)?;
+        let mut dictionaries = false;
+        for (test, option) in [(false, TBS_PRODUCTION), (true, TBS_TEST)] {
+            if options.get(option.0).is_some() {
+                let path = dictionary_path(options, option);
+                dictionaries |= crate::dictionary::set_path(test, path);
+            }
+        }
+        let kind = options
+            .get("tipo_padrao")
+            .map(|_| default_kind(options))
+            .filter(|&kind| kind != self.default_kind);
+        let folders = options
+            .get("analisar_pasta")
+            .map(|_| analyze_folders(options))
+            .filter(|&on| on != self.analyze_folders);
+        self.default_kind = kind.unwrap_or(self.default_kind);
+        self.analyze_folders = folders.unwrap_or(self.analyze_folders);
+        if dictionaries {
+            self.reanalyze_open()?;
+        } else if kind.is_some() {
+            self.reanalyze_documents()?;
+        }
+        match folders {
+            Some(true) if !dictionaries => self.analyze_workspace(),
+            Some(false) => self.clear_closed(),
+            _ => Ok(()),
+        }
+    }
+
+    /// Limpa os diagnósticos dos arquivos fechados, que vieram da análise da pasta.
+    fn clear_closed(&self) -> Result<()> {
+        let published: Vec<Uri> = self.published.borrow().iter().cloned().collect();
+        for uri in published {
+            if self.documents.get(&uri).is_none() && self.documents.report(&uri).is_none() {
+                self.send_diagnostics(uri, Vec::new(), None)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Analisa de novo os documentos abertos, que guardam o dicionário e o tipo de quando foram
+    /// analisados.
+    fn reanalyze_documents(&mut self) -> Result<()> {
         for uri in self.documents.uris() {
             if let Some(doc) = self.documents.get(&uri) {
                 let (text, version) = (doc.text.clone(), doc.version);
@@ -968,9 +1024,17 @@ impl Server<'_> {
             }
             self.publish(&uri)?;
         }
+        Ok(())
+    }
+
+    /// Analisa de novo os documentos abertos e a pasta, se a análise dela estiver ligada.
+    fn reanalyze_open(&mut self) -> Result<()> {
+        self.reanalyze_documents()?;
         self.analyze_workspace()
     }
 
+    /// Lê os `senior-lsp.json` de novo e publica outra vez os diagnósticos dos arquivos abertos e,
+    /// com a pasta inteira analisada, dos arquivos do disco.
     fn reload_config(&mut self) -> Result<()> {
         self.configs.borrow_mut().reload();
         for uri in self.documents.uris() {
