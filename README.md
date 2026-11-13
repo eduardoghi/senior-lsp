@@ -43,6 +43,26 @@ O servidor oferece:
   tem `definir` ou `funcao`, quando um `pare` ou `continue` perde o laço, quando um `vapara` e o
   rótulo dele ficam em lados diferentes do trecho, quando o trecho dentro de uma `funcao` usa
   parâmetro ou variável definida nela, e nas regras dentro do JSON de modelo de relatório
+- ação de código "Embutir função" (`refactor.inline`), o inverso da anterior, com o cursor no nome
+  de uma chamada. Os comandos da função entram no lugar da chamada, e a função continua onde está.
+  Vale para a função sem parâmetros, com o corpo num bloco só, sem `definir`, rótulo nem `vapara`
+  e sem `pare` ou `continue` que passariam a valer para um laço de fora
+- ação de código "Extrair variável" (`refactor.extract`) para a conta ou o texto selecionado. O
+  `Definir` da variável nova entra junto dos outros, com o tipo da expressão, e a atribuição na
+  linha de cima do comando. O nome começa em `nNovaVariavel` ou `aNovaVariavel`. A ação não
+  aparece quando o tipo de alguma parte da expressão não é conhecido, para comparação e `e` ou
+  `ou`, que não podem ir sozinhos numa atribuição, na condição de um `enquanto` ou `para`, que é
+  refeita a cada volta, e no comando sem bloco de um `se` ou de um laço
+- ação de código "Inverter o se" (`refactor.rewrite`), com o cursor na palavra `se` ou na condição
+  de um `se` com `senao`. A linguagem não tem negação, então cada comparação vira a contrária, o
+  `e` vira `ou` e o contrário, com os parênteses que isso pede, `cur.Achou` vira `cur.NaoAchou`, e
+  os dois lados trocam de lugar. Não aparece quando a condição tem uma parte sem contrária, como
+  uma variável sozinha, nem quando o lado do `senao` é outro `se` ou um laço
+- ações de código "Envolver com Se" e "Envolver com Enquanto" (`refactor.rewrite`) para comandos
+  inteiros e contíguos do mesmo bloco. Eles vão para dentro de um bloco, com a condição vazia para
+  preencher. A do `se` vazia é erro de compilação, e a do `enquanto` o compilador aceita
+- ações de código "Trocar chaves por Inicio e Fim" e "Trocar Inicio e Fim por chaves"
+  (`refactor.rewrite`), com o cursor na abertura ou no fechamento do bloco
 - hover com a linha do `definir` e, com o dicionário de dados do ERP configurado, o tipo, a
   descrição, as chaves, os relacionamentos e a busca dos campos de tabela
 - dentro do SQL de um texto (`cur.SQL "..."`, `ExecSql` e `SQL_DefinirComando`), o `:variavel` vai para o

@@ -22,6 +22,7 @@ mod members;
 mod navigation;
 mod output;
 mod quickfix;
+mod refactor;
 mod related;
 mod selection;
 mod semantic;
@@ -638,11 +639,20 @@ impl Server<'_> {
                 let uri = &params.text_document.uri;
                 let mut actions = Vec::new();
                 // O cliente pode pedir só alguns tipos de ação, como `refactor` no menu de
-                // refatorar.
-                let extract = params.context.only.as_ref().is_none_or(|only| {
-                    only.iter()
-                        .any(|k| matches!(k.as_str(), "" | "refactor" | "refactor.extract"))
-                });
+                // refatorar. Um tipo pedido vale também para os que estão abaixo dele.
+                let wants = |kind: &lsp_types::CodeActionKind| {
+                    params.context.only.as_ref().is_none_or(|only| {
+                        only.iter().any(|k| {
+                            let (k, kind) = (k.as_str(), kind.as_str());
+                            k.is_empty()
+                                || kind == k
+                                || kind
+                                    .strip_prefix(k)
+                                    .is_some_and(|rest| rest.starts_with('.'))
+                        })
+                    })
+                };
+                let extract = wants(&lsp_types::CodeActionKind::REFACTOR_EXTRACT);
                 if let Some(doc) = self.documents.get(uri) {
                     let context = navigation::Context {
                         doc,
@@ -665,6 +675,7 @@ impl Server<'_> {
                                     .into_iter()
                                     .flatten(),
                             )
+                            .chain(context.refactor_actions(params.range, wants))
                             .chain(context.ignore_actions(params.range, &shown))
                             .map(lsp_types::CodeActionOrCommand::CodeAction),
                     );

@@ -90,7 +90,7 @@ impl Context<'_> {
 
     /// Onde a linha entra, logo depois do último `definir` do nível de cima antes do uso, ou no
     /// começo do arquivo, e o texto com a quebra de linha do arquivo.
-    fn insertion(&self, use_at: TextSize, line: &str) -> (TextSize, String) {
+    pub(super) fn insertion(&self, use_at: TextSize, line: &str) -> (TextSize, String) {
         let tree = &self.doc.tree;
         let last = self
             .doc

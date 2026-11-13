@@ -20,7 +20,7 @@ const BASE_NAME: &str = "NovaFuncao";
 
 /// Quem pode ser pai de comandos. O corpo de uma `funcao` é o bloco dela mais os comandos que
 /// vêm depois dele, por isso a `FuncImpl` também conta.
-const CONTAINERS: [SyntaxKind; 3] = [
+pub(super) const CONTAINERS: [SyntaxKind; 3] = [
     SyntaxKind::SourceFile,
     SyntaxKind::Block,
     SyntaxKind::FuncImpl,
@@ -53,7 +53,7 @@ impl Context<'_> {
 
         let text = &self.doc.text;
         let nl = newline(text);
-        let name = self.new_name();
+        let name = self.new_name(BASE_NAME);
         let declaration = format!("{} {name}();", self.keyword_case("Definir Funcao"));
         let (at, insert) = self.insert_after(self.declaration_point(span.start()), &declaration);
         // A declaração entra na linha de baixo do último `definir`, que não pode estar na linha
@@ -91,7 +91,10 @@ impl Context<'_> {
 
     /// O bloco que contém a seleção e os comandos dele que ela cobre. `None` quando ela corta um
     /// comando, pega algo que não é comando (nome de função, chave solta) ou tem erro de sintaxe.
-    fn selected_statements(&self, selection: TextRange) -> Option<(NodeId, Vec<NodeId>)> {
+    pub(super) fn selected_statements(
+        &self,
+        selection: TextRange,
+    ) -> Option<(NodeId, Vec<NodeId>)> {
         let tree = &self.doc.tree;
         if tree.errors().iter().any(|e| {
             let (start, end) = (e.range.start(), e.range.end());
@@ -220,7 +223,7 @@ impl Context<'_> {
     }
 
     /// O `pare` ou `continue` tem um `enquanto` ou `para` entre ele e o bloco do trecho.
-    fn in_loop(&self, node: NodeId, container: NodeId) -> bool {
+    pub(super) fn in_loop(&self, node: NodeId, container: NodeId) -> bool {
         let tree = &self.doc.tree;
         let mut up = tree.parent(node);
         while let Some(n) = up.filter(|&n| n != container) {
@@ -233,7 +236,7 @@ impl Context<'_> {
     }
 
     /// Algum `vapara` de fora do trecho aponta para um rótulo de dentro dele.
-    fn label_used_outside(&self, span: TextRange) -> bool {
+    pub(super) fn label_used_outside(&self, span: TextRange) -> bool {
         let tree = &self.doc.tree;
         let symbols = &self.doc.symbols;
         symbols.references.iter().any(|r| {
@@ -291,8 +294,8 @@ impl Context<'_> {
         true
     }
 
-    /// `NovaFuncao`, ou `NovaFuncao2` e seguintes se o nome já é de algo que o arquivo enxerga.
-    fn new_name(&self) -> String {
+    /// `base`, ou `base2` e seguintes se o nome já é de algo que o arquivo enxerga.
+    pub(super) fn new_name(&self, base: &str) -> String {
         let doc = self.doc;
         let taken = |name: &str| {
             doc.symbols
@@ -307,11 +310,11 @@ impl Context<'_> {
         };
         (1..)
             .map(|n| match n {
-                1 => BASE_NAME.to_owned(),
-                n => format!("{BASE_NAME}{n}"),
+                1 => base.to_owned(),
+                n => format!("{base}{n}"),
             })
             .find(|name| !taken(name))
-            .unwrap_or_else(|| BASE_NAME.to_owned())
+            .unwrap_or_else(|| base.to_owned())
     }
 
     /// Fim do último `definir funcao` do nível de cima antes do trecho, ou do último `definir`
@@ -351,15 +354,15 @@ impl Context<'_> {
             // O arquivo termina na última linha sem quebra.
             &format!("{nl}{nl}")
         };
-        let body = self.reindented(span, nl);
+        let body = self.reindented(span, "    ", nl);
         let keyword = self.keyword_case("Funcao");
         format!("{blank}{keyword} {name}(); {{{nl}{body}{nl}}}{nl}")
     }
 
-    /// Texto do trecho sem a indentação comum às linhas e com 4 espaços, com a quebra de linha
-    /// do arquivo e sem espaço no fim das linhas. Linhas que começam dentro de um texto entre
-    /// aspas ficam como estão, porque a indentação delas é conteúdo.
-    fn reindented(&self, span: TextRange, nl: &str) -> String {
+    /// Texto do trecho sem a indentação comum às linhas e com `indent` no lugar, com a quebra de
+    /// linha do arquivo e sem espaço no fim das linhas. Linhas que começam dentro de um texto
+    /// entre aspas ficam como estão, porque a indentação delas é conteúdo.
+    pub(super) fn reindented(&self, span: TextRange, indent: &str, nl: &str) -> String {
         let tree = &self.doc.tree;
         let text = &self.doc.text;
         let tokens = tree.tokens();
@@ -386,19 +389,21 @@ impl Context<'_> {
             start,
             &first_indent,
             &inside_string,
+            indent,
             nl,
         )
     }
 }
 
 /// Reindenta o `trecho`, que começa em `offset` no arquivo. `first_indent` é a indentação da linha
-/// onde ele começa, e `inside_string` os deslocamentos das quebras de linha que estão dentro de
-/// um texto entre aspas.
+/// onde ele começa, `inside_string` os deslocamentos das quebras de linha que estão dentro de um
+/// texto entre aspas e `indent` a indentação que cada linha ganha.
 fn reindent(
     snippet: &str,
     offset: usize,
     first_indent: &str,
     inside_string: &[usize],
+    indent: &str,
     nl: &str,
 ) -> String {
     struct Line<'a> {
@@ -470,7 +475,7 @@ fn reindent(
                 content.trim_end()
             };
             if !content.trim().is_empty() {
-                out.push_str("    ");
+                out.push_str(indent);
                 out.push_str(content);
             }
         }
@@ -482,7 +487,7 @@ fn reindent(
 }
 
 /// Comandos que uma seleção pode levar. Os `definir` e as `funcao` ficam de fora.
-fn is_statement(kind: SyntaxKind) -> bool {
+pub(super) fn is_statement(kind: SyntaxKind) -> bool {
     use SyntaxKind::*;
     matches!(
         kind,
@@ -502,7 +507,7 @@ fn is_statement(kind: SyntaxKind) -> bool {
 }
 
 /// Índice do primeiro token que termina depois de `offset`.
-fn first_token_ending_after(tree: &crate::Tree, offset: TextSize) -> usize {
+pub(super) fn first_token_ending_after(tree: &crate::Tree, offset: TextSize) -> usize {
     let tokens = tree.tokens();
     let (mut lo, mut hi) = (0, tokens.len());
     while lo < hi {
@@ -538,7 +543,7 @@ mod tests {
     fn tira_a_indentacao_comum_e_poe_quatro_espacos() {
         let snippet = "se (a) {\n        b = 1;\n    }";
         assert_eq!(
-            reindent(snippet, 0, "    ", &[], "\n"),
+            reindent(snippet, 0, "    ", &[], "    ", "\n"),
             "    se (a) {\n        b = 1;\n    }"
         );
     }
@@ -547,7 +552,7 @@ mod tests {
     fn linha_em_branco_fica_vazia() {
         let snippet = "a = 1;\n\t\n\nb = 2;";
         assert_eq!(
-            reindent(snippet, 0, "", &[], "\n"),
+            reindent(snippet, 0, "", &[], "    ", "\n"),
             "    a = 1;\n\n\n    b = 2;"
         );
     }
@@ -556,7 +561,7 @@ mod tests {
     fn quebra_de_linha_do_arquivo_e_sem_espaco_no_fim() {
         let snippet = "a = 1;   \r\n  b = 2;  \r\n  c = 3;";
         assert_eq!(
-            reindent(snippet, 0, "  ", &[], "\r\n"),
+            reindent(snippet, 0, "  ", &[], "    ", "\r\n"),
             "    a = 1;\r\n    b = 2;\r\n    c = 3;"
         );
     }
@@ -566,7 +571,7 @@ mod tests {
         let snippet = "a = \"x  \n   y\";\nb = 1;";
         // A primeira quebra, no deslocamento 8, está dentro do texto.
         assert_eq!(
-            reindent(snippet, 0, "", &[8], "\n"),
+            reindent(snippet, 0, "", &[8], "    ", "\n"),
             "    a = \"x  \n   y\";\n    b = 1;"
         );
     }
@@ -576,7 +581,7 @@ mod tests {
         let snippet = "a = 1;\n\tb = 2;\n\t    c = 3;\n\td = 4;";
         // Sai só o `\t` que todas as linhas têm, e os espaços depois dele ficam.
         assert_eq!(
-            reindent(snippet, 0, "\t", &[], "\n"),
+            reindent(snippet, 0, "\t", &[], "    ", "\n"),
             "    a = 1;\n    b = 2;\n        c = 3;\n    d = 4;"
         );
     }

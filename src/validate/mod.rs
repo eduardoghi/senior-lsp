@@ -134,6 +134,28 @@ pub(crate) fn dictionary_field<'a>(
     types::table_field(tree, &scope, node).map(|(found, _)| found)
 }
 
+/// Tipo da variável que pode receber a expressão numa atribuição, para tirar a expressão de onde
+/// está e pôr numa variável nova. `None` quando a expressão não pode ir sozinha numa atribuição ou
+/// quando o tipo de alguma parte dela não é conhecido.
+pub(crate) fn expression_type(
+    tree: &Tree,
+    symbols: &Symbols,
+    text: &str,
+    context: Context,
+    inherited: &Inherited,
+    node: NodeId,
+) -> Option<crate::symbols::VarType> {
+    let sources = sql::Sources::build(tree, symbols, text, &inherited.dictionaries);
+    let scope = types::Scope {
+        symbols,
+        text,
+        inherited,
+        context,
+        sql: &sources,
+    };
+    types::assignable(tree, &scope, node)
+}
+
 pub fn validate(
     tree: &Tree,
     symbols: &Symbols,

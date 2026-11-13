@@ -3416,9 +3416,530 @@ fn extrair_funcao_respeita_o_filtro_de_tipos_do_cliente() {
             .filter_map(|a| a["kind"].as_str().map(str::to_owned))
             .collect()
     };
-    assert_eq!(kinds(json!(["refactor"])), ["refactor.extract"]);
+    // O comando selecionado pode ir para uma função ou para dentro de um `se` ou `enquanto`.
+    let all = ["refactor.extract", "refactor.rewrite", "refactor.rewrite"];
+    assert_eq!(kinds(json!(["refactor"])), all);
     assert_eq!(kinds(json!(["refactor.extract"])), ["refactor.extract"]);
+    assert_eq!(kinds(json!(["refactor.rewrite"])), all[1..]);
+    assert!(kinds(json!(["refactor.inline"])).is_empty());
     assert!(kinds(json!(["quickfix"])).is_empty());
-    assert_eq!(kinds(json!(null)), ["refactor.extract"]);
+    assert_eq!(kinds(json!(null)), all);
     editor.stop();
+}
+
+/// Posição do começo e do fim da primeira ocorrência de `needle` em `text`, em linha e coluna.
+fn span_of(text: &str, needle: &str) -> ((u32, u32), (u32, u32)) {
+    let start = text
+        .find(needle)
+        .unwrap_or_else(|| panic!("sem {needle:?}"));
+    let position = |offset: usize| {
+        let before = &text[..offset];
+        let line = before.matches('\n').count() as u32;
+        let column = before.rsplit('\n').next().unwrap().chars().count() as u32;
+        (line, column)
+    };
+    (position(start), position(start + needle.len()))
+}
+
+/// Texto depois da ação de código `title` oferecida para o trecho, ou `None` se ela não é
+/// oferecida ali.
+fn refactor(text: &str, from: (u32, u32), to: (u32, u32), title: &str) -> Option<String> {
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let response = editor.request(
+        lsp_types::request::CodeActionRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "range": { "start": { "line": from.0, "character": from.1 },
+                           "end": { "line": to.0, "character": to.1 } },
+                "context": { "diagnostics": [] } }),
+    );
+    let actions: Vec<lsp_types::CodeActionOrCommand> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    editor.stop();
+    let action = actions.into_iter().find_map(|a| match a {
+        lsp_types::CodeActionOrCommand::CodeAction(a) if a.title == title => Some(a),
+        _ => None,
+    })?;
+    let edits = action.edit.unwrap().changes.unwrap()[&uri(RULE)].clone();
+    let offset = |p: lsp_types::Position| {
+        text.split_inclusive('\n')
+            .take(p.line as usize)
+            .map(str::len)
+            .sum::<usize>()
+            + p.character as usize
+    };
+    // As edições valem sobre o texto original. Na mesma posição, a que vem antes na lista fica
+    // antes no texto.
+    let mut order: Vec<_> = edits.iter().enumerate().collect();
+    order.sort_by_key(|(i, e)| std::cmp::Reverse((offset(e.range.start), *i)));
+    let mut out = text.to_owned();
+    for (_, e) in order {
+        out.replace_range(offset(e.range.start)..offset(e.range.end), &e.new_text);
+    }
+    Some(out)
+}
+
+/// A ação com o cursor no começo de `needle`.
+fn refactor_at(text: &str, needle: &str, title: &str) -> Option<String> {
+    let (at, _) = span_of(text, needle);
+    refactor(text, at, at, title)
+}
+
+/// A ação com `needle` selecionado.
+fn refactor_selecting(text: &str, needle: &str, title: &str) -> Option<String> {
+    let (from, to) = span_of(text, needle);
+    refactor(text, from, to, title)
+}
+
+/// Códigos dos erros que o servidor aponta no texto. O resultado de uma refatoração sobre um
+/// texto sem erro também não pode ter.
+fn errors_in(text: &str) -> Vec<String> {
+    let (editor, _) = Editor::start(None);
+    editor.open(RULE, 1, text);
+    let diagnostics = editor.diagnostics().diagnostics;
+    editor.stop();
+    diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Some(lsp_types::DiagnosticSeverity::ERROR))
+        .filter_map(|d| match d.code {
+            Some(lsp_types::NumberOrString::String(code)) => Some(code),
+            _ => None,
+        })
+        .collect()
+}
+
+const INVERT: &str = "Inverter o se";
+
+#[test]
+fn inverter_o_se_troca_a_comparacao_e_os_lados() {
+    let text = "definir numero a; definir numero x;\n\
+                se (a = 1) {\n    x = 1;\n} senao {\n    x = 2;\n}\n";
+    let inverted = refactor_at(text, "se (a", INVERT).unwrap();
+    assert_eq!(
+        inverted,
+        "definir numero a; definir numero x;\n\
+         se (a <> 1) {\n    x = 2;\n} senao {\n    x = 1;\n}\n"
+    );
+    assert!(errors_in(&inverted).is_empty());
+    // Inverter de novo volta ao texto de antes, com o cursor na condição.
+    assert_eq!(refactor_at(&inverted, "a <> 1", INVERT).unwrap(), text);
+
+    // Cada comparação tem a sua contrária, e os lados sem bloco também trocam.
+    for (before, after) in [
+        ("a < 1", "a >= 1"),
+        ("a > 1", "a <= 1"),
+        ("a <= 1", "a > 1"),
+        ("a >= 1", "a < 1"),
+        ("a <> 1", "a = 1"),
+    ] {
+        let text =
+            format!("definir numero a; definir numero x;\nse ({before}) x = 1; senao x = 2;\n");
+        assert_eq!(
+            refactor_at(&text, "se (", INVERT).unwrap(),
+            format!("definir numero a; definir numero x;\nse ({after}) x = 2; senao x = 1;\n")
+        );
+    }
+}
+
+#[test]
+fn inverter_o_se_troca_e_por_ou() {
+    let head = "definir numero a; definir numero b; definir numero c; definir numero x;\n";
+    let invert = |condition: &str| {
+        let text = format!("{head}se ({condition}) x = 1; senao x = 2;\n");
+        let inverted = refactor_at(&text, "se (", INVERT)?;
+        assert!(errors_in(&inverted).is_empty(), "{inverted}");
+        let condition = inverted.lines().nth(1).unwrap();
+        Some(condition["se (".len()..condition.find(") x =").unwrap()].to_owned())
+    };
+    assert_eq!(invert("(a = 1) e (b > 2)").unwrap(), "(a <> 1) ou (b <= 2)");
+    assert_eq!(invert("(a = 1) OU (b > 2)").unwrap(), "(a <> 1) E (b <= 2)");
+    // O `e` vale antes do `ou`, então o lado com `e` ganha parênteses quando vira `ou`.
+    assert_eq!(
+        invert("(a = 1) e (b = 2) ou (c = 3)").unwrap(),
+        "((a <> 1) ou (b <> 2)) e (c <> 3)"
+    );
+    assert_eq!(
+        invert("(a = 1) ou (b = 2) e (c = 3)").unwrap(),
+        "(a <> 1) e ((b <> 2) ou (c <> 3))"
+    );
+    assert_eq!(
+        invert("((a = 1) ou (b = 2)) e (c = 3)").unwrap(),
+        "((a <> 1) e (b <> 2)) ou (c <> 3)"
+    );
+    // Variável sozinha e conta não têm contrária conhecida.
+    assert_eq!(invert("a"), None);
+    assert_eq!(invert("(a = 1) e b"), None);
+    assert_eq!(invert("a + 1"), None);
+
+    // O nome fica na caixa em que estava escrito.
+    for (before, after) in [
+        ("cur.Achou", "cur.NaoAchou"),
+        ("cur.NaoAchou", "cur.Achou"),
+        ("CUR.ACHOU", "CUR.NAOACHOU"),
+        ("cur.naoachou", "cur.achou"),
+    ] {
+        let text = |condition: &str, a: u8, b: u8| {
+            format!(
+                "definir cursor cur; definir numero x;\nse ({condition}) x = {a}; senao x = {b};\n"
+            )
+        };
+        assert_eq!(
+            refactor_at(&text(before, 1, 2), "se (", INVERT).unwrap(),
+            text(after, 2, 1)
+        );
+    }
+}
+
+#[test]
+fn inverter_o_se_so_com_senao_simples_e_no_cabecalho() {
+    let head = "definir numero a; definir numero x;\n";
+    let offered =
+        |body: &str, needle: &str| refactor_at(&format!("{head}{body}"), needle, INVERT).is_some();
+    // Sem `senao` não há lado para trocar.
+    assert!(!offered("se (a = 1) x = 1;\n", "se ("));
+    // O `se` do `senao` iria para logo depois da condição e pegaria o `senao` de fora.
+    assert!(!offered(
+        "se (a = 1) x = 1; senao se (a = 2) x = 2;\n",
+        "se (a = 1"
+    ));
+    assert!(!offered(
+        "se (a = 1) x = 1; senao enquanto (a < 3) se (a = 2) x = 2;\n",
+        "se (a = 1"
+    ));
+    // Dentro de um bloco o `se` de dentro não escapa.
+    let nested = "se (a = 1) x = 1; senao { se (a = 2) x = 2; }\n";
+    assert!(offered(nested, "se (a = 1"));
+    assert!(
+        errors_in(&refactor_at(&format!("{head}{nested}"), "se (a = 1", INVERT).unwrap())
+            .is_empty()
+    );
+    // O cursor nos comandos de dentro não oferece a ação do `se` de fora.
+    let body = "se (a = 1) {\n    x = 1;\n} senao {\n    x = 2;\n}\n";
+    assert!(offered(body, "(a = 1"));
+    assert!(!offered(body, "x = 1"));
+    assert!(!offered(body, "senao"));
+    // Com erro de sintaxe no `se`, nada.
+    assert!(!offered("se (a = ) x = 1; senao x = 2;\n", "se ("));
+}
+
+#[test]
+fn trocar_chaves_por_inicio_e_fim_e_de_volta() {
+    let braces = "definir numero a; definir numero x;\n\
+                  se (a = 1) {\n    x = 1;\n}\n";
+    let words = "definir numero a; definir numero x;\n\
+                 se (a = 1) inicio\n    x = 1;\nfim\n";
+    let to_words = "Trocar chaves por Inicio e Fim";
+    let to_braces = "Trocar Inicio e Fim por chaves";
+    // A caixa das palavras segue a do primeiro `definir` do arquivo.
+    assert_eq!(refactor_at(braces, "{", to_words).unwrap(), words);
+    assert_eq!(refactor_at(braces, "}", to_words).unwrap(), words);
+    assert_eq!(refactor_at(words, "inicio", to_braces).unwrap(), braces);
+    assert_eq!(refactor_at(words, "fim", to_braces).unwrap(), braces);
+    assert!(errors_in(words).is_empty());
+    // Cada bloco só oferece a troca para a outra forma, e só nas pontas dele.
+    assert_eq!(refactor_at(braces, "{", to_braces), None);
+    assert_eq!(refactor_at(braces, "x = 1", to_words), None);
+    assert_eq!(refactor_at(braces, "se (", to_words), None);
+
+    // A palavra não pode colar no que vem depois, e com o arquivo em maiúsculas ela também vai.
+    let glued = "DEFINIR NUMERO a; DEFINIR NUMERO x;\nSE (a = 1) {x = 1;}\nSE (a = 2) {}\n";
+    let first = refactor_at(glued, "{x", to_words).unwrap();
+    assert_eq!(
+        first,
+        "DEFINIR NUMERO a; DEFINIR NUMERO x;\nSE (a = 1) INICIO x = 1;FIM\nSE (a = 2) {}\n"
+    );
+    let second = refactor_at(&first, "{}", to_words).unwrap();
+    assert_eq!(
+        second,
+        "DEFINIR NUMERO a; DEFINIR NUMERO x;\nSE (a = 1) INICIO x = 1;FIM\nSE (a = 2) INICIO FIM\n"
+    );
+    assert!(errors_in(&second).is_empty());
+
+    // Com blocos um dentro do outro, troca o da ponta que está no cursor, e o `;` depois do fim
+    // fica onde está.
+    let nested = "Definir Numero a; Definir Numero x;\n\
+                  Se (a = 1) {\n    Se (a = 2) {\n        x = 1;\n    };\n}\n";
+    assert_eq!(
+        refactor_at(nested, "};", to_words).unwrap(),
+        "Definir Numero a; Definir Numero x;\n\
+         Se (a = 1) {\n    Se (a = 2) Inicio\n        x = 1;\n    Fim;\n}\n"
+    );
+}
+
+#[test]
+fn envolver_os_comandos_com_se_e_com_enquanto() {
+    let text = "definir numero a; definir numero x;\n\
+                enquanto (a < 3) {\n\
+                \x20   x = 1;\n\
+                \x20   a = a + 1;\n\
+                \x20   pare;\n\
+                }\n";
+    let lines = |first: usize, last: usize, title: &str| {
+        let end = text.lines().nth(last).unwrap().chars().count() as u32;
+        refactor(text, (first as u32, 0), (last as u32, end), title)
+    };
+    let wrapped = lines(2, 3, "Envolver com Se").unwrap();
+    assert_eq!(
+        wrapped,
+        "definir numero a; definir numero x;\n\
+         enquanto (a < 3) {\n\
+         \x20   se () {\n\
+         \x20       x = 1;\n\
+         \x20       a = a + 1;\n\
+         \x20   }\n\
+         \x20   pare;\n\
+         }\n"
+    );
+    // A condição vazia do `se` é erro, de propósito, para ser preenchida.
+    assert_eq!(errors_in(&wrapped), ["SEN021"]);
+    let looped = lines(2, 3, "Envolver com Enquanto").unwrap();
+    assert!(looped.contains("    enquanto () {\n        x = 1;\n"));
+
+    // O `pare` do laço de fora passaria a valer para o laço novo.
+    assert!(lines(2, 4, "Envolver com Se").is_some());
+    assert_eq!(lines(2, 4, "Envolver com Enquanto"), None);
+    // O laço inteiro leva o `pare` junto.
+    assert!(lines(1, 5, "Envolver com Enquanto").is_some());
+    // A seleção que corta um comando não vale, nem a vazia.
+    assert_eq!(refactor(text, (2, 4), (2, 8), "Envolver com Se"), None);
+    assert_eq!(refactor(text, (2, 4), (2, 4), "Envolver com Se"), None);
+
+    // Quebra de linha do Windows e palavras em maiúscula quando o arquivo usa assim.
+    let crlf = "Definir Numero x;\r\nx = 1;\r\n";
+    assert_eq!(
+        refactor(crlf, (1, 0), (1, 6), "Envolver com Se").unwrap(),
+        "Definir Numero x;\r\nSe () {\r\n    x = 1;\r\n}\r\n"
+    );
+    // Rótulo que um `vapara` de fora alcança não vai para dentro do bloco.
+    let label = "definir numero x;\nvapara fim;\nx = 1;\nfim:\nx = 2;\n";
+    assert_eq!(refactor(label, (3, 0), (4, 6), "Envolver com Se"), None);
+    assert!(refactor(label, (2, 0), (2, 6), "Envolver com Se").is_some());
+}
+
+const EXTRACT_VARIABLE: &str = "Extrair variável";
+
+#[test]
+fn extrair_variavel_de_conta_e_de_texto() {
+    let text = "definir numero nQtd; definir numero nPre; definir numero nTotal;\n\
+                definir alfa aNum; definir alfa aMsg;\n\
+                \n\
+                se (nQtd > 0) {\n\
+                \x20   nTotal = nQtd * nPre + 10;\n\
+                \x20   aMsg = \"Pedido \" + aNum + \" ok\";\n\
+                }\n";
+    let number = refactor_selecting(text, "nQtd * nPre", EXTRACT_VARIABLE).unwrap();
+    assert_eq!(
+        number,
+        "definir numero nQtd; definir numero nPre; definir numero nTotal;\n\
+         definir alfa aNum; definir alfa aMsg;\n\
+         definir numero nNovaVariavel;\n\
+         \n\
+         se (nQtd > 0) {\n\
+         \x20   nNovaVariavel = nQtd * nPre;\n\
+         \x20   nTotal = nNovaVariavel + 10;\n\
+         \x20   aMsg = \"Pedido \" + aNum + \" ok\";\n\
+         }\n"
+    );
+    assert!(errors_in(&number).is_empty());
+    let alfa = refactor_selecting(text, "\"Pedido \" + aNum", EXTRACT_VARIABLE).unwrap();
+    assert!(alfa.contains("definir alfa aMsg;\ndefinir alfa aNovaVariavel;\n"));
+    assert!(alfa.contains(
+        "    aNovaVariavel = \"Pedido \" + aNum;\n    aMsg = aNovaVariavel + \" ok\";\n"
+    ));
+    assert!(errors_in(&alfa).is_empty());
+
+    // Número, texto, conta entre parênteses e conta com sinal também podem sair.
+    for (selected, kind) in [("10", "numero n"), ("\" ok\"", "alfa a")] {
+        let out = refactor_selecting(text, selected, EXTRACT_VARIABLE).unwrap();
+        assert!(
+            out.contains(&format!("definir {kind}NovaVariavel;")),
+            "{out}"
+        );
+        assert!(errors_in(&out).is_empty(), "{out}");
+    }
+    let signs = "definir numero a; definir numero b; definir numero x;\nx = a * (b + 1) - -b;\n";
+    for selected in ["(b + 1)", "-b", "a * (b + 1)"] {
+        let out = refactor_selecting(signs, selected, EXTRACT_VARIABLE).unwrap();
+        assert!(
+            out.contains(&format!("nNovaVariavel = {selected};\n")),
+            "{out}"
+        );
+        assert!(errors_in(&out).is_empty(), "{out}");
+    }
+
+    // A conta da condição do `se` sai para antes dele, e o nome novo não repete um que existe.
+    let condition = "definir numero nLim; definir numero nNovaVariavel;\nse (nNovaVariavel > nLim * 2) nLim = 0;\n";
+    assert_eq!(
+        refactor_selecting(condition, "nLim * 2", EXTRACT_VARIABLE).unwrap(),
+        "definir numero nLim; definir numero nNovaVariavel;\n\
+         definir numero nNovaVariavel2;\n\
+         nNovaVariavel2 = nLim * 2;\n\
+         se (nNovaVariavel > nNovaVariavel2) nLim = 0;\n"
+    );
+}
+
+#[test]
+fn extrair_variavel_so_onde_o_resultado_e_o_mesmo() {
+    let head = "definir numero a; definir numero b; definir numero x;\n\
+                definir alfa t; definir cursor cur;\n";
+    let offered = |body: &str, selected: &str| {
+        refactor_selecting(&format!("{head}{body}"), selected, EXTRACT_VARIABLE).is_some()
+    };
+    assert!(offered("x = a * 2 + b;\n", "a * 2"));
+    // `2 + b` não é uma parte da conta, que é feita da esquerda para a direita.
+    assert!(!offered("x = a * 2 + b;\n", "2 + b"));
+    // Nome sozinho não ganha nada indo para outra variável.
+    assert!(!offered("x = a * 2 + b;\n", "b"));
+    // Comparação e `e` não podem ir sozinhos numa atribuição.
+    assert!(!offered("se (a > b + 1) x = 1;\n", "a > b + 1"));
+    assert!(offered("se (a > b + 1) x = 1;\n", "b + 1"));
+    assert!(!offered(
+        "se ((a > 1) e (b > 1)) x = 1;\n",
+        "(a > 1) e (b > 1)"
+    ));
+    // A condição do laço é refeita a cada volta.
+    assert!(!offered("enquanto (a < b * 2) a = a + 1;\n", "b * 2"));
+    assert!(!offered(
+        "para (a = 1; a < b * 2; a = a + 1) x = 1;\n",
+        "b * 2"
+    ));
+    // O comando sem bloco de um `se` não tem linha de cima no mesmo lugar, e o do `senao se`
+    // também não.
+    assert!(!offered("se (a > 1) x = b * 2;\n", "b * 2"));
+    assert!(offered("se (a > 1) { x = b * 2; }\n", "b * 2"));
+    assert!(!offered(
+        "se (a > 1) x = 1; senao se (a > b * 2) x = 2;\n",
+        "b * 2"
+    ));
+    // Nome sem `definir` numa regra comum não tem tipo conhecido.
+    assert!(!offered("x = nSemDefinir * 2;\n", "nSemDefinir * 2"));
+    // Texto com número não é atribuição válida, e parênteses em texto também não.
+    assert!(!offered("x = a + t;\n", "a + t"));
+    // O texto do SQL do cursor é conferido como SQL, e numa variável não seria.
+    assert!(!offered(
+        "cur.SQL \"SELECT CodEmp FROM E070EMP\";\n",
+        "\"SELECT CodEmp FROM E070EMP\""
+    ));
+    // Argumento de chamada pode sair.
+    assert!(offered("IntParaAlfa(a * 2, t);\n", "a * 2"));
+    // Seleção vazia ou só de espaço.
+    assert_eq!(
+        refactor(
+            &format!("{head}x = a * 2;\n"),
+            (2, 4),
+            (2, 4),
+            EXTRACT_VARIABLE
+        ),
+        None
+    );
+}
+
+const INLINE: &str = "Embutir função";
+
+#[test]
+fn embutir_funcao_poe_os_comandos_no_lugar_da_chamada() {
+    let text = "definir funcao Soma();\n\
+                definir numero x; definir numero y;\n\
+                se (x = 1) {\n\
+                \x20   Soma();\n\
+                }\n\
+                \n\
+                funcao Soma(); {\n\
+                \x20   @ soma os dois @\n\
+                \x20   x = x + 1;\n\
+                \x20   se (x > 2) {\n\
+                \x20       y = x;\n\
+                \x20   }\n\
+                }\n";
+    let inlined = refactor_at(text, "Soma();\n}", INLINE).unwrap();
+    assert_eq!(
+        inlined,
+        "definir funcao Soma();\n\
+         definir numero x; definir numero y;\n\
+         se (x = 1) {\n\
+         \x20   @ soma os dois @\n\
+         \x20   x = x + 1;\n\
+         \x20   se (x > 2) {\n\
+         \x20       y = x;\n\
+         \x20   }\n\
+         }\n\
+         \n\
+         funcao Soma(); {\n\
+         \x20   @ soma os dois @\n\
+         \x20   x = x + 1;\n\
+         \x20   se (x > 2) {\n\
+         \x20       y = x;\n\
+         \x20   }\n\
+         }\n"
+    );
+    assert!(errors_in(&inlined).is_empty());
+    // O cursor tem que estar no nome da chamada, e a declaração não é chamada.
+    assert_eq!(refactor_at(text, "x = 1", INLINE), None);
+    assert_eq!(refactor_at(text, "Soma();\ndefinir", INLINE), None);
+
+    // No comando sem bloco de um `se` só cabe um comando, então os da função vão num bloco.
+    let single =
+        "definir funcao F();\ndefinir numero x;\nse (x = 1) F();\nfuncao F(); { x = 2; x = 3; }\n";
+    let inlined = refactor_at(single, "F();\nfuncao", INLINE).unwrap();
+    assert!(
+        inlined.contains("se (x = 1) {\n    x = 2; x = 3;\n}\n"),
+        "{inlined}"
+    );
+    assert!(errors_in(&inlined).is_empty());
+    let empty =
+        "definir funcao F();\ndefinir numero x;\nse (x = 1) F();\nx = 2;\nF();\nfuncao F(); { }\n";
+    assert!(
+        refactor_at(empty, "F();\nx", INLINE)
+            .unwrap()
+            .contains("se (x = 1) { }\n")
+    );
+    assert!(
+        refactor_at(empty, "F();\nfuncao", INLINE)
+            .unwrap()
+            .contains("x = 2;\n\nfuncao")
+    );
+}
+
+#[test]
+fn embutir_funcao_desfaz_o_extrair_funcao() {
+    let extracted = extract_lines(EXTRACT_EXAMPLE, 4, 7).unwrap();
+    let inlined = refactor_at(&extracted, "NovaFuncao();\nGravar", INLINE).unwrap();
+    // Os comandos voltam para onde estavam. A função fica, agora sem chamada.
+    assert!(inlined.starts_with(&format!(
+        "definir alfa aMsg;\ndefinir numero nTotal;\ndefinir funcao NovaFuncao();\n{}",
+        &EXTRACT_EXAMPLE["definir alfa aMsg;\ndefinir numero nTotal;\n".len()..]
+    )));
+    assert!(inlined.ends_with("funcao NovaFuncao(); {\n    se (nTotal > 1000) {\n        aMsg = \"Pedido acima do limite\";\n        Mensagem(Retorna, aMsg);\n    }\n}\n"));
+}
+
+#[test]
+fn embutir_funcao_so_a_que_nao_depende_de_ser_funcao() {
+    let offered = |function: &str, call: &str| {
+        let text = format!("definir numero x;\n{call}\n{function}\n");
+        refactor_at(&text, call, INLINE).is_some()
+    };
+    assert!(offered("funcao F(); { x = 1; }", "F();"));
+    // Parâmetro só existe durante a chamada.
+    assert!(!offered("funcao F(numero p); { x = p; }", "F(1);"));
+    // `definir`, rótulo e `vapara` ficam na função.
+    assert!(!offered("funcao F(); { definir numero y; y = 1; }", "F();"));
+    assert!(!offered("funcao F(); { volta: x = 1; }", "F();"));
+    assert!(!offered("funcao F(); { vapara fim; }\nfim:", "F();"));
+    // `pare` sem laço dentro da função passaria a valer para um laço de fora.
+    assert!(!offered("funcao F(); { pare; }", "F();"));
+    assert!(offered(
+        "funcao F(); { enquanto (x < 3) { x = x + 1; pare; } }",
+        "F();"
+    ));
+    // Comando depois do bloco ainda é da função, e aí o corpo não é só o bloco.
+    assert!(!offered("funcao F(); { x = 1; }\nx = 2;", "F();"));
+    // Função do ERP e função que não está no arquivo não têm corpo aqui.
+    assert!(!offered("", "IniciarTransacao();"));
+    assert!(!offered("", "NaoExiste();"));
+    // Duas implementações com o mesmo nome deixam em dúvida qual vale.
+    assert!(!offered(
+        "funcao F(); { x = 1; }\nfuncao F(); { x = 2; }",
+        "F();"
+    ));
 }

@@ -295,6 +295,58 @@ fn push(tree: &Tree, checks: &mut Vec<Check>, kind: CheckKind, node: NodeId, nam
     });
 }
 
+/// Tipo de uma expressão que pode ir sozinha no lado direito de uma atribuição, ou `None` quando
+/// ela não pode ou o tipo de alguma parte não é conhecido.
+///
+/// A atribuição alfa só aceita textos, variáveis alfa e apóstrofos somados com `+`, sem
+/// parênteses. A numérica aceita contas, com parênteses e sinal, e não aceita comparação nem `e`
+/// e `ou` soltos. Data conta como número, que é como o compilador trata.
+pub(super) fn assignable(tree: &Tree, scope: &Scope, node: NodeId) -> Option<VarType> {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Part {
+        Alfa,
+        Num,
+        /// Apóstrofo, que vale como texto numa soma de textos e como número numa conta.
+        Char,
+    }
+    fn part(tree: &Tree, scope: &Scope, node: NodeId) -> Option<Part> {
+        let numeric = |p: Part| (p != Part::Alfa).then_some(Part::Num);
+        match tree.kind(node) {
+            Literal => match tree.tokens().kind(tree.token_range(node).start) {
+                String => Some(Part::Alfa),
+                Number => Some(Part::Num),
+                Char => Some(Part::Char),
+                _ => None,
+            },
+            NameRef | FieldExpr => match leaf_type(tree, scope, node) {
+                Ty::Alfa => Some(Part::Alfa),
+                Ty::Num => Some(Part::Num),
+                Ty::Unknown => None,
+            },
+            ParenExpr | PrefixExpr => numeric(part(tree, scope, tree.children(node).next()?)?),
+            BinaryExpr => {
+                let op = tree.tokens().kind(operator_token(tree, node)?);
+                let mut children = tree.children(node);
+                let left = part(tree, scope, children.next()?)?;
+                let right = part(tree, scope, children.next()?)?;
+                match op {
+                    Plus if left == Part::Alfa || right == Part::Alfa => {
+                        (left != Part::Num && right != Part::Num).then_some(Part::Alfa)
+                    }
+                    Plus | Minus | Star | Slash => numeric(left).and(numeric(right)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+    match part(tree, scope, node)? {
+        Part::Alfa => Some(VarType::Alfa),
+        Part::Num => Some(VarType::Numero),
+        Part::Char => None,
+    }
+}
+
 /// Tipo de uma string, número ou nome, sem olhar expressões.
 fn leaf_type(tree: &Tree, scope: &Scope, node: NodeId) -> Ty {
     match tree.kind(node) {
