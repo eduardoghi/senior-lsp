@@ -178,6 +178,28 @@ pub struct Model {
     pub entries: Vec<(std::path::PathBuf, std::sync::Arc<str>, Entry)>,
     /// Texto de cada JSON lido, para a análise da pasta não ler e decodificar o arquivo de novo.
     pub texts: Vec<(std::path::PathBuf, std::sync::Arc<str>)>,
+    /// As regras do modelo usam o Senior SQL 2. `None` quando o modelo não diz.
+    pub senior_sql2: Option<bool>,
+}
+
+/// Arquivo do modelo com as opções gerais dele.
+const MODEL_OPTIONS: &str = "Base_Structure.json";
+
+/// Opção `sql_senior2` do [`MODEL_OPTIONS`], que a exportação grava como o texto `"true"` ou
+/// `"false"`. O nome entre aspas sem barra só aparece como chave, porque dentro de uma regra as
+/// aspas vêm escapadas.
+fn senior_sql2_option(text: &str) -> Option<bool> {
+    let key = "\"sql_senior2\"";
+    let value = text[text.find(key)? + key.len()..].trim_start();
+    let value = value.strip_prefix(':')?.trim_start();
+    let value = value.strip_prefix('"').unwrap_or(value);
+    if value.starts_with("true") {
+        Some(true)
+    } else if value.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// Regras de todos os JSON do modelo de `json_path`.
@@ -314,6 +336,12 @@ fn build(
             continue;
         };
         out.texts.push((path.clone(), scan.text.clone()));
+        let is_options = path
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(MODEL_OPTIONS));
+        if is_options {
+            out.senior_sql2 = senior_sql2_option(&scan.text);
+        }
         for rule in &scan.rules {
             out.rules.push((path.clone(), rule.clone()));
         }
@@ -1027,6 +1055,38 @@ mod tests {
         let removed = model(&open, &rule("do editor"));
         assert_eq!(texts(&removed), ["do editor", "definir numero nNovo;"]);
         assert_eq!(removed.texts.len(), 2);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn opcao_de_senior_sql_2_do_modelo() {
+        assert_eq!(
+            senior_sql2_option(r#"{"a": 1, "sql_senior2": "true"}"#),
+            Some(true)
+        );
+        assert_eq!(
+            senior_sql2_option("{\n  \"sql_senior2\" : false\n}"),
+            Some(false)
+        );
+        assert_eq!(senior_sql2_option(r#"{"sql_senior2": "sim"}"#), None);
+        // Dentro de uma regra o nome vem com as aspas escapadas e não é a opção.
+        assert_eq!(
+            senior_sql2_option(r#"{"lines": ["a = \"sql_senior2\": \"true\""]}"#),
+            None
+        );
+
+        let base = std::env::temp_dir().join(format!("senior-lsp-sql2m-{}", std::process::id()));
+        let dir = base.join("Modelos/M1.GER");
+        std::fs::create_dir_all(&dir).unwrap();
+        let section = dir.join("Detalhe.json");
+        std::fs::write(&section, "{}").unwrap();
+        assert_eq!(model(&section, "{}").senior_sql2, None);
+        // O arquivo de opções vale para todas as regras do modelo, e a mudança dele é vista.
+        let options = dir.join("Base_Structure.json");
+        std::fs::write(&options, r#"{"report_type": 1, "sql_senior2": "true"}"#).unwrap();
+        assert_eq!(model(&section, "{}").senior_sql2, Some(true));
+        std::fs::write(&options, r#"{"report_type": 1, "sql_senior2": "false"}"#).unwrap();
+        assert_eq!(model(&section, "{}").senior_sql2, Some(false));
         std::fs::remove_dir_all(&base).unwrap();
     }
 

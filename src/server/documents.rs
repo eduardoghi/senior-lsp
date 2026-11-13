@@ -268,6 +268,7 @@ impl Documents {
 pub(crate) fn model_inherited(model: &crate::report::Model) -> Arc<Inherited> {
     let mut inherited = Inherited::from_model(model);
     inherited.dictionaries = crate::dictionary::current();
+    inherited.senior_sql2 = model.senior_sql2;
     Arc::new(inherited)
 }
 

@@ -439,8 +439,8 @@ comando escrito na regra, ele cobra a tabela, os campos do SET e do INSERT, os n
 quantidade de valores do INSERT (SEN084). No SQL nativo nada disso é conferido na compilação. O
 servidor sabe o modo da regra pela opção `useSQLSenior2` do JSON que a exportação grava ao lado do
 texto dela (`General_Infos.json` na regra, `Rule.json` no web service e `definition.json` na tela
-SGI). Sem esse arquivo, como numa regra solta ou num modelo de relatório, essas quatro
-conferências não saem.
+SGI), e a do modelo de relatório pela opção `sql_senior2` do `Base_Structure.json` dele. Sem
+esse arquivo, como numa regra solta, essas conferências não saem.
 
 São dois caminhos, ambos opcionais, o `.tbs` de produção e o da base de teste. O tipo vem do de
 produção. Com os dois, o servidor avisa (SEN065) quando a regra usa um campo que só existe no de
