@@ -165,8 +165,10 @@ pub(super) struct Unknown {
     pub(super) label: Option<String>,
 }
 
-/// Quanto SQL, em bytes de texto, o cache guarda antes de recomeçar vazio.
-const CACHE_LIMIT: usize = 512 * 1024;
+/// Quanto SQL, em bytes de texto, cabe em cada uma das duas gerações do cache. Uma regra de
+/// 1,3 MB com mais de oito mil `ExecSql` tem perto de 600 KB de SQL distinto, e com menos do que
+/// isso o cache era refeito a cada tecla.
+const CACHE_LIMIT: usize = 2 * 1024 * 1024;
 
 type SharedDictionary = Option<Arc<crate::tbs::Dictionary>>;
 
@@ -175,11 +177,37 @@ type SharedDictionary = Option<Arc<crate::tbs::Dictionary>>;
 /// análise para a outra. As colunas dependem do dicionário de dados, então o cache vale para os
 /// dicionários que guarda e recomeça vazio quando eles trocam. Guardar os `Arc` também impede que
 /// o endereço de um dicionário solto seja reaproveitado por outro.
+///
+/// São duas gerações. Quando a atual enche, ela vira a anterior e a que era anterior é solta. O
+/// que é consultado na anterior volta para a atual, então o SQL em uso nunca é perdido de uma vez,
+/// como seria ao esvaziar tudo.
 #[derive(Default)]
 struct Cache {
     dictionaries: (SharedDictionary, SharedDictionary),
-    entries: FxHashMap<String, Rc<Analysis>>,
+    current: FxHashMap<String, Rc<Analysis>>,
+    previous: FxHashMap<String, Rc<Analysis>>,
+    /// Bytes de texto na geração atual.
     bytes: usize,
+}
+
+impl Cache {
+    fn get(&mut self, literal: &str) -> Option<Rc<Analysis>> {
+        if let Some(hit) = self.current.get(literal) {
+            return Some(hit.clone());
+        }
+        let (key, hit) = self.previous.remove_entry(literal)?;
+        self.insert(key, hit.clone());
+        Some(hit)
+    }
+
+    fn insert(&mut self, literal: String, analysis: Rc<Analysis>) {
+        if self.bytes + literal.len() > CACHE_LIMIT {
+            self.previous = std::mem::take(&mut self.current);
+            self.bytes = 0;
+        }
+        self.bytes += literal.len();
+        self.current.insert(literal, analysis);
+    }
 }
 
 thread_local! {
@@ -209,7 +237,7 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
                 ..Cache::default()
             };
         }
-        cache.entries.get(literal).cloned()
+        cache.get(literal)
     });
     if let Some(hit) = cached {
         return hit;
@@ -276,13 +304,9 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
         sql2_select,
     });
     CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.bytes + literal.len() > CACHE_LIMIT {
-            cache.entries.clear();
-            cache.bytes = 0;
-        }
-        cache.bytes += literal.len();
-        cache.entries.insert(literal.to_owned(), analysis.clone());
+        cache
+            .borrow_mut()
+            .insert(literal.to_owned(), analysis.clone())
     });
     analysis
 }
@@ -1639,25 +1663,21 @@ impl ColumnUses {
     }
 
     /// Colunas do SELECT que a regra não lê pelo cursor. O campo que aparece no ORDER BY conta
-    /// como lido, porque com o Senior SQL 2 o ORDER BY só aceita o que está no SELECT. Também
-    /// conta o `cursor.CAMPO` escrito em qualquer lugar do arquivo, mesmo dentro de um texto.
-    /// Quando a regra não lê nenhuma coluna de um SELECT, como no cursor que só serve ao `Achou`,
-    /// a primeira fica sem aviso, porque o SELECT precisa de pelo menos uma. O `*` só é
-    /// conferido com a tabela no dicionário de dados.
+    /// como lido, porque com o Senior SQL 2 o ORDER BY só aceita o que está no SELECT. Quando a
+    /// regra não lê nenhuma coluna de um SELECT, como no cursor que só serve ao `Achou`, a
+    /// primeira fica sem aviso, porque o SELECT precisa de pelo menos uma. O `*` só é conferido
+    /// com a tabela no dicionário de dados.
+    ///
+    /// Só conta a leitura no código. Um texto não lê campo de cursor, porque o `:nome` de um SQL
+    /// só aceita variável da regra.
     pub(super) fn finish(self, text: &str, dictionaries: &Dictionaries, checks: &mut Vec<Check>) {
-        let upper = std::cell::OnceCell::new();
         for (cursor, literal) in &self.literals {
             let analysis = analysis(&text[*literal], dictionaries);
             let Some(selection) = &analysis.selection else {
                 continue;
             };
             let read = self.read.get(cursor);
-            let is_read = |name: &str| {
-                read.is_some_and(|read| read.contains(name))
-                    || upper
-                        .get_or_init(|| text.to_ascii_uppercase())
-                        .contains(&format!("{cursor}.{name}"))
-            };
+            let is_read = |name: &str| read.is_some_and(|read| read.contains(name));
             let at = |range: &std::ops::Range<usize>| {
                 let at = |offset: usize| literal.start() + text_size::TextSize::new(offset as u32);
                 text_size::TextRange::new(at(range.start), at(range.end))

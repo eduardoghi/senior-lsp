@@ -664,8 +664,11 @@ mod tests {
             um(CursorColumnUnused, "E070EMP.NomEmp")
         );
         assert!(checks(duas, "n = c.codemp; a = c.NOMEMP;").is_empty());
-        // O nome do campo num texto conta como leitura.
-        assert!(checks(duas, "n = c.CodEmp; a = \"usa c.NomEmp\";").is_empty());
+        // O nome do campo num texto não é leitura.
+        assert_eq!(
+            checks(duas, "n = c.CodEmp; a = \"usa c.NomEmp\";"),
+            um(CursorColumnUnused, "E070EMP.NomEmp")
+        );
         // O campo do ORDER BY fica, porque com o Senior SQL 2 ele tem que estar no SELECT.
         for ordem in ["NomEmp", "E070EMP.NOMEMP DESC, CodEmp"] {
             let sql = format!("{duas} ORDER BY {ordem}");
