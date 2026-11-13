@@ -106,7 +106,8 @@ O servidor oferece:
 - completar dentro do texto de um SQL (`cur.SQL "..."`, `ExecSql "..."` e qualquer texto que comece
   com `SELECT`, `UPDATE`, `INSERT` ou `DELETE`), com o dicionário de dados. Depois de `TABELA.` ou
   do apelido saem os campos, depois de `FROM`, `JOIN`, `UPDATE` e `INSERT INTO` as tabelas e as
-  visões, e no resto do comando os campos das tabelas que ele cita. No VS Code a lista abre
+  visões, no resto do comando os campos das tabelas que ele cita, e depois de `:` as variáveis
+  que já apareceram na regra. No VS Code a lista abre
   sozinha depois do ponto. Nos outros lugares do texto ela abre com Ctrl+Espaço, a não ser que
   `editor.quickSuggestions` esteja ligado para `strings`
 - renomear num editor, trocando só o símbolo certo, nos outros arquivos do formulário SGI inclusive

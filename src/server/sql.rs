@@ -294,8 +294,8 @@ impl Context<'_> {
     /// Literal de texto que contém `offset`, sem contar as aspas, com o texto dele mascarado e o
     /// que está sob o cursor.
     /// Tabelas e campos do dicionário de dados que cabem na posição, quando ela está dentro de
-    /// um literal de texto. `None` fora de um literal. O texto que não começa como um SQL, o
-    /// conteúdo entre apóstrofos e o `:nome` não têm sugestão.
+    /// um literal de texto. `None` fora de um literal. Depois de `:` saem as variáveis da regra.
+    /// O texto que não começa como um SQL e o conteúdo entre apóstrofos não têm sugestão.
     ///
     /// Depois de `TABELA.` ou de `APELIDO.` saem os campos da tabela. Depois de `FROM`, `JOIN`,
     /// `UPDATE` e `INSERT INTO` saem as tabelas e as visões. No resto do comando saem os campos
@@ -337,10 +337,10 @@ impl Context<'_> {
                 .count()
         };
         let start = word_start(at);
-        if start > 0 && mask[start - 1] == b':' {
-            return Some(Vec::new());
-        }
         let prefix = &bytes[start..at];
+        if start > 0 && mask[start - 1] == b':' {
+            return Some(self.parameter_items(literal.start(), prefix));
+        }
         let matches = |name: &str| {
             name.as_bytes()
                 .get(..prefix.len())
@@ -428,6 +428,55 @@ impl Context<'_> {
             }
         }
         Some(items)
+    }
+
+    /// Variáveis que cabem depois de `:` num SQL que começa em `literal`. O compilador só aceita
+    /// ali a variável que já apareceu na regra, então entram as definidas antes do texto, os
+    /// parâmetros da função em que ele está e as variáveis das regras anteriores da tela.
+    fn parameter_items(&self, literal: TextSize, prefix: &[u8]) -> Vec<CompletionItem> {
+        let text = &self.doc.text;
+        let tree = &self.doc.tree;
+        let matches = |name: &str| {
+            name.as_bytes()
+                .get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        };
+        let function = enclosing_function_at(tree, literal);
+        let mut seen = std::collections::HashSet::new();
+        let mut items = Vec::new();
+        for def in &self.doc.symbols.definitions {
+            let visible = match def.kind {
+                crate::symbols::DefKind::Variable(_) => def.name.start() < literal,
+                crate::symbols::DefKind::Parameter(_) => {
+                    let owner = tree.parent(def.node).and_then(|list| tree.parent(list));
+                    owner.is_some() && owner == function
+                }
+                _ => false,
+            };
+            let name = &text[def.name];
+            if visible && matches(name) && seen.insert(name.to_uppercase()) {
+                items.push(CompletionItem {
+                    label: name.to_owned(),
+                    kind: Some(CompletionItemKind::VARIABLE),
+                    detail: Some(self.header(def.node)),
+                    sort_text: Some(format!("0{}", name.to_lowercase())),
+                    ..CompletionItem::default()
+                });
+            }
+        }
+        for def in self.doc.inherited.variables() {
+            let name = &def.text[def.name];
+            if matches(name) && seen.insert(name.to_uppercase()) {
+                items.push(CompletionItem {
+                    label: name.to_owned(),
+                    kind: Some(CompletionItemKind::VARIABLE),
+                    detail: Some(def.decl.clone()),
+                    sort_text: Some(format!("1{}", name.to_lowercase())),
+                    ..CompletionItem::default()
+                });
+            }
+        }
+        items
     }
 
     fn spot_at(&self, offset: TextSize) -> Option<(TextRange, Vec<u8>, Spot)> {
@@ -1041,9 +1090,23 @@ mod tests {
             completions("definir cursor c;\nc.SQL \"SELECT CodEmp FROM e0^"),
             ["E070EMP"]
         );
-        // Constante, parâmetro e texto que não é SQL não têm sugestão.
+        // Depois de `:`, as variáveis que já apareceram, os parâmetros da função e mais nada.
+        assert_eq!(
+            completions(
+                "definir numero nAntes; definir alfa aAntes; definir cursor c;\n\
+                 c.SQL \"SELECT CodEmp FROM E070EMP WHERE CodEmp = :^\";\ndefinir numero nDepois;"
+            ),
+            ["aAntes", "nAntes"]
+        );
+        assert_eq!(
+            completions(
+                "definir cursor c;\ndefinir funcao f(numero pCod);\nfuncao f(numero pCod); {\n\
+                 c.SQL \"SELECT CodEmp FROM E070EMP WHERE CodEmp = :p^\";\n}"
+            ),
+            ["pCod"]
+        );
+        // Constante e texto que não é SQL não têm sugestão.
         assert!(cursor("SELECT CodEmp FROM E070EMP WHERE NomEmp = 'Co^'").is_empty());
-        assert!(cursor("SELECT CodEmp FROM E070EMP WHERE CodEmp = :Co^").is_empty());
         assert!(completions("definir alfa a;\na = \"Cod^\";").is_empty());
         // Fora do texto o completar da regra continua.
         assert_eq!(completions("definir numero nValor;\nnVa^"), ["nValor"]);
