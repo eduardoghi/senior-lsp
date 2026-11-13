@@ -70,6 +70,13 @@ pub enum CheckKind {
     CursorUnknownTable,
     /// Coluna do SELECT de um cursor com um campo que a tabela não tem no dicionário de dados.
     CursorUnknownField,
+    /// Coluna do SELECT de um cursor com algo depois de um espaço, como um apelido, e sem a
+    /// tabela na frente.
+    CursorColumnWithoutTable,
+    /// O mesmo nome de campo vindo de duas tabelas no SELECT de um cursor.
+    CursorRepeatedField,
+    /// `:nome` no SQL de um cursor que ainda não foi definido nem usado na regra.
+    CursorUnknownParameter,
     /// `SQL_Retornar*(obj, "coluna", ...)` com uma coluna que não está no SELECT. Compila, e a
     /// execução para.
     ReturnedColumnNotInSelect,
@@ -109,6 +116,9 @@ impl CheckKind {
                 | CheckKind::CursorFieldNotInSelect
                 | CheckKind::CursorUnknownTable
                 | CheckKind::CursorUnknownField
+                | CheckKind::CursorColumnWithoutTable
+                | CheckKind::CursorRepeatedField
+                | CheckKind::CursorUnknownParameter
         )
     }
 }
@@ -183,6 +193,7 @@ pub fn validate(
         context,
         sql: &sources,
     };
+    let first_uses = sql::FirstUses::new(tree, text);
     let mut native_sql = sql::NativeSql::default();
     // Só na regra comum, porque na tela e no relatório as regras seguintes podem ler o cursor.
     let mut column_uses = (context == Context::Rule).then(sql::ColumnUses::default);
@@ -199,7 +210,7 @@ pub fn validate(
                 sources.check_returned_column(tree, text, node, &mut checks);
             }
             FieldCommand => {
-                sql::cursor_sql(tree, text, node, &inherited.dictionaries, &mut checks);
+                sql::cursor_sql(tree, &scope, &first_uses, node, &mut checks);
                 if let Some(uses) = &mut column_uses {
                     uses.command(tree, symbols, text, node);
                 }
@@ -941,9 +952,18 @@ mod tests {
 
     #[test]
     fn campo_do_cursor_fora_do_select() {
-        let text = "definir cursor c;\nc.SQL \"SELECT T.A, B AS X FROM T\";\nc.AbrirCursor();\n\
-                    se (c.Achou) { y = c.a; y = c.X; y = c.Nao; c.Proximo(); }\nc.FecharCursor();";
-        assert_eq!(checks(text), [(CursorFieldNotInSelect, "Nao")]);
+        // A coluna com apelido não vira campo do cursor, nem pelo apelido nem pelo nome dela.
+        let text = "definir cursor c;\nc.SQL \"SELECT T.A, T.B X FROM T\";\nc.AbrirCursor();\n\
+                    se (c.Achou) { y = c.a; y = c.X; y = c.B; y = c.Nao; c.Proximo(); }\n\
+                    c.FecharCursor();";
+        assert_eq!(
+            checks(text),
+            [
+                (CursorFieldNotInSelect, "X"),
+                (CursorFieldNotInSelect, "B"),
+                (CursorFieldNotInSelect, "Nao")
+            ]
+        );
         // Com dois SQL, vale o campo de qualquer um.
         let dois = "definir cursor c;\nc.SQL \"SELECT A FROM T\";\nc.SQL \"SELECT B FROM T\";\n\
                     y = c.A + c.B;";
@@ -951,6 +971,55 @@ mod tests {
         // SQL numa variável, ou * sem dicionário, deixam o cursor sem conferência.
         assert!(checks("definir cursor c;\nc.SQL aSql;\ny = c.Z;").is_empty());
         assert!(checks("definir cursor c;\nc.SQL \"SELECT * FROM T\";\ny = c.Z;").is_empty());
+    }
+
+    #[test]
+    fn coluna_do_cursor_que_o_compilador_recusa() {
+        let cursor = |sql: &str| format!("definir cursor c;\nc.SQL \"{sql}\";");
+        // Com algo depois do espaço, o que vem antes precisa da tabela.
+        assert_eq!(
+            checks(&cursor("SELECT A X, DISTINCT T.B, T.C Y FROM T")),
+            [
+                (CursorColumnWithoutTable, "A"),
+                (CursorColumnWithoutTable, "DISTINCT")
+            ]
+        );
+        // A constante com apelido já sai como constante.
+        assert_eq!(
+            checks(&cursor("SELECT 'x' AS Z, T.A FROM T")),
+            [(CursorConstantColumn, "\"SELECT 'x' AS Z, T.A FROM T\"")]
+        );
+        // O mesmo nome de outra tabela é recusado, e a mesma coluna de novo não.
+        assert_eq!(
+            checks(&cursor("SELECT T.A, B, U.A, T.A, A, T.B, U.B FROM T, U")),
+            [(CursorRepeatedField, "U.A"), (CursorRepeatedField, "U.B")]
+        );
+    }
+
+    #[test]
+    fn parametro_do_cursor_que_ainda_nao_apareceu() {
+        let text = "definir cursor c;\ndefinir numero nDef;\nxUsada = 1;\n\
+                    definir funcao f(numero pPar);\n\
+                    c.SQL \"SELECT A FROM T WHERE A = :nDef AND B = :XUSADA AND C = :pPar \\\n\
+                    AND D = :yDepois AND E = ':zTexto' AND F = :yDepois AND G = :12\";\n\
+                    yDepois = 2;\ndefinir numero zTexto;";
+        assert_eq!(
+            checks(text),
+            [
+                (CursorUnknownParameter, "yDepois"),
+                (CursorUnknownParameter, "yDepois")
+            ]
+        );
+        // Na tela e no relatório outra regra pode ter usado o nome antes.
+        let tree = crate::parse(text).unwrap();
+        let symbols = Symbols::build(&tree, text);
+        for context in [Context::Sgi, Context::Report] {
+            let found = validate(&tree, &symbols, text, context, &Inherited::default());
+            assert!(
+                found.iter().all(|c| c.kind != CursorUnknownParameter),
+                "{context:?}"
+            );
+        }
     }
 
     #[test]

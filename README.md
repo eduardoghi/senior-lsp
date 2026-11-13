@@ -339,6 +339,9 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN074 | erro | coluna do SELECT de um cursor com uma tabela que não está no dicionário de dados, como um apelido de tabela ou uma função |
 | SEN075 | erro | coluna do SELECT de um cursor com um campo que a tabela não tem no dicionário de dados |
 | SEN076 | dica | coluna do SELECT de um cursor que a regra não lê, ou `*` de que ela só lê parte dos campos, só na regra comum |
+| SEN077 | erro | coluna do SELECT de um cursor com apelido ou `DISTINCT` e sem a tabela na frente |
+| SEN078 | erro | o mesmo nome de campo vindo de duas tabelas no SELECT de um cursor |
+| SEN079 | erro | `:variavel` no SQL de um cursor que ainda não foi definida nem usada na regra, só na regra comum |
 
 O SEN068 e o SEN070 saem como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
 conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da

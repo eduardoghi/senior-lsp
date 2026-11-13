@@ -552,6 +552,23 @@ mod tests {
                 "{sql}"
             );
         }
+        // A coluna sem tabela é da primeira tabela do FROM, e o * também.
+        let duas = cursor(
+            "SELECT CodEmp, T.NomEmp FROM E070EMP, T",
+            "aTxt = c.CodEmp;",
+        );
+        assert_eq!(
+            checks_com_dicionario(&duas),
+            [(CursorUnknownTable, "T"), (AlfaAndNumber, "c.CodEmp")]
+        );
+        // O * junto com o mesmo campo de outra tabela repete o nome.
+        assert_eq!(
+            checks_com_dicionario(&cursor(
+                "SELECT *, T.CodEmp FROM E070EMP, T",
+                "n = c.CodEmp;"
+            )),
+            [(CursorUnknownTable, "T"), (CursorRepeatedField, "T.CodEmp")]
+        );
         // Campo fora do SELECT, mesmo existindo na tabela.
         let fora = cursor("SELECT CodEmp FROM E070EMP", "aTxt = c.NomEmp;");
         assert_eq!(

@@ -323,8 +323,9 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
         CheckKind::CursorConstantColumn => (
             "SEN054",
             format!(
-                "O SELECT do cursor não aceita a constante {name} como coluna (O campo precisa \
-                 ser informado com a tabela). Coluna sem tabela e * compilam."
+                "O SELECT do cursor não aceita a constante {name} como coluna, porque o \
+                 compilador lê cada coluna como campo de uma tabela. Coluna sem tabela e * \
+                 compilam."
             ),
         ),
         CheckKind::NativeSqlWithScope => (
@@ -364,6 +365,33 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                 format!(
                     "O campo {field} não existe na tabela {table} (Campo \"{field}\" inexistente \
                      na tabela/view \"{table}\").{first_table}"
+                ),
+            )
+        }
+        CheckKind::CursorColumnWithoutTable => (
+            "SEN077",
+            format!(
+                "O compilador lê {name} como uma coluna com apelido, e essa precisa da tabela na \
+                 frente (O campo precisa ser informado com a tabela). O SELECT do cursor não \
+                 aceita DISTINCT."
+            ),
+        ),
+        CheckKind::CursorRepeatedField => (
+            "SEN078",
+            format!(
+                "O SELECT do cursor já tem um campo {name} de outra tabela, e o cursor guarda um \
+                 campo por nome (Campo de nome \"{name}\" está sendo selecionado repetidamente \
+                 no cursor)."
+            ),
+        ),
+        CheckKind::CursorUnknownParameter => {
+            let name = &text[check.range];
+            (
+                "SEN079",
+                format!(
+                    "A variável {name} ainda não apareceu na regra (identificador \"{name}\" não \
+                     foi declarado ou utilizado na regra). O SQL do cursor só aceita como \
+                     parâmetro a variável definida ou usada antes do comando."
                 ),
             )
         }

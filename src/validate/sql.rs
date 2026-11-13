@@ -81,10 +81,11 @@ fn value_offsets(literal: &str) -> Vec<usize> {
     offsets
 }
 
-/// Colunas constantes do SELECT, como `123` ou `'ABC'`. O cursor recusa todas com `O campo
-/// precisa ser informado com a tabela`, e um decimal como `123.45` é lido como tabela e campo
-/// (`RowSet inexistente: 123`). Coluna sem tabela e `*` compilam. SQL que o `sqlparser` não lê
-/// não é conferido.
+/// Colunas constantes do SELECT, como `123` ou `'ABC'`. O cursor recusa todas, porque lê cada
+/// coluna como campo de uma tabela. A constante sozinha dá `Campo "123" inexistente na
+/// tabela/view`, com apelido dá `O campo precisa ser informado com a tabela`, e um decimal como
+/// `123.45` é lido como tabela e campo (`RowSet inexistente: 123`). Coluna sem tabela e `*`
+/// compilam. SQL que o `sqlparser` não lê não é conferido.
 fn constants_of(statements: &[Statement]) -> Vec<String> {
     let mut constants = Vec::new();
     for statement in statements {
@@ -117,12 +118,17 @@ pub(super) struct Analysis {
     pub(super) unknown: Vec<Unknown>,
     /// As colunas que viram campo do cursor, quando o texto é um SELECT com FROM.
     pub(super) selection: Option<Selection>,
+    /// Os `:nome` fora de aspas simples, com o trecho do nome no literal.
+    pub(super) params: Vec<(String, std::ops::Range<usize>)>,
 }
 
 /// Campos que o SELECT dá ao cursor, como o compilador os monta.
 pub(super) struct Selection {
     pub(super) columns: Vec<Selected>,
     pub(super) star: Option<Star>,
+    /// Os campos que o cursor fica tendo, com o tipo do dicionário, ou `None` quando há um `*`
+    /// de tabela que o dicionário não tem.
+    pub(super) fields: Option<Vec<Column>>,
 }
 
 /// Coluna do SELECT que vira campo do cursor.
@@ -208,7 +214,12 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
         Some(reading) => unknown_columns(reading, dictionaries, statements.is_some()),
         None => Vec::new(),
     };
-    let mut selection = reading.as_ref().map(|r| selection(r, dictionaries));
+    let mut selection = reading.as_ref().map(|reading| {
+        let (selection, repeated) = selection(reading, dictionaries);
+        unknown.extend(repeated);
+        selection
+    });
+    let mut params = params_of(&sql);
     // As posições saem no SQL montado e vão para o literal, que pode ter escape e emenda.
     let offsets = value_offsets(literal);
     let in_literal = |range: &mut std::ops::Range<usize>| {
@@ -230,11 +241,13 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
             in_literal(&mut star.range);
         }
     }
+    params.iter_mut().for_each(|(_, range)| in_literal(range));
     let analysis = Rc::new(Analysis {
         constants: statements.as_deref().map(constants_of).unwrap_or_default(),
         columns: statements.and_then(|s| select_columns(&s, dictionaries)),
         unknown,
         selection,
+        params,
     });
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -447,9 +460,7 @@ fn unknown_columns(
     skip_constants: bool,
 ) -> Vec<Unknown> {
     let mut unknown = Vec::new();
-    if dictionaries.is_empty() {
-        return unknown;
-    }
+    let has_dictionary = !dictionaries.is_empty();
     let (main, columns) = (&reading.table, &reading.columns);
     let ctl = |c: char| c <= ' ';
     let mut missing_tables: Vec<String> = Vec::new();
@@ -460,19 +471,28 @@ fn unknown_columns(
         let (column, range) = match item.text.split_once(' ') {
             Some((left, _)) => {
                 let left = left.trim_matches(ctl);
-                if !left.contains('.') {
-                    continue;
-                }
                 let end = if item.exact() {
                     item.start + left.len()
                 } else {
                     item.end
                 };
-                (left, item.start..end)
+                let range = item.start..end;
+                if !left.contains('.') {
+                    // O compilador junta a tabela ao nome sem o ponto e depois cobra o ponto.
+                    if !(skip_constants && looks_constant(left)) {
+                        unknown.push(Unknown {
+                            kind: CheckKind::CursorColumnWithoutTable,
+                            range,
+                            label: Some(left.to_owned()),
+                        });
+                    }
+                    continue;
+                }
+                (left, range)
             }
             None => (item.text.as_str(), item.start..item.end),
         };
-        if skip_constants && looks_constant(column) {
+        if !has_dictionary || (skip_constants && looks_constant(column)) {
             continue;
         }
         let qualified = column.contains('.');
@@ -526,10 +546,30 @@ fn unknown_columns(
 /// do primeiro ponto, e o `*` vira todos os campos da primeira tabela do FROM. A coluna com algo
 /// depois de um espaço, como um apelido, não vira campo, e a constante dá erro, então as duas
 /// ficam de fora.
-fn selection(reading: &Reading, dictionaries: &Dictionaries) -> Selection {
+///
+/// O cursor guarda um campo por nome. A mesma coluna escrita de novo é ignorada, e o mesmo nome
+/// vindo de outra tabela é recusado, o que sai na segunda lista.
+fn selection(reading: &Reading, dictionaries: &Dictionaries) -> (Selection, Vec<Unknown>) {
     let mut selection = Selection {
         columns: Vec::new(),
         star: None,
+        fields: Some(Vec::new()),
+    };
+    let mut repeated = Vec::new();
+    // Tabela e campo de cada coluna que o cursor já tem.
+    let mut seen: Vec<(String, String)> = Vec::new();
+    let rowset_of = |table: &str| {
+        rowset(&dictionaries.production, table).or_else(|| rowset(&dictionaries.test, table))
+    };
+    let type_of = |table: &str, name: &str| {
+        let field = |d| {
+            rowset(d, table)?
+                .iter()
+                .find(|f| f.name.eq_ignore_ascii_case(name))
+        };
+        field(&dictionaries.production)
+            .or_else(|| field(&dictionaries.test))
+            .and_then(|f| f.ty.var_type())
     };
     let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     let ordered = |name: &str| {
@@ -543,9 +583,22 @@ fn selection(reading: &Reading, dictionaries: &Dictionaries) -> Selection {
         let range = item.start..item.end;
         if item.text == "*" {
             let table = reading.table.text.as_str();
-            let fields = rowset(&dictionaries.production, table)
-                .or_else(|| rowset(&dictionaries.test, table))
+            let fields: Option<Vec<String>> = rowset_of(table)
                 .map(|fields| fields.iter().map(|f| f.name.to_uppercase()).collect());
+            match (&fields, &mut selection.fields) {
+                (Some(names), Some(known)) => {
+                    for name in names {
+                        if !seen.iter().any(|(_, f)| f == name) {
+                            seen.push((table.to_owned(), name.clone()));
+                            known.push(Column {
+                                name: name.clone(),
+                                ty: type_of(table, name),
+                            });
+                        }
+                    }
+                }
+                _ => selection.fields = None,
+            }
             selection.star = Some(Star {
                 range,
                 table: table.to_owned(),
@@ -556,20 +609,106 @@ fn selection(reading: &Reading, dictionaries: &Dictionaries) -> Selection {
         if item.text.contains(' ') || looks_constant(&item.text) {
             continue;
         }
-        let name = item
-            .text
-            .split_once('.')
-            .map_or(item.text.as_str(), |n| n.1);
-        let name = name.trim_matches(|c: char| c <= ' ');
-        if !name.is_empty() {
-            selection.columns.push(Selected {
-                name: name.to_owned(),
-                range,
-                ordered: ordered(name),
+        let ctl = |c: char| c <= ' ';
+        let (table, name) = match item.text.split_once('.') {
+            Some((table, name)) => (table.trim_matches(ctl), name.trim_matches(ctl)),
+            None => (reading.table.text.as_str(), item.text.as_str()),
+        };
+        if name.is_empty() {
+            continue;
+        }
+        if seen.iter().any(|(t, f)| t == table && f == name) {
+            // A mesma coluna de novo não muda o cursor.
+        } else if seen.iter().any(|(_, f)| f == name) {
+            repeated.push(Unknown {
+                kind: CheckKind::CursorRepeatedField,
+                range: range.clone(),
+                label: Some(name.to_owned()),
             });
+        } else {
+            seen.push((table.to_owned(), name.to_owned()));
+            if let Some(known) = &mut selection.fields {
+                known.push(Column {
+                    name: name.to_owned(),
+                    ty: type_of(table, name),
+                });
+            }
+        }
+        selection.columns.push(Selected {
+            name: name.to_owned(),
+            range,
+            ordered: ordered(name),
+        });
+    }
+    (selection, repeated)
+}
+
+/// Os `:nome` do SQL, que o compilador troca pelo valor da variável da regra, com o trecho de
+/// cada nome. O que está entre aspas simples não é lido.
+fn params_of(sql: &str) -> Vec<(String, std::ops::Range<usize>)> {
+    let bytes = sql.as_bytes();
+    let mut params = Vec::new();
+    let mut quoted = false;
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'\'' => quoted = !quoted,
+            b':' if !quoted => {
+                let start = at + 1;
+                let word = |b: &u8| b.is_ascii_alphanumeric() || *b == b'_';
+                let end = start + bytes[start..].iter().take_while(|b| word(b)).count();
+                if bytes.get(start).is_some_and(|b| !b.is_ascii_digit()) && end > start {
+                    params.push((sql[start..end].to_ascii_uppercase(), start..end));
+                }
+                at = end.max(at + 1);
+                continue;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    params
+}
+
+/// Onde cada nome aparece pela primeira vez no arquivo, em maiúsculas. Só é montado quando algum
+/// SQL de cursor tem `:nome`.
+pub(super) struct FirstUses<'a> {
+    tree: &'a Tree,
+    text: &'a str,
+    names: std::cell::OnceCell<FxHashMap<String, text_size::TextSize>>,
+}
+
+impl<'a> FirstUses<'a> {
+    pub(super) fn new(tree: &'a Tree, text: &'a str) -> FirstUses<'a> {
+        FirstUses {
+            tree,
+            text,
+            names: std::cell::OnceCell::new(),
         }
     }
-    selection
+
+    /// Diz se o nome, em maiúsculas, aparece no arquivo antes de `offset`.
+    fn before(&self, name: &str, offset: text_size::TextSize) -> bool {
+        let names = self.names.get_or_init(|| {
+            let tokens = self.tree.tokens();
+            let mut names = FxHashMap::default();
+            let mut upper = String::new();
+            for i in 0..tokens.len() {
+                if tokens.kind(i) != SyntaxKind::Ident {
+                    continue;
+                }
+                let range = tokens.range(i);
+                upper.clear();
+                upper.push_str(&self.text[range]);
+                upper.make_ascii_uppercase();
+                if !names.contains_key(upper.as_str()) {
+                    names.insert(upper.clone(), range.start());
+                }
+            }
+            names
+        });
+        names.get(name).is_some_and(|&first| first < offset)
+    }
 }
 
 /// Coluna que um SELECT devolve, pelo nome em maiúsculas, com o tipo do campo no dicionário quando
@@ -833,7 +972,11 @@ impl Sources {
                         .nth(1)
                         .and_then(|value| string_literal(tree, value))
                         .map(|lit| analysis(&text[lit], dictionaries));
-                    let columns = analysis.as_ref().and_then(|a| a.columns.as_deref());
+                    // Os campos do cursor são os que o compilador monta, e não as colunas que o
+                    // banco devolveria. A coluna com apelido, por exemplo, não vira campo.
+                    let columns = analysis
+                        .as_ref()
+                        .and_then(|a| a.selection.as_ref()?.fields.as_deref());
                     merge(&mut sources.cursors, cursor, columns);
                 }
                 SyntaxKind::CallStmt => {
@@ -1106,15 +1249,19 @@ fn string_literal(tree: &Tree, node: NodeId) -> Option<text_size::TextRange> {
     (tree.tokens().kind(token) == SyntaxKind::String).then(|| tree.tokens().range(token))
 }
 
-/// `cur.SQL "SELECT ..."` com uma constante entre as colunas, ou com tabela ou campo que o
-/// dicionário de dados não tem.
+/// `cur.SQL "SELECT ..."` com uma coluna que o compilador recusa, como a constante e a tabela ou
+/// o campo que o dicionário de dados não tem, ou com um `:nome` que ainda não apareceu na regra.
+/// O compilador só aceita como parâmetro o nome que já foi definido ou usado antes do comando. O
+/// parâmetro só é conferido na regra comum, porque na tela e no relatório o nome pode ter sido
+/// usado, sem `definir`, numa regra que o compilador lê antes desta.
 pub(super) fn cursor_sql(
     tree: &Tree,
-    text: &str,
+    scope: &super::types::Scope,
+    first_uses: &FirstUses,
     node: NodeId,
-    dictionaries: &Dictionaries,
     checks: &mut Vec<Check>,
 ) {
+    let (text, dictionaries) = (scope.text, &scope.inherited.dictionaries);
     let Some(field) = tree.children(node).next() else {
         return;
     };
@@ -1149,6 +1296,22 @@ pub(super) fn cursor_sql(
             name: None,
             label: unknown.label.clone(),
         });
+    }
+    if scope.context != crate::builtins::Context::Rule {
+        return;
+    }
+    for (name, param) in &analysis.params {
+        let known = first_uses.before(name, range.start())
+            || scope.inherited.variable(name).is_some()
+            || crate::builtins::system_variable(name, scope.context).is_some();
+        if !known {
+            checks.push(Check {
+                kind: CheckKind::CursorUnknownParameter,
+                range: text_size::TextRange::new(at(param.start), at(param.end)),
+                name: None,
+                label: None,
+            });
+        }
     }
 }
 
