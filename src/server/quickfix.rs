@@ -218,8 +218,26 @@ impl Context<'_> {
         doc.checks()
             .iter()
             .filter(|c| c.range.intersect(wanted).is_some() || c.range.contains_inclusive(start))
-            .filter_map(|c| self.fix(c))
+            .flat_map(|c| [self.fix(c), self.replace_with_suggestion(c)])
+            .flatten()
             .collect()
+    }
+
+    /// Troca o nome que não existe pelo mais parecido, quando há um.
+    fn replace_with_suggestion(&self, check: &crate::validate::Check) -> Option<CodeAction> {
+        let (range, name) = super::suggest::suggestion(check, self.doc)?;
+        let edit = TextEdit::new(self.range(range), name.clone());
+        #[allow(clippy::mutable_key_type)]
+        let changes = HashMap::from([(self.uri.clone(), vec![edit])]);
+        Some(CodeAction {
+            title: format!("Trocar por {name}"),
+            kind: Some(CodeActionKind::QUICKFIX),
+            edit: Some(WorkspaceEdit {
+                changes: Some(changes),
+                ..WorkspaceEdit::default()
+            }),
+            ..CodeAction::default()
+        })
     }
 
     fn fix(&self, check: &crate::validate::Check) -> Option<CodeAction> {

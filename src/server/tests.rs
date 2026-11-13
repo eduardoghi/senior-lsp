@@ -1593,6 +1593,26 @@ fn correcao_rapida_tira_a_coluna_que_a_regra_nao_le() {
     assert!(ultima.contains("              C FROM T\""), "{ultima}");
 }
 
+#[test]
+fn correcao_rapida_troca_pelo_nome_parecido() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "definir numero n; definir alfa a;\nIntParaAlfaa(n, a);\n";
+    editor.open(RULE, 1, text);
+    let diagnostics = editor.diagnostics().diagnostics;
+    let code = lsp_types::NumberOrString::String("SEN052".to_owned());
+    let message = &diagnostics
+        .iter()
+        .find(|d| d.code.as_ref() == Some(&code))
+        .unwrap()
+        .message;
+    assert!(
+        message.ends_with("Você quis dizer IntParaAlfa?"),
+        "{message}"
+    );
+    let trocada = apply_fix(&mut editor, text, 1, 3, "Trocar por IntParaAlfa");
+    assert!(trocada.contains("\nIntParaAlfa(n, a);"), "{trocada}");
+}
+
 fn apply_fix(editor: &mut Editor, text: &str, line: u32, character: u32, title: &str) -> String {
     let response = editor.request(
         lsp_types::request::CodeActionRequest::METHOD,

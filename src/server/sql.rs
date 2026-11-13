@@ -969,6 +969,35 @@ mod tests {
     }
 
     #[test]
+    fn sugere_o_nome_mais_parecido() {
+        let doc = document(
+            "definir cursor c; definir cursor c2; definir cursor c3; definir numero n;\n\
+             c.SQL \"SELECT E070EMP.NomeEmp, CodEnp FROM E070EMP\";\n\
+             c2.SQL \"SELECT CodEmp, NomEmp FROM E070EMP\";\nn = c2.CodEmpp;\n\
+             c3.SQL \"SELECT CodEmp FROM E070EMPP\";\nIntParaAlfaa(n, a);\n\
+             c3.SQL \"SELECT Descricao FROM E070EMP\";",
+        );
+        let found: Vec<(&str, String)> = doc
+            .checks()
+            .iter()
+            .filter_map(|c| crate::server::suggest::suggestion(c, &doc))
+            .map(|(range, name)| (&doc.text[range], name))
+            .collect();
+        // No campo com a tabela na frente só o campo é trocado, e o que não parece com nada
+        // fica sem sugestão.
+        assert_eq!(
+            found,
+            [
+                ("NomeEmp", "NomEmp".to_owned()),
+                ("CodEnp", "CodEmp".to_owned()),
+                ("CodEmpp", "CODEMP".to_owned()),
+                ("E070EMPP", "E070EMP".to_owned()),
+                ("IntParaAlfaa", "IntParaAlfa".to_owned())
+            ]
+        );
+    }
+
+    #[test]
     fn completar_dentro_do_sql() {
         let cursor = |sql: &str| completions(&format!("definir cursor c;\nc.SQL \"{sql}\";"));
         // Depois do ponto, os campos da tabela ou da tabela do apelido.

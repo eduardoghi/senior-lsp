@@ -104,7 +104,11 @@ fn found(doc: &Document) -> Vec<Found> {
         } else {
             DiagnosticSeverity::WARNING
         };
-        (c.range, describe_check(c, tree, text), severity)
+        let (code, mut message) = describe_check(c, tree, text);
+        if let Some((_, name)) = super::suggest::suggestion(c, doc) {
+            message.push_str(&format!(" Você quis dizer {name}?"));
+        }
+        (c.range, (code, message), severity)
     });
     errors
         .chain(checks)

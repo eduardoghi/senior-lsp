@@ -28,6 +28,7 @@ mod selection;
 mod semantic;
 mod signature;
 mod sql;
+mod suggest;
 mod sync;
 mod webservice;
 mod workspace;

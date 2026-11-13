@@ -35,6 +35,10 @@ O servidor oferece:
   que falta (SEN066), tiram do SELECT do cursor a coluna que a regra não lê ou trocam o `*` pelos
   campos lidos (SEN076) e declaram a função chamada que não existe (SEN052), com o
   `Definir Funcao` junto dos outros `definir` e a `funcao` vazia no fim do arquivo
+- "Você quis dizer?" no campo, na tabela e na função que não existem (SEN052, SEN055, SEN074,
+  SEN075, SEN081 e SEN082). A mensagem cita o nome mais parecido, e a correção rápida "Trocar por"
+  põe ele no lugar. Só sai quando há um único nome a uma letra de distância, ou a duas no nome
+  de oito letras ou mais
 - ação de código "Extrair função" (`refactor.extract`) para comandos inteiros e contíguos do mesmo
   bloco, selecionados no editor. A chamada `NovaFuncao();` ocupa o lugar do trecho, o `Definir
   Funcao` entra junto dos outros `definir` e a `funcao` vai para o fim do arquivo, com o corpo
