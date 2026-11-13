@@ -3,9 +3,9 @@
 //! O SQL do cursor (`cur.SQL "..."`) é lido pelo gerador de SQL da Senior já na compilação, que
 //! recusa constante entre as colunas, campo do cursor fora do SELECT e campo de tipo diferente da
 //! variável. O `SQL_UsarSQLSenior2`, que liga o SQL nativo, e o `SQL_Retornar*` de coluna que não
-//! está no SELECT só falham na execução. Todos esses casos foram conferidos no ERP. A tabela e o
-//! campo de cada coluna do cursor, que o gerador procura no dicionário de dados, seguem a leitura
-//! descrita no [`compiler_columns`].
+//! está no SELECT só falham na execução. A tabela e o campo de cada coluna do cursor, que o
+//! gerador procura no dicionário de dados, seguem a leitura descrita no [`compiler_columns`].
+//! Todos os casos foram conferidos no ERP.
 //!
 //! As colunas de um cursor ou de um objeto de SQL juntam todos os SQL literais que ele recebe no
 //! arquivo, sem olhar a ordem, então um nome só é cobrado quando não está em nenhum. Um SQL que não
@@ -379,8 +379,8 @@ fn looks_constant(column: &str) -> bool {
 /// conferida como o compilador a lê, pelo [`compiler_columns`]. O que vem antes do primeiro ponto
 /// é a tabela, e por isso um apelido de tabela ou uma função com `TABELA.CAMPO` dentro são lidos
 /// como uma tabela que não existe. A coluna sem ponto é procurada na primeira tabela do FROM. Com
-/// algo depois de um espaço, como um apelido, só vale o que vem antes dele. O `*` não é conferido,
-/// nem o WHERE e o ORDER BY, que o compilador não confere.
+/// algo depois de um espaço, como um apelido, só vale o que vem antes dele. O `*`, o WHERE e o
+/// ORDER BY ficam de fora, porque o compilador só os confere quando a regra usa o Senior SQL 2.
 ///
 /// A coluna com espaço e sem ponto e a que fica com a tabela ou o campo vazio dão outros erros,
 /// e as constantes ficam com o [`constants_of`] quando o `sqlparser` leu o SQL (`skip_constants`).

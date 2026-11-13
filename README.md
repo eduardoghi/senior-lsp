@@ -413,8 +413,8 @@ de um caractere fica sem tipo, porque o compilador aceita ele como texto e como 
 O SELECT de um cursor (`cur.SQL "..."`) também é conferido com o dicionário, do jeito que o
 compilador confere ao compilar a regra. Ele lê o que vem antes do primeiro ponto de cada coluna
 como tabela ou visão, e por isso recusa apelido de tabela e função (SEN074). A coluna sem tabela é
-procurada na primeira tabela do FROM (SEN075). O `*`, o WHERE e o ORDER BY ficam sem conferência,
-porque o compilador não confere nenhum dos três.
+procurada na primeira tabela do FROM (SEN075). O `*`, o WHERE e o ORDER BY ficam sem conferência.
+O compilador só confere os três quando a regra usa o Senior SQL 2, opção que o servidor não lê.
 
 São dois caminhos, ambos opcionais, o `.tbs` de produção e o da base de teste. O tipo vem do de
 produção. Com os dois, o servidor avisa (SEN065) quando a regra usa um campo que só existe no de
