@@ -133,19 +133,18 @@ impl Documents {
         version: i32,
         context: Context,
     ) -> Result<(), TextTooLarge> {
-        // As regras de cima são lidas do disco a cada mudança. Um formulário tem poucas.
-        let mut inherited = match (context, crate::form::path_from_uri(uri.as_str())) {
+        let inherited = match (context, crate::form::path_from_uri(uri.as_str())) {
+            // As regras de cima valem como estão no disco, e o que foi lido delas fica guardado.
             (Context::Sgi, Some(path)) => crate::form::inherited_functions(&path),
             // Regra de relatório separada do JSON. As regras e as entradas do modelo valem nela,
             // a própria inclusive, como no JSON, para uma função definida em mais de uma regra
             // ficar em dúvida do mesmo jeito.
             (Context::Report, Some(path)) if crate::report::is_rule_file(&path) => {
-                Inherited::from_model(&crate::report::model(&path, &text))
+                model_inherited(&crate::report::model(&path, &text))
             }
-            _ => Inherited::default(),
+            _ => Arc::new(Inherited::with_dictionaries(crate::dictionary::current())),
         };
-        inherited.dictionaries = crate::dictionary::current();
-        self.set_with(uri, text, version, context, Arc::new(inherited))
+        self.set_with(uri, text, version, context, inherited)
     }
 
     /// Guarda uma regra em texto com as definições de fora já montadas, como as de um modelo de

@@ -5,6 +5,7 @@
 //! como pastas, cada regra num `rule.txt`, com a raiz dois níveis abaixo da pasta
 //! `Formulários SGI` (`Formulários SGI/interface/<formulário>`).
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -79,6 +80,14 @@ impl Inherited {
 
     pub fn contains(&self, name: &str) -> bool {
         self.functions.contains_key(&name.to_uppercase())
+    }
+
+    /// Nenhuma definição de outra regra, só os dicionários de dados.
+    pub fn with_dictionaries(dictionaries: crate::dictionary::Dictionaries) -> Inherited {
+        Inherited {
+            dictionaries,
+            ..Inherited::default()
+        }
     }
 
     /// Junta as funções das regras dadas, da mais próxima para a mais distante.
@@ -302,28 +311,132 @@ impl RuleDefs {
     }
 }
 
-/// Funções e variáveis que valem para `rule` num formulário SGI, as das regras que vêm antes dela
-/// na ordem de compilação e os campos da tela. Vazio fora de um formulário SGI. Regra que não pode
-/// ser lida fica de fora.
-pub fn inherited_functions(rule: &Path) -> Inherited {
-    let Some(root) = form_dir(rule) else {
-        return Inherited::default();
-    };
-    let order = form_rules(&root);
-    let before = position(&order, rule).map_or(&order[..0], |i| &order[..i]);
-    // A regra mais próxima vem primeiro, e `from_rules` dá preferência a ela.
-    let rules = before.iter().rev().filter_map(|path| {
-        let text = fs::read(path)
-            .ok()
-            .and_then(|b| crate::cp1252::decode(&b))?;
-        Some((path.clone(), text))
-    });
-    let mut inherited = Inherited::from_rules(rules.collect::<Vec<_>>());
+/// Data de alteração e tamanho de um arquivo ou de uma pasta, para saber se mudou. `None` quando
+/// não existe. A data da pasta muda quando uma entrada dela é criada, apagada ou renomeada.
+pub(crate) type Stamp = Option<(std::time::SystemTime, u64)>;
+
+pub(crate) fn stamp(path: &Path) -> Stamp {
+    let meta = fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// Pastas listadas e arquivos lidos para montar um resultado, cada um como estava antes da
+/// leitura. Enquanto nenhum mudar, o resultado guardado continua valendo.
+#[derive(Default)]
+pub(crate) struct Watch(Vec<(PathBuf, Stamp)>);
+
+impl Watch {
+    /// Registra o caminho antes de ele ser lido. Uma mudança entre o registro e a leitura só faz
+    /// o resultado ser montado de novo na próxima consulta.
+    pub(crate) fn add(&mut self, path: &Path) {
+        self.0.push((path.to_path_buf(), stamp(path)));
+    }
+
+    pub(crate) fn unchanged(&self) -> bool {
+        self.0.iter().all(|(path, before)| stamp(path) == *before)
+    }
+}
+
+/// O que já foi lido de um formulário SGI. A cada tecla numa regra de tela o servidor precisa das
+/// definições das regras anteriores e dos campos da tela, que só mudam quando um arquivo do
+/// formulário muda no disco. Com isto guardado, a tecla custa um `stat` por pasta e arquivo do
+/// formulário, em vez de listar as pastas, ler os JSON e fazer o parse de todas as regras.
+#[derive(Default)]
+struct Form {
+    /// Ordem e campos já foram montados uma vez.
+    loaded: bool,
+    /// O que foi listado e lido para a ordem das regras e para os campos.
+    watch: Watch,
+    /// Dicionários que deram o tipo dos campos de busca.
+    dictionaries: crate::dictionary::Dictionaries,
+    order: Vec<PathBuf>,
+    fields: Vec<(PathBuf, Arc<str>, crate::report::Entry)>,
+    /// Definições de cada regra já lida, com a data e o tamanho do arquivo. `None` para a regra
+    /// que não pôde ser lida.
+    rules: HashMap<PathBuf, (Stamp, Option<Arc<RuleDefs>>)>,
+    /// Definições juntadas para a regra em cada posição da ordem. Esvazia quando qualquer coisa do
+    /// formulário muda.
+    merged: HashMap<usize, Arc<Inherited>>,
+}
+
+/// Quantos formulários ficam guardados. Passando disso o cache recomeça vazio.
+const MAX_FORMS: usize = 8;
+
+thread_local! {
+    static FORMS: RefCell<HashMap<PathBuf, Form>> = RefCell::default();
+}
+
+/// Roda `f` com o formulário de `root`, com a ordem das regras e os campos em dia.
+fn with_form<R>(root: &Path, f: impl FnOnce(&mut Form) -> R) -> R {
     let dictionaries = crate::dictionary::current();
-    let fields = form_fields(&root, &dictionaries);
-    inherited.add_entries(fields.iter().map(|(p, j, e)| (p, j, e)));
-    inherited.dictionaries = dictionaries;
-    inherited
+    FORMS.with_borrow_mut(|forms| {
+        if !forms.contains_key(root) && forms.len() >= MAX_FORMS {
+            forms.clear();
+        }
+        let form = forms.entry(root.to_path_buf()).or_default();
+        if !form.loaded || !form.dictionaries.same(&dictionaries) || !form.watch.unchanged() {
+            let mut watch = Watch::default();
+            form.order = list_rules(root, &mut watch);
+            form.fields = form_fields(root, &dictionaries, &mut watch);
+            form.watch = watch;
+            form.dictionaries = dictionaries;
+            form.merged.clear();
+            form.loaded = true;
+            let Form { rules, order, .. } = form;
+            rules.retain(|path, _| order.contains(path));
+        }
+        f(form)
+    })
+}
+
+impl Form {
+    /// Definições que valem para a regra que tem `before` regras antes dela.
+    fn inherited(&mut self, before: usize) -> Arc<Inherited> {
+        let mut changed = false;
+        for path in &self.order[..before] {
+            let now = stamp(path);
+            if self.rules.get(path).is_some_and(|(read, _)| *read == now) {
+                continue;
+            }
+            let defs = fs::read(path)
+                .ok()
+                .and_then(|b| crate::cp1252::decode(&b))
+                .map(|text| Arc::new(RuleDefs::of(Arc::from(text))));
+            self.rules.insert(path.clone(), (now, defs));
+            changed = true;
+        }
+        if changed {
+            self.merged.clear();
+        }
+        if let Some(inherited) = self.merged.get(&before) {
+            return inherited.clone();
+        }
+        // A regra mais próxima vem primeiro, e o `merge` dá preferência a ela. Regra que não pôde
+        // ser lida fica de fora.
+        let rules = self.order[..before].iter().rev().filter_map(|path| {
+            let (_, defs) = self.rules.get(path)?;
+            Some((path.as_path(), defs.as_deref()?, None))
+        });
+        let mut inherited = Inherited::merge(rules, false);
+        inherited.add_entries(self.fields.iter().map(|(p, j, e)| (p, j, e)));
+        inherited.dictionaries = self.dictionaries.clone();
+        let inherited = Arc::new(inherited);
+        self.merged.insert(before, inherited.clone());
+        inherited
+    }
+}
+
+/// Funções e variáveis que valem para `rule` num formulário SGI, as das regras que vêm antes dela
+/// na ordem de compilação e os campos da tela. Fora de um formulário SGI, só os dicionários de
+/// dados. As regras vizinhas valem como estão no disco.
+pub fn inherited_functions(rule: &Path) -> Arc<Inherited> {
+    let Some(root) = form_dir(rule) else {
+        return Arc::new(Inherited::with_dictionaries(crate::dictionary::current()));
+    };
+    with_form(&root, |form| {
+        let before = position(&form.order, rule).unwrap_or(0);
+        form.inherited(before)
+    })
 }
 
 /// Regras do formulário na ordem em que o ERP compila. O ERP junta todas as regras da interface
@@ -332,16 +445,30 @@ pub fn inherited_functions(rule: &Path) -> Inherited {
 /// ações da interface vão em ordem alfabética, como a importação do gerenciador de artefatos
 /// grava, e as ações da tabela na ordem da lista `actions` do `definition.json` dela.
 pub fn form_rules(root: &Path) -> Vec<PathBuf> {
+    list_rules(root, &mut Watch::default())
+}
+
+/// As regras de [`form_rules`], registrando em `watch` cada pasta listada e cada JSON lido.
+fn list_rules(root: &Path, watch: &mut Watch) -> Vec<PathBuf> {
     let mut out = Vec::new();
     // A pasta entra mesmo sem o arquivo, porque a regra pode estar só no editor, ainda sem salvar.
-    let mut push = |dir: &Path| out.push(dir.join(rule_file(dir)));
-    push(root);
-    for action in subdirs(&root.join("actions")) {
-        push(&action);
+    let mut push = |dir: &Path, watch: &mut Watch| {
+        watch.add(dir);
+        out.push(dir.join(rule_file(dir)));
+    };
+    push(root, watch);
+    let actions = root.join("actions");
+    watch.add(&actions);
+    for action in subdirs(&actions) {
+        push(&action, watch);
     }
-    for table in subdirs(&root.join("tables")) {
-        push(&table);
-        let listed = fs::read(table.join("definition.json"))
+    let tables = root.join("tables");
+    watch.add(&tables);
+    for table in subdirs(&tables) {
+        push(&table, watch);
+        let definition = table.join("definition.json");
+        watch.add(&definition);
+        let listed = fs::read(definition)
             .ok()
             .and_then(|b| {
                 std::string::String::from_utf8(b.clone())
@@ -351,7 +478,9 @@ pub fn form_rules(root: &Path) -> Vec<PathBuf> {
             .unwrap_or_default()
             .to_lowercase();
         let actions_at = listed.find("\"actions\"").unwrap_or(listed.len());
-        let mut actions = subdirs(&table.join("actions"));
+        let table_actions = table.join("actions");
+        watch.add(&table_actions);
+        let mut actions = subdirs(&table_actions);
         actions.sort_by_key(|a| {
             let name = a
                 .file_name()
@@ -363,7 +492,7 @@ pub fn form_rules(root: &Path) -> Vec<PathBuf> {
             (at, name)
         });
         for action in actions {
-            push(&action);
+            push(&action, watch);
         }
     }
     out
@@ -375,11 +504,10 @@ pub fn following_rules(rule: &Path) -> Vec<PathBuf> {
     let Some(root) = form_dir(rule) else {
         return Vec::new();
     };
-    let order = form_rules(&root);
-    match position(&order, rule) {
-        Some(i) => order[i + 1..].to_vec(),
+    with_form(&root, |form| match position(&form.order, rule) {
+        Some(i) => form.order[i + 1..].to_vec(),
         None => Vec::new(),
-    }
+    })
 }
 
 /// Posição de `rule` na ordem, pela pasta, porque o nome do arquivo pode variar de caixa.
@@ -416,16 +544,20 @@ fn subdirs(dir: &Path) -> Vec<PathBuf> {
 fn form_fields(
     root: &Path,
     dictionaries: &crate::dictionary::Dictionaries,
+    watch: &mut Watch,
 ) -> Vec<(PathBuf, Arc<str>, crate::report::Entry)> {
     let links = if dictionaries.is_empty() {
         HashMap::new()
     } else {
-        read_json(&root.join("interfaces").join("definition.json"))
+        let interfaces = root.join("interfaces").join("definition.json");
+        watch.add(&interfaces);
+        read_json(&interfaces)
             .map(|json| link_targets(&json))
             .unwrap_or_default()
     };
     let mut out = Vec::new();
-    let mut add = |path: PathBuf, prefix: &str| {
+    let mut add = |path: PathBuf, prefix: &str, watch: &mut Watch| {
+        watch.add(&path);
         let Some(json) = read_json(&path) else {
             return;
         };
@@ -451,7 +583,8 @@ fn form_fields(
             out.push((path.clone(), json.clone(), old));
         }
     };
-    add(root.join("fields").join("definition.json"), "");
+    add(root.join("fields").join("definition.json"), "", watch);
+    watch.add(&root.join("tables"));
     let mut tables: Vec<_> = fs::read_dir(root.join("tables"))
         .into_iter()
         .flatten()
@@ -465,7 +598,7 @@ fn form_fields(
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        add(table.join("fields").join("definition.json"), &name);
+        add(table.join("fields").join("definition.json"), &name, watch);
     }
     out
 }
@@ -688,6 +821,93 @@ mod tests {
         fs::remove_dir_all(&base).unwrap();
     }
 
+    /// Espera o relógio do sistema de arquivos andar, para a mudança seguinte ter outra data.
+    /// Sem isso, duas mudanças no mesmo instante do relógio podem ficar com a mesma data.
+    fn tick() {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+
+    #[test]
+    fn ve_a_mudanca_das_regras_vizinhas_no_disco() {
+        let base = std::env::temp_dir().join(format!("senior-lsp-cache-{}", std::process::id()));
+        let form = base.join("Formulários SGI/interface/F1");
+        fs::create_dir_all(form.join("actions/A1")).unwrap();
+        fs::create_dir_all(form.join("tables/T1/fields")).unwrap();
+        fs::write(form.join("rule.txt"), "definir funcao Um();").unwrap();
+        fs::write(form.join("actions/A1/rule.txt"), "definir numero nAcao;").unwrap();
+        let table = form.join("tables/T1/rule.txt");
+        fs::write(&table, "").unwrap();
+
+        let first = inherited_functions(&table);
+        assert!(first.contains("Um") && first.variable("nAcao").is_some());
+        // Sem mudança no disco, a segunda consulta devolve o mesmo resultado guardado.
+        assert!(Arc::ptr_eq(&first, &inherited_functions(&table)));
+
+        // Regra vizinha alterada.
+        tick();
+        fs::write(
+            form.join("rule.txt"),
+            "definir funcao Dois();\ndefinir alfa aRaiz;",
+        )
+        .unwrap();
+        let changed = inherited_functions(&table);
+        assert!(!changed.contains("Um") && changed.contains("Dois"));
+        assert!(changed.variable("aRaiz").is_some() && changed.variable("nAcao").is_some());
+
+        // Regra vizinha criada, numa ação nova.
+        tick();
+        fs::create_dir_all(form.join("actions/A2")).unwrap();
+        fs::write(form.join("actions/A2/rule.txt"), "definir funcao Nova();").unwrap();
+        assert!(inherited_functions(&table).contains("Nova"));
+        assert_eq!(following_rules(&form.join("actions/A1/rule.txt")).len(), 2);
+
+        // Regra vizinha apagada, primeiro só o arquivo e depois a pasta.
+        tick();
+        fs::remove_file(form.join("actions/A1/rule.txt")).unwrap();
+        let removed = inherited_functions(&table);
+        assert!(removed.variable("nAcao").is_none() && removed.contains("Nova"));
+        tick();
+        fs::remove_dir_all(form.join("actions/A2")).unwrap();
+        assert!(!inherited_functions(&table).contains("Nova"));
+
+        // Campo da tela cadastrado depois.
+        assert!(inherited_functions(&table).variable("T1_Campo").is_none());
+        tick();
+        fs::write(
+            form.join("tables/T1/fields/definition.json"),
+            r#"[{"isSimpleField": true, "name": "Campo", "kind": 11}]"#,
+        )
+        .unwrap();
+        let fields = inherited_functions(&table);
+        assert_eq!(
+            fields.variable("T1_Campo").map(|v| v.kind),
+            Some(DefKind::Variable(Some(VarType::Alfa)))
+        );
+        // A regra da raiz não herda regra nenhuma, só os campos.
+        let root = inherited_functions(&form.join("rule.txt"));
+        assert!(!root.contains("Dois") && root.variable("T1_Campo").is_some());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn guarda_poucos_formularios() {
+        let base = std::env::temp_dir().join(format!("senior-lsp-muitos-{}", std::process::id()));
+        let rule =
+            |n: usize| base.join(format!("Formulários SGI/interface/F{n}/actions/A/rule.txt"));
+        for n in 0..=MAX_FORMS {
+            fs::create_dir_all(rule(n).parent().unwrap()).unwrap();
+            let root = base.join(format!("Formulários SGI/interface/F{n}/rule.txt"));
+            fs::write(root, format!("definir funcao F{n}();")).unwrap();
+        }
+        // Passando do limite o cache recomeça vazio, e o resultado continua certo.
+        for n in 0..=MAX_FORMS {
+            assert!(inherited_functions(&rule(n)).contains(&format!("F{n}")));
+        }
+        assert_eq!(FORMS.with_borrow(HashMap::len), 1);
+        assert!(inherited_functions(&rule(0)).contains("F0"));
+        fs::remove_dir_all(&base).unwrap();
+    }
+
     #[test]
     fn campos_da_tela() {
         let base = std::env::temp_dir().join(format!("senior-lsp-campos-{}", std::process::id()));
@@ -770,7 +990,7 @@ mod tests {
             })),
             test: None,
         };
-        let fields = form_fields(&form, &dictionaries);
+        let fields = form_fields(&form, &dictionaries, &mut Watch::default());
         let ty = |name: &str| {
             fields
                 .iter()
@@ -782,7 +1002,11 @@ mod tests {
         // Ligação que não existe fica sem tipo.
         assert_eq!(ty("E070EMP_LOutra"), Some(None));
         // Sem dicionário, o campo de busca fica sem tipo.
-        let sem = form_fields(&form, &crate::dictionary::Dictionaries::default());
+        let sem = form_fields(
+            &form,
+            &crate::dictionary::Dictionaries::default(),
+            &mut Watch::default(),
+        );
         assert!(sem.iter().all(|(_, _, e)| e.ty.is_none()));
         fs::remove_dir_all(&base).unwrap();
     }

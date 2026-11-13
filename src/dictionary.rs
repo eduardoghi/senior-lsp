@@ -37,6 +37,17 @@ impl Dictionaries {
         self.production.is_none() && self.test.is_none()
     }
 
+    /// Diz se os dois são os mesmos dicionários em memória, e não só iguais no conteúdo. Serve
+    /// para saber se um resultado guardado ainda vale depois de uma troca do `.tbs`.
+    pub fn same(&self, other: &Dictionaries) -> bool {
+        let same = |a: &Option<Arc<Dictionary>>, b: &Option<Arc<Dictionary>>| match (a, b) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        same(&self.production, &other.production) && same(&self.test, &other.test)
+    }
+
     /// Campo pelo dicionário de produção, ou pelo de teste quando produção não tem.
     pub fn field<'a>(&'a self, table: &str, field: &str) -> Option<Found<'a>> {
         let find = |d: &'a Arc<Dictionary>| {
