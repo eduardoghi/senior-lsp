@@ -30,19 +30,20 @@ impl LineIndex {
     pub fn new(text: &str) -> LineIndex {
         let bytes = text.as_bytes();
         let mut line_starts = vec![TextSize::new(0)];
-        let mut i = 0;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'\n' => line_starts.push(TextSize::new(i as u32 + 1)),
-                b'\r' => {
-                    if bytes.get(i + 1) == Some(&b'\n') {
-                        i += 1;
-                    }
-                    line_starts.push(TextSize::new(i as u32 + 1));
-                }
-                _ => {}
+        // Posição do `\n` de um `\r\n` que já contou como uma quebra só.
+        let mut counted = usize::MAX;
+        // O índice é montado a cada tecla, e a busca do `memchr` acha as quebras vários bytes por
+        // vez, em vez de olhar um por um.
+        for i in memchr::memchr2_iter(b'\n', b'\r', bytes) {
+            if i == counted {
+                continue;
             }
-            i += 1;
+            if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
+                counted = i + 1;
+                line_starts.push(TextSize::new(i as u32 + 2));
+            } else {
+                line_starts.push(TextSize::new(i as u32 + 1));
+            }
         }
         LineIndex { line_starts }
     }
@@ -196,6 +197,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn comeco_das_linhas_com_as_quebras_misturadas() {
+        let starts = |text: &str| -> Vec<u32> {
+            let index = LineIndex::new(text);
+            (0..index.line_count())
+                .map(|line| index.line_start(line, text).into())
+                .collect()
+        };
+        assert_eq!(starts(""), [0]);
+        assert_eq!(starts("\n"), [0, 1]);
+        assert_eq!(starts("\r"), [0, 1]);
+        assert_eq!(starts("\r\n"), [0, 2]);
+        // O `\n` depois de um `\r\n` é outra quebra, e o `\r` antes de um `\r\n` também.
+        assert_eq!(starts("\r\n\n"), [0, 2, 3]);
+        assert_eq!(starts("\r\r\n"), [0, 1, 3]);
+        assert_eq!(starts("\n\r"), [0, 1, 2]);
+        assert_eq!(starts("a\r\n\r\nb\rc\n\nd\r"), [0, 3, 5, 7, 9, 10, 12]);
+        // Quebras longe uma da outra e no fim de um texto comprido, com acento no meio.
+        let long = format!(
+            "{}\r\n{}é\n{}\r",
+            "a".repeat(100),
+            "b".repeat(70),
+            "c".repeat(33)
+        );
+        assert_eq!(starts(&long), [0, 102, 175, 209]);
     }
 
     fn lc(text: &str, offset: u32, encoding: ColumnEncoding) -> (u32, u32) {
