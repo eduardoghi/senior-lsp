@@ -1578,6 +1578,21 @@ fn completar_depois_do_ponto() {
 }
 
 /// Aplica a ação de título começando com `title` no ponto e devolve o texto resultante.
+#[test]
+fn correcao_rapida_tira_a_coluna_que_a_regra_nao_le() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "definir cursor c; definir numero n;\n\
+                c.SQL \"SELECT A, B, \\\n              C, D FROM T\";\n\
+                n = c.A + c.C;\n";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    // A do meio leva a vírgula de depois e a emenda de linha, e a última a vírgula de antes.
+    let meio = apply_fix(&mut editor, text, 1, 17, "Tirar B do SELECT");
+    assert!(meio.contains("\"SELECT A, C, D FROM T\""), "{meio}");
+    let ultima = apply_fix(&mut editor, text, 2, 17, "Tirar D do SELECT");
+    assert!(ultima.contains("              C FROM T\""), "{ultima}");
+}
+
 fn apply_fix(editor: &mut Editor, text: &str, line: u32, character: u32, title: &str) -> String {
     let response = editor.request(
         lsp_types::request::CodeActionRequest::METHOD,

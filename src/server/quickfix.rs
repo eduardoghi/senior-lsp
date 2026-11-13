@@ -260,6 +260,21 @@ impl Context<'_> {
                 )
             }
             CheckKind::UnknownFunction => self.declare_function(check.range)?,
+            CheckKind::CursorColumnUnused => (
+                format!("Tirar {} do SELECT", &text[check.range]),
+                vec![(self.column_with_comma(check.range)?, String::new())],
+            ),
+            CheckKind::CursorStarUnused => {
+                // O fim do rótulo traz os campos que a regra lê.
+                let used = check.label.as_deref()?.splitn(4, '|').nth(3)?;
+                if used.is_empty() {
+                    return None;
+                }
+                (
+                    format!("Trocar o * por {used}"),
+                    vec![(check.range, used.to_owned())],
+                )
+            }
             _ => return None,
         };
         let edits = edits
@@ -277,6 +292,43 @@ impl Context<'_> {
             }),
             ..CodeAction::default()
         })
+    }
+
+    /// Trecho da coluna do SELECT com a vírgula que a separa da vizinha. Sai a vírgula de depois,
+    /// com o espaço e a emenda de linha que a seguem, ou a de antes quando a coluna é a última.
+    fn column_with_comma(&self, column: TextRange) -> Option<TextRange> {
+        let bytes = self.doc.text.as_bytes();
+        let blank = |at: usize| matches!(bytes.get(at), Some(b' ' | b'\t'));
+        let mut end = usize::from(column.end());
+        while blank(end) {
+            end += 1;
+        }
+        if bytes.get(end) == Some(&b',') {
+            end += 1;
+            while blank(end) {
+                end += 1;
+            }
+            // A barra no fim da linha emenda a seguinte, que perde o recuo junto.
+            if bytes.get(end) == Some(&b'\\') {
+                let mut line = end + 1;
+                while blank(line) || bytes.get(line) == Some(&b'\r') {
+                    line += 1;
+                }
+                if bytes.get(line) == Some(&b'\n') {
+                    end = line + 1;
+                    while blank(end) {
+                        end += 1;
+                    }
+                }
+            }
+            return Some(TextRange::new(column.start(), TextSize::new(end as u32)));
+        }
+        let mut start = usize::from(column.start());
+        while start > 0 && matches!(bytes[start - 1], b' ' | b'\t' | b'\r' | b'\n' | b'\\') {
+            start -= 1;
+        }
+        (start > 0 && bytes[start - 1] == b',')
+            .then(|| TextRange::new(TextSize::new(start as u32 - 1), column.end()))
     }
 
     /// Lado direito da atribuição cujo operador de comparação está em `operator`.

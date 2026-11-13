@@ -32,8 +32,9 @@ O servidor oferece:
 - diagnósticos da pasta inteira, opcionais, sem abrir cada regra
 - correções rápidas que apagam a definição sem uso (SEN068), põem a comparação entre parênteses
   (SEN041), trocam o apóstrofo por maiúscula (SEN064), acrescentam o `SQL_UsarAbrangencia(obj, 0)`
-  que falta (SEN066) e declaram a função chamada que não existe (SEN052), com o `Definir Funcao`
-  junto dos outros `definir` e a `funcao` vazia no fim do arquivo
+  que falta (SEN066), tiram do SELECT do cursor a coluna que a regra não lê ou trocam o `*` pelos
+  campos lidos (SEN076) e declaram a função chamada que não existe (SEN052), com o
+  `Definir Funcao` junto dos outros `definir` e a `funcao` vazia no fim do arquivo
 - ação de código "Extrair função" (`refactor.extract`) para comandos inteiros e contíguos do mesmo
   bloco, selecionados no editor. A chamada `NovaFuncao();` ocupa o lugar do trecho, o `Definir
   Funcao` entra junto dos outros `definir` e a `funcao` vai para o fim do arquivo, com o corpo
