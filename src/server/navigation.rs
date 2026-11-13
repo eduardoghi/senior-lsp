@@ -525,12 +525,15 @@ impl Context<'_> {
 
     /// Nomes que cabem na posição, filtrados pelo começo já digitado, sem diferença de caixa.
     /// Vêm primeiro as definições do arquivo, depois as das regras anteriores do formulário SGI, as
-    /// funções do ERP e as palavras da linguagem. Dentro de string, de comentário ou depois de um
-    /// ponto, que é campo de cursor ou de tabela, não há sugestão.
+    /// funções do ERP e as palavras da linguagem. Dentro do texto de um SQL saem as tabelas e os
+    /// campos do dicionário de dados. Em outro texto e em comentário não há sugestão.
     pub(crate) fn completion(&self, position: Position) -> Vec<CompletionItem> {
         let offset = self.offset(position);
         let text = &self.doc.text;
         let tree = &self.doc.tree;
+        if let Some(items) = self.sql_completion(offset) {
+            return items;
+        }
         if inside_literal_or_comment(tree, offset) {
             return Vec::new();
         }

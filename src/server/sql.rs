@@ -1,5 +1,5 @@
-//! Hover e ir para a definição dentro do texto do SQL, e ir de `cur.COLUNA` para a coluna no
-//! SELECT do cursor.
+//! Hover, ir para a definição e completar dentro do texto do SQL, e ir de `cur.COLUNA` para a
+//! coluna no SELECT do cursor.
 //!
 //! O SQL das regras é um literal de texto. Dentro dele o `:nome` é uma variável da regra, e o
 //! `TABELA.Campo` e o nome de tabela são do dicionário de dados. Os nomes são procurados no texto
@@ -12,7 +12,7 @@
 
 use std::ops::Range;
 
-use lsp_types::{Hover, Location};
+use lsp_types::{CompletionItem, CompletionItemKind, Hover, Location};
 use text_size::{TextRange, TextSize};
 
 use super::navigation::{Context, enclosing_function_at, field_expr_at};
@@ -116,6 +116,22 @@ struct Alias {
     /// Parênteses em que foi declarado, ou o literal inteiro.
     scope: Range<usize>,
 }
+
+/// Tabela citada no `FROM`, no `JOIN`, no `UPDATE` ou no `INSERT INTO`, com o apelido quando há,
+/// em posições do texto do literal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TableRef {
+    table: Range<usize>,
+    alias: Option<Range<usize>>,
+    /// Parênteses em que foi citada, ou o literal inteiro.
+    scope: Range<usize>,
+}
+
+/// Palavras que dizem o que cabe depois delas, uma tabela ou um campo.
+const CONTEXT_WORDS: [&str; 16] = [
+    "select", "from", "join", "update", "into", "where", "on", "and", "or", "set", "by", "having",
+    "values", "when", "then", "else",
+];
 
 /// O que está sob o cursor, em posições do texto do literal.
 #[derive(Debug, PartialEq, Eq)]
@@ -277,6 +293,143 @@ impl Context<'_> {
 
     /// Literal de texto que contém `offset`, sem contar as aspas, com o texto dele mascarado e o
     /// que está sob o cursor.
+    /// Tabelas e campos do dicionário de dados que cabem na posição, quando ela está dentro de
+    /// um literal de texto. `None` fora de um literal. O texto que não começa como um SQL, o
+    /// conteúdo entre apóstrofos e o `:nome` não têm sugestão.
+    ///
+    /// Depois de `TABELA.` ou de `APELIDO.` saem os campos da tabela. Depois de `FROM`, `JOIN`,
+    /// `UPDATE` e `INSERT INTO` saem as tabelas e as visões. No resto do comando saem os campos
+    /// das tabelas que ele cita, as do parêntese da posição e as de fora dele, junto com os nomes
+    /// e os apelidos delas. Enquanto o comando não cita nenhuma, saem as tabelas.
+    pub(super) fn sql_completion(&self, offset: TextSize) -> Option<Vec<CompletionItem>> {
+        let tokens = self.doc.tree.tokens();
+        let (mut i, mut end) = (0, tokens.len());
+        while i < end {
+            let mid = (i + end) / 2;
+            if tokens.range(mid).end() < offset {
+                i = mid + 1;
+            } else {
+                end = mid;
+            }
+        }
+        if i >= tokens.len() || tokens.kind(i) != SyntaxKind::String {
+            return None;
+        }
+        let literal = tokens.range(i);
+        let text = &self.doc.text[literal];
+        // A aspa que fecha fica de fora, e o texto ainda sem ela vai até o fim.
+        let closed = text.len() > 1 && text.ends_with('"');
+        if offset <= literal.start() || (closed && offset >= literal.end()) {
+            return None;
+        }
+        let mask = mask(text);
+        let at = usize::from(offset - literal.start());
+        let bytes = text.as_bytes();
+        let quoted = bytes[1..at].iter().filter(|&&b| b == b'\'').count() % 2 == 1;
+        if !starts_statement(&mask) || quoted {
+            return Some(Vec::new());
+        }
+        let word_start = |end: usize| {
+            end - mask[..end]
+                .iter()
+                .rev()
+                .take_while(|&&b| is_word(b))
+                .count()
+        };
+        let start = word_start(at);
+        if start > 0 && mask[start - 1] == b':' {
+            return Some(Vec::new());
+        }
+        let prefix = &bytes[start..at];
+        let matches = |name: &str| {
+            name.as_bytes()
+                .get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        };
+        let dictionaries = &self.doc.inherited.dictionaries;
+        let mut items = Vec::new();
+
+        if start > 0 && mask[start - 1] == b'.' {
+            let qualifier = word_start(start - 1)..start - 1;
+            let table = match resolve_alias(&mask, &qualifier) {
+                Some(alias) => &text[alias.table],
+                None => &text[qualifier],
+            };
+            if let Some((name, fields)) = rowset(dictionaries, table) {
+                items.extend(
+                    fields
+                        .iter()
+                        .filter(|f| matches(&f.name))
+                        .map(|f| field_item(name, f)),
+                );
+            }
+            return Some(items);
+        }
+
+        let keyword = pieces(&mask[..start])
+            .iter()
+            .rev()
+            .find_map(|piece| match piece {
+                Piece::Word(r) => CONTEXT_WORDS
+                    .iter()
+                    .find(|k| mask[r.clone()].eq_ignore_ascii_case(k.as_bytes()))
+                    .copied(),
+                _ => None,
+            });
+        let cited: Vec<TableRef> = from_tables(&mask)
+            .into_iter()
+            .filter(|t| t.scope.start <= at && at <= t.scope.end)
+            .collect();
+        let wants_table = matches!(keyword, Some("from" | "join" | "update" | "into"));
+        if wants_table || cited.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            for dictionary in [&dictionaries.production, &dictionaries.test]
+                .into_iter()
+                .flatten()
+            {
+                let tables = dictionary.tables.iter().map(|t| (&t.name, &t.description));
+                let views = dictionary.views.iter().map(|v| (&v.name, &v.description));
+                for (name, description) in tables.chain(views) {
+                    if matches(name) && seen.insert(name.to_uppercase()) {
+                        items.push(table_item(name, description.clone(), '2'));
+                    }
+                }
+            }
+            return Some(items);
+        }
+        let mut seen = std::collections::HashSet::new();
+        for table in &cited {
+            let Some((name, fields)) = rowset(dictionaries, &text[table.table.clone()]) else {
+                continue;
+            };
+            for field in fields {
+                if matches(&field.name) && seen.insert(field.name.to_uppercase()) {
+                    items.push(field_item(name, field));
+                }
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for table in &cited {
+            let name = &text[table.table.clone()];
+            if let Some(alias) = &table.alias {
+                let alias = &text[alias.clone()];
+                if matches(alias) && seen.insert(alias.to_uppercase()) {
+                    items.push(table_item(alias, format!("apelido de {name}"), '1'));
+                }
+            } else if matches(name) && seen.insert(name.to_uppercase()) {
+                let detail = self
+                    .doc
+                    .inherited
+                    .dictionaries
+                    .table(name)
+                    .map(|t| t.description.clone())
+                    .unwrap_or_default();
+                items.push(table_item(name, detail, '1'));
+            }
+        }
+        Some(items)
+    }
+
     fn spot_at(&self, offset: TextSize) -> Option<(TextRange, Vec<u8>, Spot)> {
         let tokens = self.doc.tree.tokens();
         let (mut lo, mut hi) = (0, tokens.len());
@@ -440,10 +593,25 @@ fn is_reserved(word: &[u8]) -> bool {
         .any(|r| word.eq_ignore_ascii_case(r.as_bytes()))
 }
 
-/// Apelidos de tabela declarados no texto: o que vem depois do nome da tabela no `FROM`, depois
-/// da vírgula da lista do `FROM`, no `JOIN` e no `UPDATE`, com ou sem `AS`. O que vem depois de
-/// `(` é uma subconsulta, que declara os apelidos dela mesma, e o apelido dela não é de tabela.
+/// Apelidos de tabela declarados no texto, tirados das tabelas do [`from_tables`].
 fn aliases(mask: &[u8]) -> Vec<Alias> {
+    from_tables(mask)
+        .into_iter()
+        .filter_map(|t| {
+            Some(Alias {
+                name: t.alias?,
+                table: t.table,
+                scope: t.scope,
+            })
+        })
+        .collect()
+}
+
+/// Tabelas citadas no texto, com o apelido de cada uma. A tabela vem depois do `FROM`, da vírgula
+/// da lista do `FROM`, do `JOIN`, do `UPDATE` e do `INSERT INTO`, e o apelido depois dela, com ou
+/// sem `AS`. O que vem depois de `(` é uma subconsulta, que cita as tabelas dela mesma, e o
+/// apelido dela não é de tabela.
+fn from_tables(mask: &[u8]) -> Vec<TableRef> {
     let pieces = pieces(mask);
     // Cada par de parênteses é um escopo. O que não fecha vai até o fim do texto.
     let mut groups = Vec::new();
@@ -492,15 +660,18 @@ fn aliases(mask: &[u8]) -> Vec<Alias> {
             Piece::Comma if from_depth == Some(depth) => reference = Some(i + 1),
             Piece::Word(r) => {
                 let text = &mask[r.clone()];
-                let after_for = i
-                    .checked_sub(1)
-                    .and_then(|p| word(pieces.get(p)))
-                    .is_some_and(|w| is(&w, "for"));
+                let after = |keyword: &str| {
+                    i.checked_sub(1)
+                        .and_then(|p| word(pieces.get(p)))
+                        .is_some_and(|w| is(&w, keyword))
+                };
+                let after_for = after("for");
                 if text.eq_ignore_ascii_case(b"from") {
                     from_depth = Some(depth);
                     reference = Some(i + 1);
                 } else if text.eq_ignore_ascii_case(b"join")
                     || (text.eq_ignore_ascii_case(b"update") && !after_for)
+                    || (text.eq_ignore_ascii_case(b"into") && after("insert"))
                 {
                     reference = Some(i + 1);
                 } else if from_depth == Some(depth)
@@ -532,15 +703,55 @@ fn aliases(mask: &[u8]) -> Vec<Alias> {
         {
             j += 1;
         }
-        if let Some(name) = word(pieces.get(j)).filter(|a| !is_reserved(&mask[a.clone()])) {
-            found.push(Alias {
-                scope: scope_of(table.start),
-                name,
-                table,
-            });
-        }
+        let alias = word(pieces.get(j)).filter(|a| !is_reserved(&mask[a.clone()]));
+        found.push(TableRef {
+            scope: scope_of(table.start),
+            alias,
+            table,
+        });
     }
     found
+}
+
+/// Campos da tabela ou da visão `name`, com o nome como o dicionário o escreve. Vale o dicionário
+/// de produção, e o de teste quando produção não tem.
+fn rowset<'a>(
+    dictionaries: &'a crate::dictionary::Dictionaries,
+    name: &str,
+) -> Option<(&'a str, &'a [crate::tbs::Field])> {
+    [&dictionaries.production, &dictionaries.test]
+        .into_iter()
+        .flatten()
+        .find_map(|d| match d.table(name) {
+            Some(table) => Some((table.name.as_str(), table.fields.as_slice())),
+            None => d.view(name).map(|v| (v.name.as_str(), v.fields.as_slice())),
+        })
+}
+
+fn field_item(table: &str, field: &crate::tbs::Field) -> CompletionItem {
+    let ty = match field.ty.var_type() {
+        Some(crate::symbols::VarType::Alfa) => "alfa ",
+        Some(crate::symbols::VarType::Numero) => "numero ",
+        Some(crate::symbols::VarType::Data) => "data ",
+        None => "",
+    };
+    CompletionItem {
+        label: field.name.clone(),
+        kind: Some(CompletionItemKind::FIELD),
+        detail: Some(format!("{table} · {ty}{}", field.description)),
+        sort_text: Some(format!("0{}", field.name.to_lowercase())),
+        ..CompletionItem::default()
+    }
+}
+
+fn table_item(name: &str, detail: String, rank: char) -> CompletionItem {
+    CompletionItem {
+        label: name.to_owned(),
+        kind: Some(CompletionItemKind::STRUCT),
+        detail: Some(detail),
+        sort_text: Some(format!("{rank}{}", name.to_lowercase())),
+        ..CompletionItem::default()
+    }
 }
 
 /// A declaração do apelido `word`, que é a mais próxima entre os escopos que contêm o nome. Sem
@@ -735,6 +946,78 @@ mod tests {
             crate::builtins::Context::Rule,
             std::sync::Arc::new(inherited),
         )
+    }
+
+    /// Nomes que o completar oferece no ponto marcado com `^`, em ordem.
+    fn completions(source: &str) -> Vec<String> {
+        let at = source.find('^').unwrap();
+        let text = source.replacen('^', "", 1);
+        let before = &text[..at];
+        let line = before.matches('\n').count() as u32;
+        let character = (before.len() - before.rfind('\n').map_or(0, |p| p + 1)) as u32;
+        let doc = document(&text);
+        let uri: lsp_types::Uri = "file:///regras/EXEMPLO.LSP/Rule.txt".parse().unwrap();
+        let context = Context {
+            doc: &doc,
+            uri: &uri,
+            encoding: crate::line_index::ColumnEncoding::Utf8,
+            embedding: None,
+        };
+        let mut items = context.completion(lsp_types::Position::new(line, character));
+        items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
+        items.into_iter().map(|i| i.label).collect()
+    }
+
+    #[test]
+    fn completar_dentro_do_sql() {
+        let cursor = |sql: &str| completions(&format!("definir cursor c;\nc.SQL \"{sql}\";"));
+        // Depois do ponto, os campos da tabela ou da tabela do apelido.
+        assert_eq!(
+            cursor("SELECT e070emp.^ FROM E070EMP"),
+            ["CodEmp", "NomEmp"]
+        );
+        assert_eq!(cursor("SELECT E.Nom^ FROM E070EMP E"), ["NomEmp"]);
+        assert!(cursor("SELECT X.^ FROM E070EMP").is_empty());
+        // Depois do FROM, do JOIN, do UPDATE e do INSERT INTO, as tabelas.
+        assert_eq!(cursor("SELECT CodEmp FROM ^"), ["E070EMP"]);
+        assert_eq!(cursor("SELECT CodEmp FROM T, e0^"), ["E070EMP"]);
+        assert_eq!(cursor("SELECT CodEmp FROM T INNER JOIN ^"), ["E070EMP"]);
+        assert!(cursor("SELECT CodEmp FROM X^").is_empty());
+        let exec = |sql: &str| completions(&format!("ExecSql \"{sql}\";"));
+        assert_eq!(exec("UPDATE ^"), ["E070EMP"]);
+        assert_eq!(exec("INSERT INTO E0^"), ["E070EMP"]);
+        // No resto do comando, os campos das tabelas citadas e depois o nome delas.
+        assert_eq!(
+            cursor("SELECT ^ FROM E070EMP"),
+            ["CodEmp", "NomEmp", "E070EMP"]
+        );
+        assert_eq!(cursor("SELECT CodEmp FROM E070EMP WHERE co^"), ["CodEmp"]);
+        assert_eq!(
+            exec("UPDATE E070EMP SET ^"),
+            ["CodEmp", "NomEmp", "E070EMP"]
+        );
+        assert_eq!(
+            cursor("SELECT CodEmp FROM E070EMP E WHERE ^"),
+            ["CodEmp", "NomEmp", "E"]
+        );
+        // A subconsulta enxerga as tabelas de fora.
+        assert_eq!(
+            cursor("SELECT CodEmp FROM E070EMP WHERE EXISTS (SELECT 1 FROM T WHERE Nom^)"),
+            ["NomEmp"]
+        );
+        // Sem tabela citada ainda, saem as tabelas.
+        assert_eq!(cursor("SELECT ^"), ["E070EMP"]);
+        // O texto sem a aspa que fecha também vale.
+        assert_eq!(
+            completions("definir cursor c;\nc.SQL \"SELECT CodEmp FROM e0^"),
+            ["E070EMP"]
+        );
+        // Constante, parâmetro e texto que não é SQL não têm sugestão.
+        assert!(cursor("SELECT CodEmp FROM E070EMP WHERE NomEmp = 'Co^'").is_empty());
+        assert!(cursor("SELECT CodEmp FROM E070EMP WHERE CodEmp = :Co^").is_empty());
+        assert!(completions("definir alfa a;\na = \"Cod^\";").is_empty());
+        // Fora do texto o completar da regra continua.
+        assert_eq!(completions("definir numero nValor;\nnVa^"), ["nValor"]);
     }
 
     /// Texto do hover no ponto marcado com `^`, ou `None` quando não há hover.

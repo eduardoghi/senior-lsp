@@ -99,6 +99,12 @@ O servidor oferece:
 - completar depois do ponto, com as operações e as colunas do SELECT do cursor, as operações e os
   campos criados com `AdicionarCampo` na lista, os campos de uma `definir tabela` e, com o
   dicionário de dados, os campos da tabela do ERP
+- completar dentro do texto de um SQL (`cur.SQL "..."`, `ExecSql "..."` e qualquer texto que comece
+  com `SELECT`, `UPDATE`, `INSERT` ou `DELETE`), com o dicionário de dados. Depois de `TABELA.` ou
+  do apelido saem os campos, depois de `FROM`, `JOIN`, `UPDATE` e `INSERT INTO` as tabelas e as
+  visões, e no resto do comando os campos das tabelas que ele cita. No VS Code a lista abre
+  sozinha depois do ponto. Nos outros lugares do texto ela abre com Ctrl+Espaço, a não ser que
+  `editor.quickSuggestions` esteja ligado para `strings`
 - renomear num editor, trocando só o símbolo certo, nos outros arquivos do formulário SGI inclusive
 
 A exportação guarda o código de cada regra num arquivo `Rule.txt` ou `rule.txt`, menos nos modelos
