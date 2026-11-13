@@ -355,7 +355,7 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN079 | erro | `:variavel` no SQL de um cursor ou de um `ExecSql` que ainda não foi definida nem usada na regra, só na regra comum |
 | SEN080 | erro | JOIN no SQL de um cursor, na regra que usa o Senior SQL 2 |
 | SEN081 | erro | tabela do SQL de um cursor, de um `ExecSql` ou de um `ExecSqlEx` que não está no dicionário de dados, na regra que usa o Senior SQL 2 |
-| SEN082 | erro | nome do WHERE, do valor do SET, dos valores do INSERT ou das colunas do SELECT do `ExecSql` que não é campo das tabelas do comando, ou que mais de uma delas tem, e campo do SET ou do INSERT que a tabela não tem, na regra que usa o Senior SQL 2 |
+| SEN082 | erro | nome do WHERE, do valor do SET, dos valores do INSERT ou das colunas do SELECT do `ExecSql` que não é campo das tabelas do comando, ou que mais de uma delas tem, e campo do SET, do INSERT ou do GROUP BY que a tabela não tem, na regra que usa o Senior SQL 2 |
 | SEN083 | erro | campo do ORDER BY de um cursor que não está no SELECT, na regra que usa o Senior SQL 2 |
 | SEN084 | erro | INSERT com a quantidade de valores diferente da de campos, na regra que usa o Senior SQL 2 |
 

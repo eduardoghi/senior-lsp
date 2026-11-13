@@ -753,6 +753,7 @@ impl<'a> Sql2<'a> {
                     }
                     select_list = sql2.found.split_off(checked);
                     sql2.order_by(query, select);
+                    sql2.group_by(select);
                 }
             }
             [Statement::Update(update)] => sql2.update(update),
@@ -1123,6 +1124,41 @@ impl<'a> Sql2<'a> {
                 self.push(CheckKind::Sql2UnknownField, range, label);
             }
             Some(_) => {}
+        }
+    }
+
+    /// Campo do GROUP BY sem a tabela na frente que a tabela do FROM não tem. Só o FROM de uma
+    /// tabela foi testado, e com ele o compilador diz que o campo não está nela.
+    fn group_by(&mut self, select: &Select) {
+        let sqlparser::ast::GroupByExpr::Expressions(exprs, _) = &select.group_by else {
+            return;
+        };
+        let [Some(table)] =
+            self.scopes
+                .last()
+                .map(|tables| tables.as_slice())
+                .map_or([None], |t| match t {
+                    [table] => [Some(table)],
+                    _ => [None],
+                })
+        else {
+            return;
+        };
+        let Some(fields) = table.fields else {
+            return;
+        };
+        let table = table.name.clone();
+        for expr in exprs {
+            let Expr::Identifier(field) = expr else {
+                continue;
+            };
+            let known = fields
+                .iter()
+                .any(|f| f.name.eq_ignore_ascii_case(&field.value));
+            if field.quote_style.is_none() && !known {
+                let label = format!("{table}.{}", field.value.to_uppercase());
+                self.push(CheckKind::Sql2UnknownField, self.range(field, field), label);
+            }
         }
     }
 
@@ -2282,6 +2318,12 @@ mod tests {
         // O ORDER BY aceita o campo do SELECT, com a tabela igual, o apelido e a posição.
         assert!(check("SELECT T.A X, B FROM T ORDER BY X, A, T.B DESC, 1").is_empty());
         assert!(check("SELECT * FROM T ORDER BY B").is_empty());
+        // O GROUP BY de uma tabela só aceita os campos dela.
+        assert_eq!(
+            check("SELECT A FROM T GROUP BY A, Z"),
+            um(Sql2UnknownField, "Z")
+        );
+        assert!(check("SELECT T.A FROM T, U GROUP BY Z").is_empty());
         assert_eq!(check("SELECT A FROM T ORDER BY B"), um(Sql2OrderBy, "B"));
         assert_eq!(
             check("SELECT T.A FROM T, U ORDER BY U.A, T.A"),
