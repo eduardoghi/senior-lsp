@@ -444,12 +444,28 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
             ),
         ),
         CheckKind::Sql2InsertValues => {
-            let (columns, values) = name.split_once('|').unwrap_or((name, ""));
+            let mut parts = name.splitn(3, '|');
+            let mut part = || parts.next().unwrap_or("");
+            let (columns, values, table) = (part(), part(), part());
+            let count = |text: &str| text.parse::<usize>().unwrap_or(0);
+            let quantity = if count(values) < count(columns) {
+                "menos"
+            } else {
+                "mais"
+            };
+            let has = if table.is_empty() {
+                format!("O INSERT tem {columns} campos e {values} valores")
+            } else {
+                format!(
+                    "O INSERT sem lista de campos precisa dos {columns} campos de {table} e tem \
+                     {values} valores"
+                )
+            };
             (
                 "SEN084",
                 format!(
-                    "O INSERT tem {columns} campos e {values} valores, e a regra usa o Senior \
-                     SQL 2 (Cláusula VALUES tem menos valores do que o necessário)."
+                    "{has}, e a regra usa o Senior SQL 2 (Cláusula VALUES tem {quantity} valores \
+                     do que o necessário)."
                 ),
             )
         }
@@ -609,6 +625,21 @@ mod tests {
         assert_eq!(
             message(CheckKind::CursorStarUnused, "A", "C|T|35|").1,
             "O * busca os 35 campos de T para o cursor C, e a regra não lê nenhum."
+        );
+        assert_eq!(
+            message(CheckKind::Sql2InsertValues, "A", "2|1").1,
+            "O INSERT tem 2 campos e 1 valores, e a regra usa o Senior SQL 2 (Cláusula VALUES \
+             tem menos valores do que o necessário)."
+        );
+        assert_eq!(
+            message(CheckKind::Sql2InsertValues, "A", "1|2").1,
+            "O INSERT tem 1 campos e 2 valores, e a regra usa o Senior SQL 2 (Cláusula VALUES \
+             tem mais valores do que o necessário)."
+        );
+        assert_eq!(
+            message(CheckKind::Sql2InsertValues, "T", "35|1|T").1,
+            "O INSERT sem lista de campos precisa dos 35 campos de T e tem 1 valores, e a regra \
+             usa o Senior SQL 2 (Cláusula VALUES tem menos valores do que o necessário)."
         );
         assert_eq!(
             message(CheckKind::CursorUnknownField, "C", "T.C").1,

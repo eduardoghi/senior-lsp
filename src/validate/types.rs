@@ -731,6 +731,19 @@ mod tests {
                 (Sql2OrderBy, "NomEmp".to_owned())
             ]
         );
+        // No ExecSql o SELECT tem as colunas conferidas, e o ORDER BY não.
+        let exec = "ExecSql \"SELECT Nada FROM E070EMP ORDER BY NomEmp\";";
+        let tree = crate::parse(exec).unwrap();
+        let symbols = crate::symbols::Symbols::build(&tree, exec);
+        let mut inherited = crate::form::Inherited::default();
+        inherited.dictionaries = dicionarios();
+        inherited.senior_sql2 = Some(true);
+        let context = crate::builtins::Context::Report;
+        let found: Vec<_> = crate::validate::validate(&tree, &symbols, exec, context, &inherited)
+            .into_iter()
+            .map(|c| (c.kind, &exec[c.range]))
+            .collect();
+        assert_eq!(found, [(Sql2UnknownSymbol, "Nada")]);
     }
 
     #[test]
@@ -760,11 +773,12 @@ mod tests {
         assert_eq!(checks(None, rule), parametro);
         assert_eq!(checks(Some(false), rule), parametro);
         assert!(checks(Some(false), sgi).is_empty());
-        // Com o Senior SQL 2 o comando dos dois é lido, e o SELECT fica de fora.
+        // Com o Senior SQL 2 o comando dos dois é lido, e o SELECT também.
         assert_eq!(
             checks(Some(true), sgi),
             [
                 (Sql2UnknownField, "Nada".to_owned()),
+                (Sql2UnknownTable, "E999XXX".to_owned()),
                 (Sql2UnknownTable, "E999XXX".to_owned())
             ]
         );

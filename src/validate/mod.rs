@@ -90,7 +90,7 @@ pub enum CheckKind {
     Sql2AmbiguousField,
     /// Campo do ORDER BY que não está no SELECT, com o Senior SQL 2.
     Sql2OrderBy,
-    /// INSERT com menos valores do que campos, com o Senior SQL 2.
+    /// INSERT com a quantidade de valores diferente da de campos, com o Senior SQL 2.
     Sql2InsertValues,
     /// `SQL_Retornar*(obj, "coluna", ...)` com uma coluna que não está no SELECT. Compila, e a
     /// execução para.

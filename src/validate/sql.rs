@@ -124,6 +124,9 @@ pub(super) struct Analysis {
     pub(super) params: Vec<(String, std::ops::Range<usize>)>,
     /// O que o Senior SQL 2 recusa a mais, que só vale na regra que o usa.
     pub(super) sql2: Vec<Unknown>,
+    /// O que ele recusa nas colunas de um SELECT, que só vale no `ExecSql`. No cursor as colunas
+    /// já são conferidas pela leitura do compilador.
+    pub(super) sql2_select: Vec<Unknown>,
 }
 
 /// Campos que o SELECT dá ao cursor, como o compilador os monta.
@@ -224,9 +227,9 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
         selection
     });
     let mut params = params_of(&sql);
-    let mut sql2 = match statements.as_deref() {
+    let (mut sql2, mut sql2_select) = match statements.as_deref() {
         Some(statements) => Sql2::check(&sql, statements, dictionaries),
-        None => Vec::new(),
+        None => Default::default(),
     };
     // As posições saem no SQL montado e vão para o literal, que pode ter escape e emenda.
     let offsets = value_offsets(literal);
@@ -260,6 +263,9 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
     }
     params.iter_mut().for_each(|(_, range)| in_literal(range));
     sql2.iter_mut().for_each(|u| in_literal(&mut u.range));
+    sql2_select
+        .iter_mut()
+        .for_each(|u| in_literal(&mut u.range));
     let analysis = Rc::new(Analysis {
         constants: statements.as_deref().map(constants_of).unwrap_or_default(),
         columns: statements.and_then(|s| select_columns(&s, dictionaries)),
@@ -267,6 +273,7 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
         selection,
         params,
         sql2,
+        sql2_select,
     });
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -690,26 +697,37 @@ struct Sql2<'a> {
 }
 
 impl<'a> Sql2<'a> {
+    /// O que o comando tem de errado e, à parte, o que as colunas de um SELECT têm.
     fn check(
         sql: &'a str,
         statements: &[Statement],
         dictionaries: &'a Dictionaries,
-    ) -> Vec<Unknown> {
+    ) -> (Vec<Unknown>, Vec<Unknown>) {
         let mut sql2 = Sql2 {
             sql,
             dictionaries,
             scopes: Vec::new(),
             found: Vec::new(),
         };
+        let mut select_list = Vec::new();
         match statements {
             [Statement::Query(query)] => {
                 let SetExpr::Select(select) = query.body.as_ref() else {
-                    return Vec::new();
+                    return Default::default();
                 };
                 if select.from.iter().any(|from| !from.joins.is_empty()) {
-                    return sql2.join().into_iter().collect();
+                    return (sql2.join().into_iter().collect(), Vec::new());
                 }
                 if sql2.filtered(&select.from, select.selection.as_ref()) {
+                    let checked = sql2.found.len();
+                    for item in &select.projection {
+                        if let SelectItem::UnnamedExpr(expr)
+                        | SelectItem::ExprWithAlias { expr, .. } = item
+                        {
+                            sql2.value(expr);
+                        }
+                    }
+                    select_list = sql2.found.split_off(checked);
                     sql2.order_by(query, select);
                 }
             }
@@ -718,7 +736,7 @@ impl<'a> Sql2<'a> {
             [Statement::Insert(insert)] => sql2.insert(insert),
             _ => {}
         }
-        sql2.found
+        (sql2.found, select_list)
     }
 
     /// Abre as tabelas de um comando e confere o WHERE dele. Uma construção do WHERE que não
@@ -729,11 +747,19 @@ impl<'a> Sql2<'a> {
             return false;
         };
         self.scopes.push(tables);
-        let tables_found = self.found.len();
-        if selection.is_some_and(|selection| self.expr(selection).is_none()) {
-            self.found.truncate(tables_found);
+        if let Some(selection) = selection {
+            self.value(selection);
         }
         true
+    }
+
+    /// Confere os nomes de uma expressão. Uma construção que não foi testada tira o que já tinha
+    /// sido achado nela.
+    fn value(&mut self, expr: &Expr) {
+        let before = self.found.len();
+        if self.expr(expr).is_none() {
+            self.found.truncate(before);
+        }
     }
 
     /// Nome de um só identificador, como o de uma tabela sem o esquema na frente.
@@ -762,7 +788,8 @@ impl<'a> Sql2<'a> {
         }
     }
 
-    /// `UPDATE T SET A = ... WHERE ...`, com a tabela, os campos do SET e os nomes do WHERE.
+    /// `UPDATE T SET A = ... WHERE ...`, com a tabela, os campos do SET, os nomes do valor de cada
+    /// um e os do WHERE.
     fn update(&mut self, update: &Update) {
         if update.from.is_none()
             && self.filtered(
@@ -774,6 +801,7 @@ impl<'a> Sql2<'a> {
                 if let AssignmentTarget::ColumnName(name) = &assignment.target {
                     self.column(name);
                 }
+                self.value(&assignment.value);
             }
         }
     }
@@ -786,8 +814,9 @@ impl<'a> Sql2<'a> {
         }
     }
 
-    /// `INSERT INTO T (A, B) VALUES (...)`, com a tabela, os campos e a quantidade de valores,
-    /// que não pode ser menor que a de campos.
+    /// `INSERT INTO T (A, B) VALUES (...)`, com a tabela, os campos, os nomes dos valores e a
+    /// quantidade deles, que tem de ser a de campos. Sem a lista de campos, a conta é com todos
+    /// os campos da tabela, e só foi testado o caso de faltar valor.
     fn insert(&mut self, insert: &Insert) {
         let TableObject::TableName(name) = &insert.table else {
             return;
@@ -805,28 +834,41 @@ impl<'a> Sql2<'a> {
             );
         }
         self.scopes.push(vec![FromTable {
-            name: table,
+            name: table.clone(),
             alias: None,
             fields,
         }]);
         for column in &insert.columns {
             self.column(column);
         }
-        let values = insert
+        let row = insert
             .source
             .as_ref()
             .and_then(|query| match query.body.as_ref() {
-                SetExpr::Values(values) => values.rows.first().map(|row| row.content.len()),
+                SetExpr::Values(values) => values.rows.first().map(|row| &row.content),
                 _ => None,
             });
-        let columns = insert.columns.len();
-        if let (Some(values), Some(first), Some(last)) = (
-            values.filter(|&values| values < columns),
+        let Some(row) = row else {
+            return;
+        };
+        for value in row {
+            self.value(value);
+        }
+        let (columns, values) = (insert.columns.len(), row.len());
+        let listed = (
             insert.columns.first().and_then(Sql2::single),
             insert.columns.last().and_then(Sql2::single),
-        ) {
-            let label = format!("{columns}|{values}");
-            self.push(CheckKind::Sql2InsertValues, self.range(first, last), label);
+        );
+        if let (Some(first), Some(last)) = listed {
+            if values != columns {
+                let label = format!("{columns}|{values}");
+                self.push(CheckKind::Sql2InsertValues, self.range(first, last), label);
+            }
+        } else if let Some(fields) =
+            fields.filter(|f| insert.columns.is_empty() && values < f.len())
+        {
+            let label = format!("{}|{values}|{table}", fields.len());
+            self.push(CheckKind::Sql2InsertValues, self.range(ident, ident), label);
         }
     }
 
@@ -1772,27 +1814,35 @@ pub(super) fn cursor_sql(
             label: unknown.label.clone(),
         });
     }
-    senior_sql2(scope, &analysis, range, checks);
+    senior_sql2(scope, &analysis, range, false, checks);
     parameters(scope, first_uses, &analysis, range, checks);
 }
 
-/// O que o Senior SQL 2 recusa no SQL do literal em `range`, quando a regra o usa.
+/// O que o Senior SQL 2 recusa no SQL do literal em `range`, quando a regra o usa. No `ExecSql`
+/// (`exec`) entram as colunas do SELECT e fica de fora o ORDER BY, que só foi testado no cursor.
 fn senior_sql2(
     scope: &super::types::Scope,
     analysis: &Analysis,
     range: text_size::TextRange,
+    exec: bool,
     checks: &mut Vec<Check>,
 ) {
     if scope.inherited.senior_sql2 != Some(true) {
         return;
     }
     let at = |offset: usize| range.start() + text_size::TextSize::new(offset as u32);
-    // A tabela do FROM que as colunas já acusaram não sai de novo.
+    // A tabela do FROM que as colunas do cursor já acusaram não sai de novo. No `ExecSql` as
+    // colunas não passam por aquela leitura, então nada foi acusado antes.
     let reported = |u: &Unknown| {
         let twice = |o: &Unknown| o.kind == CheckKind::CursorUnknownTable && o.range == u.range;
         u.kind == CheckKind::Sql2UnknownTable && analysis.unknown.iter().any(twice)
     };
-    for unknown in analysis.sql2.iter().filter(|u| !reported(u)) {
+    let select_list = analysis.sql2_select.iter().filter(|_| exec);
+    let found = analysis.sql2.iter().filter(|u| match exec {
+        true => u.kind != CheckKind::Sql2OrderBy,
+        false => !reported(u),
+    });
+    for unknown in found.chain(select_list) {
         checks.push(Check {
             kind: unknown.kind,
             range: text_size::TextRange::new(at(unknown.range.start), at(unknown.range.end)),
@@ -1834,8 +1884,8 @@ fn parameters(
 /// `ExecSql "UPDATE ..."` e `ExecSqlEx("UPDATE ...", nErro, aMsg)` com o texto do comando escrito
 /// na regra. No SQL nativo o compilador só confere o `:nome` do `ExecSql`, que tem de já ter
 /// aparecido na regra. Com o Senior SQL 2 ele lê o comando dos dois, e cobra a tabela, os campos
-/// do SET e do INSERT, os nomes do WHERE e a quantidade de valores. O SELECT fica de fora, porque
-/// só foi testado o que compila. Todos os casos foram conferidos no ERP.
+/// do SET e do INSERT, os nomes do WHERE e dos valores e a quantidade de valores do INSERT. O
+/// SELECT é lido como o do cursor, com as colunas junto. Todos os casos foram conferidos no ERP.
 pub(super) fn exec_sql(
     tree: &Tree,
     scope: &super::types::Scope,
@@ -1859,17 +1909,8 @@ pub(super) fn exec_sql(
     let Some(range) = value.and_then(|value| string_literal(tree, value)) else {
         return;
     };
-    let literal = &scope.text[range];
-    let is_select = literal
-        .get(1..)
-        .map(str::trim_start)
-        .and_then(|sql| sql.get(.."SELECT".len()))
-        .is_some_and(|word| word.eq_ignore_ascii_case("SELECT"));
-    if is_select {
-        return;
-    }
-    let analysis = analysis(literal, &scope.inherited.dictionaries);
-    senior_sql2(scope, &analysis, range, checks);
+    let analysis = analysis(&scope.text[range], &scope.inherited.dictionaries);
+    senior_sql2(scope, &analysis, range, true, checks);
     if keyword == SyntaxKind::ExecSqlKw {
         parameters(scope, first_uses, &analysis, range, checks);
     }
@@ -2164,8 +2205,10 @@ mod tests {
         };
         let found = |sql: &str, dictionaries: &Dictionaries| -> Vec<(CheckKind, String)> {
             let statements = Parser::parse_sql(&OracleDialect {}, sql).unwrap();
-            Sql2::check(sql, &statements, dictionaries)
+            let (found, select_list) = Sql2::check(sql, &statements, dictionaries);
+            found
                 .into_iter()
+                .chain(select_list)
                 .map(|u| (u.kind, sql[u.range].to_owned()))
                 .collect()
         };
@@ -2261,6 +2304,39 @@ mod tests {
         );
         assert!(check("INSERT INTO T (A, B) VALUES (1, 2)").is_empty());
         assert!(check("UPDATE T SET A = B + 1 WHERE A = 1").is_empty());
+        // O valor do SET é conferido como o WHERE, inclusive dentro de função e de subconsulta.
+        assert_eq!(
+            check("UPDATE T SET A = Z, B = UPPER(Z2), A = (SELECT MAX(Z3) FROM U) WHERE 1 = 0"),
+            [
+                (Sql2UnknownSymbol, "Z".to_owned()),
+                (Sql2UnknownSymbol, "Z2".to_owned()),
+                (Sql2UnknownSymbol, "Z3".to_owned())
+            ]
+        );
+        assert!(
+            check("UPDATE T SET A = T.B, B = (SELECT MAX(C) FROM U WHERE U.A = T.A) WHERE 1 = 0")
+                .is_empty()
+        );
+        // Os valores do INSERT também, e a quantidade tem de ser a de campos.
+        assert_eq!(
+            check("INSERT INTO T (A) VALUES (1, 2)"),
+            um(Sql2InsertValues, "A")
+        );
+        assert_eq!(check("INSERT INTO T VALUES (1)"), um(Sql2InsertValues, "T"));
+        assert!(check("INSERT INTO T VALUES (1, 2)").is_empty());
+        assert_eq!(
+            check("INSERT INTO T (A) VALUES (Z)"),
+            um(Sql2UnknownSymbol, "Z")
+        );
+        assert!(check("INSERT INTO T (A) SELECT A FROM U").is_empty());
+        // As colunas do SELECT saem à parte, depois do resto.
+        assert_eq!(
+            check("SELECT Z, UPPER(A) FROM T WHERE Z2 = 1"),
+            [
+                (Sql2UnknownSymbol, "Z2".to_owned()),
+                (Sql2UnknownSymbol, "Z".to_owned())
+            ]
+        );
         // Sem dicionário só sai o que não depende dos campos.
         assert_eq!(
             found(
