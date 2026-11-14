@@ -937,6 +937,69 @@ mod tests {
         assert_eq!(sobra, ["Sobra"]);
     }
 
+    /// Uma soma de milhares de termos tem um nível de árvore por termo. A conferência de tipos
+    /// descia por ela com recursão e estourava a pilha, que aqui é pequena de propósito, como a
+    /// de 1 MB do Windows num binário de depuração.
+    #[test]
+    fn soma_longa_nao_estoura_a_pilha() {
+        let termos = 30_000;
+        let numero = format!("definir numero n;\nn = {};", vec!["1"; termos].join(" + "));
+        let texto = format!(
+            "definir alfa a;\na = {};",
+            vec!["\"x\""; termos].join(" + ")
+        );
+        let errado = format!(
+            "definir alfa a;\na = {} + 1;",
+            vec!["\"x\""; termos].join(" + ")
+        );
+        let resultado = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let tipo = |text: &str| {
+                    let tree = crate::parse(text).unwrap();
+                    let symbols = Symbols::build(&tree, text);
+                    let mut stack = vec![tree.root()];
+                    let mut assign = None;
+                    while let Some(n) = stack.pop() {
+                        if tree.kind(n) == Assign {
+                            assign = Some(n);
+                            break;
+                        }
+                        stack.extend(tree.children(n));
+                    }
+                    let rhs = tree.children(assign.unwrap()).nth(1).unwrap();
+                    expression_type(
+                        &tree,
+                        &symbols,
+                        text,
+                        Context::Rule,
+                        &Inherited::default(),
+                        rhs,
+                    )
+                };
+                (
+                    checks(&numero).len(),
+                    checks(&texto).len(),
+                    checks(&errado).iter().map(|(k, _)| *k).collect::<Vec<_>>(),
+                    tipo(&numero),
+                    tipo(&texto),
+                )
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(
+            resultado,
+            (
+                0,
+                0,
+                vec![AlfaAndNumber],
+                Some(VarType::Numero),
+                Some(VarType::Alfa)
+            )
+        );
+    }
+
     #[test]
     fn enquanto_vazio_sem_saida() {
         let laco = |corpo: &str| format!("definir numero n;\nenquanto () {{ n = n + 1; {corpo} }}");

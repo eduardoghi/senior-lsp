@@ -92,7 +92,16 @@ pub(super) fn check(
 }
 
 /// Lado direito de atribuição alfa. Para no primeiro erro, como o compilador.
+///
+/// Uma soma de milhares de termos vira uma árvore com um nível por termo, e uma função recursiva
+/// estourava a pilha (perto de 16 mil termos com o 1 MB de pilha do Windows). A descida usa uma
+/// pilha própria, na mesma ordem: a esquerda inteira, depois o operador, depois a direita.
 fn alfa_rhs(tree: &Tree, scope: &Scope, node: NodeId, checks: &mut Vec<Check>) -> bool {
+    enum Step {
+        Visit(NodeId),
+        /// A esquerda da soma já foi vista sem erro. Falta o operador e a direita.
+        AfterLeft(NodeId, NodeId),
+    }
     let mut push = |kind, range| {
         checks.push(Check {
             kind,
@@ -102,61 +111,66 @@ fn alfa_rhs(tree: &Tree, scope: &Scope, node: NodeId, checks: &mut Vec<Check>) -
         });
         true
     };
-    match tree.kind(node) {
-        BinaryExpr => {
-            let mut children = tree.children(node);
-            let (Some(l), Some(r)) = (children.next(), children.next()) else {
-                return false;
-            };
-            if alfa_rhs(tree, scope, l, checks) {
-                return true;
+    let mut stack = vec![Step::Visit(node)];
+    while let Some(step) = stack.pop() {
+        match step {
+            Step::Visit(n) => match tree.kind(n) {
+                BinaryExpr => {
+                    let mut children = tree.children(n);
+                    if let (Some(l), Some(r)) = (children.next(), children.next()) {
+                        stack.push(Step::AfterLeft(n, r));
+                        stack.push(Step::Visit(l));
+                    }
+                }
+                ParenExpr => {
+                    let first = tree.token_range(n).start;
+                    return push(CheckKind::AlfaAndNumber, tree.tokens().range(first));
+                }
+                Literal | NameRef | FieldExpr if leaf_type(tree, scope, n) == Ty::Num => {
+                    return push(CheckKind::AlfaAndNumber, tree.text_range(n));
+                }
+                _ => {}
+            },
+            Step::AfterLeft(n, r) => {
+                let Some(op) = operator_token(tree, n) else {
+                    continue;
+                };
+                if tree.tokens().kind(op) != Plus {
+                    return push(CheckKind::AlfaOperator, tree.tokens().range(op));
+                }
+                stack.push(Step::Visit(r));
             }
-            let Some(op) = operator_token(tree, node) else {
-                return false;
-            };
-            if tree.tokens().kind(op) == Plus {
-                return alfa_rhs(tree, scope, r, checks);
-            }
-            checks.push(Check {
-                kind: CheckKind::AlfaOperator,
-                range: tree.tokens().range(op),
-                name: None,
-                label: None,
-            });
-            true
         }
-        ParenExpr => {
-            let first = tree.token_range(node).start;
-            push(CheckKind::AlfaAndNumber, tree.tokens().range(first))
-        }
-        Literal | NameRef | FieldExpr if leaf_type(tree, scope, node) == Ty::Num => {
-            push(CheckKind::AlfaAndNumber, tree.text_range(node))
-        }
-        _ => false,
     }
+    false
 }
 
-/// Lado direito de atribuição numérica, descendo só pelas contas com `+ - * /`.
+/// Lado direito de atribuição numérica, descendo só pelas contas com `+ - * /`. Desce com uma
+/// pilha própria, da esquerda para a direita, pelo mesmo motivo do [`alfa_rhs`].
 fn numeric_rhs(tree: &Tree, scope: &Scope, node: NodeId, checks: &mut Vec<Check>) -> bool {
-    match tree.kind(node) {
-        BinaryExpr => {
-            let arithmetic = operator_token(tree, node).is_some_and(|op| {
-                matches!(
-                    tree.tokens().kind(op),
-                    Plus | Minus | Star | Slash | EKw | OuKw
-                )
-            });
-            arithmetic
-                && tree
-                    .children(node)
-                    .any(|c| numeric_rhs(tree, scope, c, checks))
+    let mut stack = vec![node];
+    while let Some(n) = stack.pop() {
+        match tree.kind(n) {
+            BinaryExpr => {
+                let arithmetic = operator_token(tree, n).is_some_and(|op| {
+                    matches!(
+                        tree.tokens().kind(op),
+                        Plus | Minus | Star | Slash | EKw | OuKw
+                    )
+                });
+                if arithmetic {
+                    let children: Vec<NodeId> = tree.children(n).collect();
+                    stack.extend(children.into_iter().rev());
+                }
+            }
+            Literal | NameRef | FieldExpr if leaf_type(tree, scope, n) == Ty::Alfa => {
+                push(tree, checks, CheckKind::NumberAndAlfa, n, None);
+                return true;
+            }
+            _ => {}
         }
-        Literal | NameRef | FieldExpr if leaf_type(tree, scope, node) == Ty::Alfa => {
-            push(tree, checks, CheckKind::NumberAndAlfa, node, None);
-            true
-        }
-        _ => false,
     }
+    false
 }
 
 /// Chamada de função do arquivo, contra os parâmetros do `definir funcao`, ou da `funcao` se
@@ -309,38 +323,72 @@ pub(super) fn assignable(tree: &Tree, scope: &Scope, node: NodeId) -> Option<Var
         /// Apóstrofo, que vale como texto numa soma de textos e como número numa conta.
         Char,
     }
-    fn part(tree: &Tree, scope: &Scope, node: NodeId) -> Option<Part> {
-        let numeric = |p: Part| (p != Part::Alfa).then_some(Part::Num);
-        match tree.kind(node) {
-            Literal => match tree.tokens().kind(tree.token_range(node).start) {
-                String => Some(Part::Alfa),
-                Number => Some(Part::Num),
-                Char => Some(Part::Char),
-                _ => None,
+    // Avaliada de baixo para cima com uma pilha própria, pelo mesmo motivo do [`alfa_rhs`].
+    enum Step {
+        Visit(NodeId),
+        Unary,
+        Binary(NodeId),
+    }
+    let numeric = |p: Part| (p != Part::Alfa).then_some(Part::Num);
+    let mut values: Vec<Option<Part>> = Vec::new();
+    let mut stack = vec![Step::Visit(node)];
+    while let Some(step) = stack.pop() {
+        match step {
+            Step::Visit(n) => match tree.kind(n) {
+                Literal => values.push(match tree.tokens().kind(tree.token_range(n).start) {
+                    String => Some(Part::Alfa),
+                    Number => Some(Part::Num),
+                    Char => Some(Part::Char),
+                    _ => None,
+                }),
+                NameRef | FieldExpr => values.push(match leaf_type(tree, scope, n) {
+                    Ty::Alfa => Some(Part::Alfa),
+                    Ty::Num => Some(Part::Num),
+                    Ty::Unknown => None,
+                }),
+                ParenExpr | PrefixExpr => match tree.children(n).next() {
+                    Some(inner) => {
+                        stack.push(Step::Unary);
+                        stack.push(Step::Visit(inner));
+                    }
+                    None => values.push(None),
+                },
+                BinaryExpr => {
+                    let mut children = tree.children(n);
+                    match (children.next(), children.next()) {
+                        (Some(l), Some(r)) => {
+                            stack.push(Step::Binary(n));
+                            stack.push(Step::Visit(r));
+                            stack.push(Step::Visit(l));
+                        }
+                        _ => values.push(None),
+                    }
+                }
+                _ => values.push(None),
             },
-            NameRef | FieldExpr => match leaf_type(tree, scope, node) {
-                Ty::Alfa => Some(Part::Alfa),
-                Ty::Num => Some(Part::Num),
-                Ty::Unknown => None,
-            },
-            ParenExpr | PrefixExpr => numeric(part(tree, scope, tree.children(node).next()?)?),
-            BinaryExpr => {
-                let op = tree.tokens().kind(operator_token(tree, node)?);
-                let mut children = tree.children(node);
-                let left = part(tree, scope, children.next()?)?;
-                let right = part(tree, scope, children.next()?)?;
-                match op {
-                    Plus if left == Part::Alfa || right == Part::Alfa => {
+            Step::Unary => {
+                let inner = values.pop().flatten();
+                values.push(inner.and_then(numeric));
+            }
+            Step::Binary(n) => {
+                let right = values.pop().flatten();
+                let left = values.pop().flatten();
+                let op = operator_token(tree, n).map(|op| tree.tokens().kind(op));
+                values.push(match (op, left, right) {
+                    (Some(Plus), Some(left), Some(right))
+                        if left == Part::Alfa || right == Part::Alfa =>
+                    {
                         (left != Part::Num && right != Part::Num).then_some(Part::Alfa)
                     }
-                    Plus | Minus | Star | Slash => numeric(left).and(numeric(right)),
+                    (Some(Plus | Minus | Star | Slash), Some(left), Some(right)) => {
+                        numeric(left).and(numeric(right))
+                    }
                     _ => None,
-                }
+                });
             }
-            _ => None,
         }
     }
-    match part(tree, scope, node)? {
+    match values.pop().flatten()? {
         Part::Alfa => Some(VarType::Alfa),
         Part::Num => Some(VarType::Numero),
         Part::Char => None,
