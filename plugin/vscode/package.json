@@ -113,7 +113,8 @@
     "scripts": {
         "compile": "tsc -p .",
         "watch": "tsc -watch -p .",
-        "package": "vsce package"
+        "package": "vsce package",
+        "test": "node ./test/runTest.js"
     },
     "dependencies": {
         "vscode-languageclient": "^11.0.0"
@@ -121,6 +122,7 @@
     "devDependencies": {
         "@types/node": "^20.0.0",
         "@types/vscode": "~1.91.0",
+        "@vscode/test-electron": "^3.1.0",
         "@vscode/vsce": "^4.1.0",
         "typescript": "^7.0.2"
     }

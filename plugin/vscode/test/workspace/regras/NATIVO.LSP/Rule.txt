@@ -1,0 +1,15 @@
+definir cursor c;
+definir cursor c2;
+definir numero n;
+definir alfa a;
+c.SQL "SELECT E070EMP.CodEmp, E070EMP.NomEmpp, NomEmp FROM E070EMP WHERE NaoExiste = 1";
+c.AbrirCursor();
+n = c.CodEmp;
+c.FecharCursor();
+c2.SQL "SELECT E070FIL.CodFil FROM E070FIL";
+c2.AbrirCursor();
+n = c2.CodFil;
+c2.FecharCursor();
+ExecSql "UPDATE E070EMP SET Nada = 1 WHERE CodEmp = :n";
+IntParaAlfaa(n, a);
+n = n + 10;

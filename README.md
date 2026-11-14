@@ -252,6 +252,11 @@ canto da barra de status.
 Para desenvolver, abra `plugin/vscode` no VS Code e rode com F5. Rodando de dentro do clone, a
 extensão usa o `target/release` em vez de baixar.
 
+Os testes da extensão baixam o VS Code e rodam nele conferências de diagnósticos, correções
+rápidas, completar e configuração, com o dicionário fictício de `tests/fixtures` e o servidor do
+`cargo build` do clone. Em `plugin/vscode`, rode `npm test`, ou `xvfb-run -a npm test` no Linux
+sem tela. O CI roda os dois testes, o do servidor e o da extensão.
+
 ## Usar no Kate
 
 O cliente LSP do Kate escolhe o servidor pelo modo de destaque do documento, e não pela extensão.

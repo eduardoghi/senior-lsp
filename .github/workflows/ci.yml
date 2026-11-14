@@ -33,3 +33,8 @@ jobs:
       - run: npm ci
       - run: npm run compile
       - run: npx vsce package
+      # Os testes da extensão rodam com o servidor de depuração, que compila bem mais rápido que o
+      # de release, e num VS Code baixado pelo @vscode/test-electron, sem tela pelo xvfb.
+      - run: cargo build --locked
+        working-directory: .
+      - run: xvfb-run -a npm test
