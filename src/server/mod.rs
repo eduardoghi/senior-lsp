@@ -21,6 +21,7 @@ mod links;
 mod members;
 mod navigation;
 mod output;
+mod parameters;
 mod quickfix;
 mod refactor;
 mod related;
@@ -706,6 +707,12 @@ impl Server<'_> {
                                     .flatten(),
                             )
                             .chain(context.refactor_actions(params.range, wants))
+                            .chain(
+                                wants(&lsp_types::CodeActionKind::REFACTOR_REWRITE)
+                                    .then(|| context.parameter_actions(params.range))
+                                    .into_iter()
+                                    .flatten(),
+                            )
                             .chain(context.ignore_actions(params.range, &shown))
                             .chain(self.extra_table_actions(&context, params.range))
                             .chain(

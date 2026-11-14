@@ -4039,3 +4039,105 @@ fn embutir_funcao_so_a_que_nao_depende_de_ser_funcao() {
         "F();"
     ));
 }
+
+#[test]
+fn mover_e_tirar_parametro_da_funcao() {
+    let text = "Definir Funcao F(Numero pA, Alfa pB, Numero pC);\n\
+                definir alfa a; definir numero n;\n\
+                F(1, \"x\", 3);\n\
+                F(n, a, n + 1);\n\
+                funcao F(Numero pA, Alfa pB, Numero pC); {\n  n = pA + pC;\n}\n";
+    let moved = refactor_at(text, "pB", "Mover pB para a direita").unwrap();
+    assert_eq!(
+        moved,
+        "Definir Funcao F(Numero pA, Numero pC, Alfa pB);\n\
+         definir alfa a; definir numero n;\n\
+         F(1, 3, \"x\");\n\
+         F(n, n + 1, a);\n\
+         funcao F(Numero pA, Numero pC, Alfa pB); {\n  n = pA + pC;\n}\n"
+    );
+    assert!(errors_in(&moved).is_empty());
+    // Mover de volta, a partir da implementação, desfaz.
+    assert_eq!(
+        refactor_at(&moved, "pB);", "Mover pB para a esquerda").unwrap(),
+        text
+    );
+    let removed = refactor_at(text, "pB", "Tirar o parâmetro pB").unwrap();
+    assert_eq!(
+        removed,
+        "Definir Funcao F(Numero pA, Numero pC);\n\
+         definir alfa a; definir numero n;\n\
+         F(1, 3);\n\
+         F(n, n + 1);\n\
+         funcao F(Numero pA, Numero pC); {\n  n = pA + pC;\n}\n"
+    );
+    assert!(errors_in(&removed).is_empty());
+    // O parâmetro que o corpo usa não sai, e o das pontas não passa da ponta.
+    assert!(refactor_at(text, "pA", "Tirar o parâmetro pA").is_none());
+    assert!(refactor_at(text, "pA", "Mover pA para a esquerda").is_none());
+    assert!(refactor_at(text, "pC", "Mover pC para a direita").is_none());
+    // O argumento com uma chamada dentro não sai, porque a chamada deixaria de rodar, mas pode
+    // trocar de lugar.
+    let with_call = text.replace("F(1, \"x\", 3)", "F(1, G(), 3)");
+    assert!(refactor_at(&with_call, "pB", "Tirar o parâmetro pB").is_none());
+    assert!(refactor_at(&with_call, "pB", "Mover pB para a direita").is_some());
+    // Uma chamada com argumento a menos deixa a função sem as ações.
+    let short = text.replace("F(1, \"x\", 3)", "F(1, \"x\")");
+    assert!(refactor_at(&short, "pB", "Mover pB para a direita").is_none());
+    // O único parâmetro sai com os parênteses vazios.
+    let single = "Definir Funcao G(Numero pX);\nG(1);\nfuncao G(Numero pX); { }\n";
+    assert_eq!(
+        refactor_at(single, "pX", "Tirar o parâmetro pX").unwrap(),
+        "Definir Funcao G();\nG();\nfuncao G(); { }\n"
+    );
+}
+
+#[test]
+fn tirar_parametro_muda_as_chamadas_das_regras_seguintes_do_formulario_sgi() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-sgi-param-{}", std::process::id()));
+    let form = base.join("Formulários SGI/interface/F1");
+    let action = form.join("actions/A1");
+    std::fs::create_dir_all(&action).unwrap();
+    let root = form.join("rule.txt");
+    let text = "definir funcao Atualiza(numero pA, numero pB);\nfuncao Atualiza(numero pA, numero pB); { pA = 1; }";
+    std::fs::write(&root, text).unwrap();
+    std::fs::write(action.join("rule.txt"), "Atualiza(1, 2);\nAtualiza(3, 4);").unwrap();
+    let root_uri = crate::form::uri_from_path(&root);
+    let action_uri = crate::form::uri_from_path(&action.join("rule.txt"));
+
+    let (mut editor, _) = Editor::start(None);
+    editor.open(&root_uri, 1, text);
+    let response = editor.request(
+        lsp_types::request::CodeActionRequest::METHOD,
+        json!({ "textDocument": { "uri": root_uri },
+                "range": { "start": { "line": 0, "character": 43 },
+                           "end": { "line": 0, "character": 43 } },
+                "context": { "diagnostics": [] } }),
+    );
+    let actions = response.response_result.unwrap();
+    let action = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["title"] == "Tirar o parâmetro pB")
+        .cloned()
+        .expect("sem a ação de tirar o parâmetro");
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+    let edits = &action["edit"]["changes"][action_uri.as_str()];
+    let found: Vec<(u64, u64, u64, &str)> = edits
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["range"]["start"]["line"].as_u64().unwrap(),
+                e["range"]["start"]["character"].as_u64().unwrap(),
+                e["range"]["end"]["character"].as_u64().unwrap(),
+                e["newText"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    // O `, 2` e o `, 4` saem das chamadas da ação.
+    assert_eq!(found, [(0, 10, 13, ""), (1, 10, 13, "")]);
+}

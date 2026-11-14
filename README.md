@@ -77,6 +77,12 @@ O servidor oferece:
   preencher. A do `se` vazia é erro de compilação, e a do `enquanto` o compilador aceita
 - ações de código "Trocar chaves por Inicio e Fim" e "Trocar Inicio e Fim por chaves"
   (`refactor.rewrite`), com o cursor na abertura ou no fechamento do bloco
+- ações de código "Tirar o parâmetro" e "Mover para a esquerda" ou "para a direita"
+  (`refactor.rewrite`), com o cursor no nome de um parâmetro no `Definir Funcao` ou na `funcao`.
+  Mudam as duas listas de parâmetros e os argumentos de cada chamada, nesta regra e, num formulário
+  SGI, nas regras seguintes que chamam a função. Não aparecem quando alguma chamada não tem um
+  argumento por parâmetro, nas regras de modelo de relatório e, para tirar, quando o corpo usa o
+  parâmetro ou o argumento tem uma chamada dentro, que deixaria de rodar
 - hover com a linha do `definir` e, com o dicionário de dados do ERP configurado, o tipo, a
   descrição, as chaves, os relacionamentos e a busca dos campos de tabela
 - dentro do SQL de um texto (`cur.SQL "..."`, `ExecSql` e `SQL_DefinirComando`), o `:variavel` vai para o
