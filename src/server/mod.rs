@@ -11,6 +11,7 @@ mod directives;
 mod documents;
 mod extract;
 mod folding;
+mod formatting;
 mod highlight;
 mod ignore;
 mod implementation;
@@ -127,6 +128,8 @@ fn serve(connection: &Connection, out: Output) -> Result<()> {
                 resolve_provider: Some(false),
             }),
             folding_range_provider: Some(lsp_types::FoldingRangeProviderCapability::Simple(true)),
+            document_formatting_provider: Some(OneOf::Left(true)),
+            document_range_formatting_provider: Some(OneOf::Left(true)),
             inlay_hint_provider: Some(OneOf::Left(true)),
             references_provider: Some(OneOf::Left(true)),
             hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -655,6 +658,28 @@ impl Server<'_> {
                     }
                     None => self.out.null(),
                 })
+            }
+            lsp_types::request::Formatting::METHOD => {
+                let params: lsp_types::DocumentFormattingParams =
+                    serde_json::from_value(request.params)?;
+                // Nos JSON de modelo a regra fica dentro de texto escapado, e eles ainda não são
+                // formatados.
+                let edits = self
+                    .documents
+                    .get(&params.text_document.uri)
+                    .and_then(|doc| formatting::edits(doc, self.encoding, &params.options, None));
+                Ok(self.out.json(&edits)?)
+            }
+            lsp_types::request::RangeFormatting::METHOD => {
+                let params: lsp_types::DocumentRangeFormattingParams =
+                    serde_json::from_value(request.params)?;
+                let edits = self
+                    .documents
+                    .get(&params.text_document.uri)
+                    .and_then(|doc| {
+                        formatting::edits(doc, self.encoding, &params.options, Some(params.range))
+                    });
+                Ok(self.out.json(&edits)?)
             }
             FoldingRangeRequest::METHOD => {
                 let params: lsp_types::FoldingRangeParams = serde_json::from_value(request.params)?;

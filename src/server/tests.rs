@@ -9,7 +9,7 @@ use lsp_types::notification::{
     Initialized, Notification as _, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::request::{
-    Completion, DocumentSymbolRequest, Formatting, GotoDefinition, HoverRequest, Initialize,
+    Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest, Initialize,
     PrepareRenameRequest, References, Rename, Request as _, Shutdown,
 };
 use lsp_types::{
@@ -441,7 +441,7 @@ fn pedido_desconhecido_nao_derruba_o_servidor() {
     let (mut editor, _) = Editor::start(None);
     let params =
         json!({ "textDocument": { "uri": RULE }, "position": { "line": 0, "character": 0 } });
-    let response = editor.request(Formatting::METHOD, params);
+    let response = editor.request("textDocument/typeDefinition", params);
     assert_eq!(
         response.response_result.unwrap_err().code,
         ErrorCode::MethodNotFound as i32
@@ -4351,4 +4351,48 @@ fn progresso_da_analise_da_pasta() {
             "end 3 arquivos analisados"
         ]
     );
+}
+
+#[test]
+fn formata_a_indentacao_pelo_pedido_do_editor() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "se (a = 1) {\nx = 1;\ny = 2;\n}\n";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    assert_eq!(editor.capabilities["documentFormattingProvider"], true);
+    assert_eq!(editor.capabilities["documentRangeFormattingProvider"], true);
+    let response = editor.request(
+        lsp_types::request::Formatting::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "options": { "tabSize": 4, "insertSpaces": true } }),
+    );
+    let edits = response.response_result.unwrap();
+    let mut changes = serde_json::Map::new();
+    changes.insert(RULE.to_owned(), edits.clone());
+    let edit = json!({ "changes": changes });
+    assert_eq!(
+        apply_json_edits(text, &edit, RULE),
+        "se (a = 1) {\n    x = 1;\n    y = 2;\n}\n"
+    );
+    // Só o trecho pedido, a segunda linha.
+    let response = editor.request(
+        lsp_types::request::RangeFormatting::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 1, "character": 3 } },
+                "options": { "tabSize": 2, "insertSpaces": true } }),
+    );
+    let edits = response.response_result.unwrap();
+    assert_eq!(edits.as_array().unwrap().len(), 1);
+    assert_eq!(edits[0]["range"]["start"]["line"], 1);
+    assert_eq!(edits[0]["newText"], "  ");
+    // Com erro de sintaxe, nada.
+    editor.change(RULE, 2, "se (a = 1) {\nx = ;\n}\n");
+    editor.diagnostics();
+    let response = editor.request(
+        lsp_types::request::Formatting::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "options": { "tabSize": 2, "insertSpaces": true } }),
+    );
+    assert!(response.response_result.unwrap().is_null());
+    editor.stop();
 }

@@ -98,3 +98,56 @@ fn percorrer(tree: &Tree, texto: &str) -> (String, usize, Vec<usize>) {
     }
     (saida, nos, nos_de_erro)
 }
+
+/// Formata a indentação de todas as regras de `SENIOR_CORPUS` com 2 e com 4 espaços. Formatar de
+/// novo não pode mudar nada, e o formatador recusa sozinho o resultado que mudaria algum token.
+/// Mostra quantas linhas cada estilo mudaria e as regras recusadas, que têm erro de sintaxe.
+#[test]
+#[ignore = "precisa de SENIOR_CORPUS apontando para uma pasta com regras"]
+fn indentacao_das_regras_do_corpus() {
+    let raiz =
+        std::env::var_os("SENIOR_CORPUS").expect("defina SENIOR_CORPUS com o caminho das regras");
+    let arquivos = support::regras(Path::new(&raiz));
+    for tab_size in [2, 4] {
+        let indent = senior_lsp::format::Indent {
+            tab_size,
+            spaces: true,
+        };
+        let (mut linhas, mut mudadas, mut recusadas, mut instaveis) =
+            (0, 0, Vec::new(), Vec::new());
+        for caminho in &arquivos {
+            let Some(texto) = senior_lsp::cp1252::decode(&fs::read(caminho).unwrap()) else {
+                continue;
+            };
+            let tree = senior_lsp::parse(&texto).unwrap();
+            linhas += texto.lines().count();
+            let Some(edits) = senior_lsp::format::indentation(&texto, &tree, indent, None) else {
+                recusadas.push(caminho.display().to_string());
+                continue;
+            };
+            mudadas += edits.len();
+            let mut novo = texto.clone();
+            for edit in edits.iter().rev() {
+                let range = usize::from(edit.range.start())..usize::from(edit.range.end());
+                novo.replace_range(range, &edit.new_text);
+            }
+            let tree = senior_lsp::parse(&novo).unwrap();
+            let de_novo = senior_lsp::format::indentation(&novo, &tree, indent, None);
+            if de_novo.as_ref().is_none_or(|e| !e.is_empty()) {
+                instaveis.push(caminho.display().to_string());
+            }
+        }
+        eprintln!(
+            "{tab_size} espaços: {mudadas} de {linhas} linhas mudariam em {} regras, {} recusadas",
+            arquivos.len(),
+            recusadas.len()
+        );
+        for r in recusadas.iter().take(5) {
+            eprintln!("  recusada {r}");
+        }
+        assert!(
+            instaveis.is_empty(),
+            "formatar de novo mudou: {instaveis:?}"
+        );
+    }
+}

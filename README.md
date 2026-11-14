@@ -80,6 +80,7 @@ O servidor oferece:
   preencher. A do `se` vazia é erro de compilação, e a do `enquanto` o compilador aceita
 - ações de código "Trocar chaves por Inicio e Fim" e "Trocar Inicio e Fim por chaves"
   (`refactor.rewrite`), com o cursor na abertura ou no fechamento do bloco
+- [formatação da indentação](#formatação) do documento e do trecho selecionado
 - ações de código "Tirar o parâmetro" e "Mover para a esquerda" ou "para a direita"
   (`refactor.rewrite`), com o cursor no nome de um parâmetro no `Definir Funcao` ou na `funcao`.
   Mudam as duas listas de parâmetros e os argumentos de cada chamada, nesta regra e, num formulário
@@ -164,6 +165,28 @@ caractere. Os totais valem como números, e as fórmulas também, porque o compi
 o nome sem `definir`. Memorando e código de barras imprimem a variável de mesmo nome que a regra
 define. O nome das entradas e desses controles não se renomeia pela regra, porque vem do cadastro
 do modelo.
+
+### Formatação
+
+O "Formatar documento" e o "Formatar seleção" acertam a indentação, e só ela. O tamanho do nível e
+a escolha entre espaço e tabulação vêm do editor, no pedido de formatação (no VS Code, o "Tab Size"
+e o "Insert Spaces" do arquivo). O formatador não junta nem quebra linhas, não mexe nos espaços de
+dentro da linha e não muda a chave de lugar.
+
+- O conteúdo de um bloco, com chaves ou com `inicio` e `fim`, entra um nível. A chave ou o `inicio`
+  sozinho na linha fica na coluna do comando, como o fechamento.
+- O `senao` fica na coluna do seu `se`, o `senao se` continua na mesma coluna, e o comando sem bloco
+  na linha de baixo de um `se`, `senao`, `enquanto` ou `para` entra um nível.
+- A linha que continua um comando começado numa linha de cima, como uma condição longa, anda junto
+  com a primeira e mantém o alinhamento que a pessoa fez, sem ficar à esquerda dela.
+- O comentário sozinho na linha segue o nível do bloco em que está.
+
+Ficam como estão a linha de dentro de um texto que continua na linha de baixo, em que os espaços
+fazem parte do texto, o miolo de um comentário `/* */` de várias linhas, a linha que passaria do
+limite do compilador (`linha para o compilador é muito grande`) com o recuo maior e o trecho entre
+`@ senior-lsp-format-off @` e `@ senior-lsp-format-on @`. A regra com erro de sintaxe não é
+formatada, e o resultado só é devolvido quando os tokens, fora os espaços, continuam os mesmos. Nas
+regras dentro do JSON de modelo de relatório a formatação ainda não vale.
 
 ### Pasta inteira
 

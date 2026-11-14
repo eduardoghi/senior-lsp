@@ -185,7 +185,7 @@ fn respostas_erros_e_notificacoes_saem_como_quadros_validos() {
     assert!(invalid.get("result").is_none());
     send(
         &mut stdin,
-        &json!({"jsonrpc": "2.0", "id": 4, "method": "textDocument/formatting", "params": {}}),
+        &json!({"jsonrpc": "2.0", "id": 4, "method": "textDocument/typeDefinition", "params": {}}),
     );
     let unknown = recv(&mut stdout);
     assert_eq!(unknown["id"], 4);

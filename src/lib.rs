@@ -5,6 +5,7 @@ pub mod cp1252;
 mod delphi_float;
 pub mod dictionary;
 pub mod form;
+pub mod format;
 mod lexer;
 pub mod line_index;
 mod parser;

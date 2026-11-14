@@ -182,7 +182,29 @@ async function main() {
         await setText(funcEditor, original);
     }
 
-    // 7. Tirar o dicionário pela configuração tira o aviso, sem reiniciar o servidor.
+    // 7. Formatar o documento acerta a indentação com o tamanho que o editor manda.
+    const fmtEditor = await vscode.window.showTextDocument(document, { preview: false });
+    try {
+        await setText(fmtEditor, "se (n = 1) {\nn = 2;\n      se (n = 2)\n{\nn = 3;\n    }\n}\n");
+        await sleep(300);
+        const edits =
+            (await vscode.commands.executeCommand("vscode.executeFormatDocumentProvider", uri, {
+                tabSize: 4,
+                insertSpaces: true,
+            })) || [];
+        const edit = new vscode.WorkspaceEdit();
+        edit.set(uri, edits);
+        await vscode.workspace.applyEdit(edit);
+        check(
+            "formatar o documento acerta a indentação",
+            document.getText() === "se (n = 1) {\n    n = 2;\n    se (n = 2)\n    {\n        n = 3;\n    }\n}\n",
+            JSON.stringify(document.getText()),
+        );
+    } finally {
+        await setText(fmtEditor, original);
+    }
+
+    // 8. Tirar o dicionário pela configuração tira o aviso, sem reiniciar o servidor.
     const config = vscode.workspace.getConfiguration("seniorLsp");
     const dictionary = config.get("tbsProducao");
     await config.update("tbsProducao", "", vscode.ConfigurationTarget.Global);
