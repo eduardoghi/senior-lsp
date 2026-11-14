@@ -313,7 +313,7 @@ impl Configs {
     }
 
     /// `senior-lsp.json` mais perto do arquivo, subindo pelas pastas.
-    fn find(&mut self, file: &Path) -> Option<PathBuf> {
+    pub(crate) fn find(&mut self, file: &Path) -> Option<PathBuf> {
         let mut visited = Vec::new();
         let mut found = None;
         for dir in file.ancestors().skip(1) {
@@ -333,6 +333,185 @@ impl Configs {
         }
         found
     }
+}
+
+/// Comando da correção do SEN086, com o URI da regra e o nome da tabela.
+pub(crate) const ADD_EXTRA_TABLE: &str = "senior-lsp.acrescentarTabelaExtra";
+
+impl super::Server<'_> {
+    /// A correção do SEN086 que acrescenta a tabela ao `extraTables` do `senior-lsp.json` que vale
+    /// para a regra. É um comando, e não uma edição, porque o servidor grava o arquivo no disco e
+    /// lê de novo a configuração. Uma edição deixaria o arquivo aberto sem salvar no editor, e o
+    /// aviso continuaria até a pessoa salvar.
+    pub(super) fn extra_table_actions(
+        &self,
+        context: &super::navigation::Context,
+        range: lsp_types::Range,
+    ) -> Vec<lsp_types::CodeAction> {
+        let Some(file) = crate::form::path_from_uri(context.uri.as_str()) else {
+            return Vec::new();
+        };
+        let (start, end) = (context.offset(range.start), context.offset(range.end));
+        let wanted = text_size::TextRange::new(start.min(end), end.max(start));
+        let levels = self.levels_of(context.uri);
+        let mut tables: Vec<&str> = context
+            .doc
+            .checks()
+            .iter()
+            .filter(|c| c.kind == crate::validate::CheckKind::NativeUnknownTable)
+            .filter(|c| c.range.intersect(wanted).is_some() || c.range.contains_inclusive(start))
+            .filter_map(|c| c.label.as_deref())
+            .filter(|t| !levels.extra_table(t))
+            .collect();
+        tables.dedup();
+        tables
+            .into_iter()
+            .filter(|table| self.extra_table_file(&file, table).is_some())
+            .map(|table| {
+                let title = format!("Acrescentar {table} ao extraTables do {FILE_NAME}");
+                let arguments = vec![
+                    serde_json::json!(context.uri.as_str()),
+                    serde_json::json!(table),
+                ];
+                lsp_types::CodeAction {
+                    title: title.clone(),
+                    kind: Some(lsp_types::CodeActionKind::QUICKFIX),
+                    command: Some(lsp_types::Command::new(
+                        title,
+                        ADD_EXTRA_TABLE.to_owned(),
+                        Some(arguments),
+                    )),
+                    ..lsp_types::CodeAction::default()
+                }
+            })
+            .collect()
+    }
+
+    /// O `senior-lsp.json` que vale para a regra e o texto dele com a tabela no `extraTables`.
+    /// Sem o arquivo, é um novo na pasta do workspace que tem a regra, ou na pasta da regra.
+    fn extra_table_file(&self, rule: &Path, table: &str) -> Option<(PathBuf, String)> {
+        let name = serde_json::to_string(table).ok()?;
+        if let Some(path) = self.configs.borrow_mut().find(rule) {
+            let text = super::workspace::read(&path, false)?;
+            let (at, insert) = extra_table_insertion(&text, table)?;
+            let text = format!("{}{insert}{}", &text[..at], &text[at..]);
+            return Some((path, text));
+        }
+        let dir = self
+            .folders
+            .iter()
+            .filter(|folder| rule.starts_with(folder))
+            .max_by_key(|folder| folder.components().count())
+            .map(PathBuf::as_path)
+            .or_else(|| rule.parent())?;
+        let path = dir.join(FILE_NAME);
+        // Um arquivo que a busca não viu, criado depois dela sem aviso do editor, não pode ser
+        // trocado por um novo.
+        if path.exists() {
+            return None;
+        }
+        Some((path, format!("{{\n    \"extraTables\": [{name}]\n}}\n")))
+    }
+
+    /// Atende o comando da correção do SEN086, que recebe o URI da regra e a tabela.
+    pub(super) fn add_extra_table(
+        &mut self,
+        arguments: &[serde_json::Value],
+    ) -> std::result::Result<(), String> {
+        let [uri, table] = arguments else {
+            return Err("o comando recebe o URI da regra e a tabela".to_owned());
+        };
+        let (Some(uri), Some(table)) = (uri.as_str(), table.as_str()) else {
+            return Err("o URI e a tabela são textos".to_owned());
+        };
+        let rule = crate::form::path_from_uri(uri).ok_or("o URI não é de um arquivo")?;
+        let (path, text) = self
+            .extra_table_file(&rule, &table.to_ascii_uppercase())
+            .ok_or_else(|| format!("o {FILE_NAME} da regra não pôde ser lido ou não é válido"))?;
+        std::fs::write(&path, text)
+            .map_err(|e| format!("não foi possível gravar {}: {e}", path.display()))?;
+        self.reload_config().map_err(|e| e.to_string())
+    }
+}
+
+/// Onde acrescentar `table` ao `extraTables` de um `senior-lsp.json`, com o texto a inserir. A
+/// chave que falta entra logo depois do `{`, com o recuo das outras. `None` quando o arquivo não
+/// é um objeto JSON válido ou o `extraTables` dele não é uma lista.
+pub(crate) fn extra_table_insertion(text: &str, table: &str) -> Option<(usize, String)> {
+    let root: Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+    let name = serde_json::to_string(table).ok()?;
+    match root.as_object()?.get("extraTables") {
+        Some(Value::Array(_)) => {}
+        Some(_) => return None,
+        None => {
+            let open = text.find('{')?;
+            let rest = &text[open + 1..];
+            let first = rest.find(|c: char| !c.is_whitespace())?;
+            if rest[first..].starts_with('}') {
+                return Some((open + 1, format!("\n    \"extraTables\": [{name}]\n")));
+            }
+            // O recuo da primeira chave, que vem depois da última quebra de linha antes dela.
+            let before = &rest[..first];
+            let indent = before.rsplit('\n').next().filter(|_| before.contains('\n'));
+            let (newline, indent) = match indent {
+                Some(indent) => ("\n", indent),
+                None => ("", " "),
+            };
+            return Some((
+                open + 1,
+                format!("{newline}{indent}\"extraTables\": [{name}],"),
+            ));
+        }
+    }
+    let (open, close) = top_level_array(text, "extraTables")?;
+    let last = text[open + 1..close].trim_end().len();
+    if last == 0 {
+        Some((open + 1, name))
+    } else {
+        Some((open + 1 + last, format!(", {name}")))
+    }
+}
+
+/// Posição do `[` e do `]` da lista da chave `key` no primeiro nível do objeto.
+fn top_level_array(text: &str, key: &str) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let (mut depth, mut at) = (0usize, 0usize);
+    let mut key_found = false;
+    let mut open = None;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'"' => {
+                let start = at;
+                at += 1;
+                while at < bytes.len() && bytes[at] != b'"' {
+                    at += if bytes[at] == b'\\' { 2 } else { 1 };
+                }
+                let after = text[(at + 1).min(text.len())..].trim_start();
+                if depth == 1 && open.is_none() && after.starts_with(':') {
+                    key_found = text.get(start + 1..at) == Some(key);
+                }
+            }
+            b'{' | b'[' => {
+                if bytes[at] == b'[' && depth == 1 && key_found && open.is_none() {
+                    open = Some((at, depth + 1));
+                }
+                depth += 1;
+            }
+            b'}' | b']' => {
+                depth = depth.checked_sub(1)?;
+                if let Some((start, inner)) = open
+                    && bytes[at] == b']'
+                    && depth + 1 == inner
+                {
+                    return Some((start, at));
+                }
+            }
+            b',' if depth == 1 => key_found = false,
+            _ => {}
+        }
+        at += 1;
+    }
+    None
 }
 
 fn load(path: &Path, warnings: &mut Vec<String>) -> Option<Arc<Config>> {
@@ -465,5 +644,38 @@ mod tests {
         assert_eq!(warnings.len(), 2, "{warnings:?}");
         let (_, warnings) = parse(r#"{ "extraTables": "TB_A" }"#);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    #[test]
+    fn acrescenta_ao_extratables() {
+        let add = |text: &str| {
+            let (at, insert) = extra_table_insertion(text, "TB_X").unwrap();
+            format!("{}{insert}{}", &text[..at], &text[at..])
+        };
+        assert_eq!(add("{}"), "{\n    \"extraTables\": [\"TB_X\"]\n}");
+        assert_eq!(
+            add("{\n  \"diagnostics\": {}\n}"),
+            "{\n  \"extraTables\": [\"TB_X\"],\n  \"diagnostics\": {}\n}"
+        );
+        assert_eq!(
+            add(r#"{"diagnostics": {"SEN048": "off"}}"#),
+            r#"{ "extraTables": ["TB_X"],"diagnostics": {"SEN048": "off"}}"#
+        );
+        assert_eq!(
+            add(r#"{ "extraTables": [] }"#),
+            r#"{ "extraTables": ["TB_X"] }"#
+        );
+        assert_eq!(
+            add("{\n    \"extraTables\": [\n        \"TB_A\"\n    ]\n}"),
+            "{\n    \"extraTables\": [\n        \"TB_A\", \"TB_X\"\n    ]\n}"
+        );
+        // A lista de mesmo nome dentro de um override não é a do primeiro nível.
+        assert_eq!(
+            add(r#"{"overrides": [{"extraTables": ["Z"]}], "extraTables": ["A"]}"#),
+            r#"{"overrides": [{"extraTables": ["Z"]}], "extraTables": ["A", "TB_X"]}"#
+        );
+        assert!(extra_table_insertion(r#"{"extraTables": "A"}"#, "TB_X").is_none());
+        assert!(extra_table_insertion("{", "TB_X").is_none());
+        assert!(extra_table_insertion("[]", "TB_X").is_none());
     }
 }

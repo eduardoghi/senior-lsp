@@ -156,7 +156,11 @@ fn serve(connection: &Connection, out: Output) -> Result<()> {
             }),
             code_action_provider: Some(lsp_types::CodeActionProviderCapability::Simple(true)),
             execute_command_provider: Some(lsp_types::ExecuteCommandOptions {
-                commands: vec![kind::COMMAND.to_owned(), RELOAD_DICTIONARY.to_owned()],
+                commands: vec![
+                    kind::COMMAND.to_owned(),
+                    RELOAD_DICTIONARY.to_owned(),
+                    config::ADD_EXTRA_TABLE.to_owned(),
+                ],
                 work_done_progress_options: Default::default(),
             }),
             ..ServerCapabilities::default()
@@ -703,6 +707,7 @@ impl Server<'_> {
                             )
                             .chain(context.refactor_actions(params.range, wants))
                             .chain(context.ignore_actions(params.range, &shown))
+                            .chain(self.extra_table_actions(&context, params.range))
                             .chain(
                                 wants(&lsp_types::CodeActionKind::SOURCE_FIX_ALL)
                                     .then(|| context.fix_all())
@@ -979,6 +984,9 @@ impl Server<'_> {
         if params.command == RELOAD_DICTIONARY {
             crate::dictionary::reload();
             return self.reanalyze_open().map_err(|e| e.to_string());
+        }
+        if params.command == config::ADD_EXTRA_TABLE {
+            return self.add_extra_table(&params.arguments);
         }
         if params.command != kind::COMMAND {
             return Err(format!("comando desconhecido: {}", params.command));

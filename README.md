@@ -37,8 +37,9 @@ O servidor oferece:
 - correções rápidas que apagam a definição sem uso (SEN068), põem a comparação entre parênteses
   (SEN041), trocam o apóstrofo por maiúscula (SEN064), acrescentam o `SQL_UsarAbrangencia(obj, 0)`
   que falta (SEN066), tiram do SELECT do cursor a coluna que a regra não lê ou trocam o `*` pelos
-  campos lidos (SEN076) e declaram a função chamada que não existe (SEN052), com o
-  `Definir Funcao` junto dos outros `definir` e a `funcao` vazia no fim do arquivo
+  campos lidos (SEN076), declaram a função chamada que não existe (SEN052), com o
+  `Definir Funcao` junto dos outros `definir` e a `funcao` vazia no fim do arquivo, e acrescentam ao
+  `extraTables` do `senior-lsp.json` a tabela criada direto no banco (SEN086)
 - ação "Corrigir o arquivo" (`source.fixAll`), que aplica de uma vez só as correções que não mudam o
   que a regra faz: o apóstrofo minúsculo vira maiúsculo, sai o `definir` sem uso e sai a coluna do
   SELECT que a regra não lê. No VS Code ela também roda ao salvar, com
@@ -445,7 +446,7 @@ O `senior-lsp.json` muda o nível de cada código para uma pasta inteira e lista
 - Os níveis são `off` (o diagnóstico some), `hint`, `info`, `warning` e `error`. Um código fora do arquivo fica como o servidor o emite.
 - Os `overrides` valem em ordem, e o último que casa com o arquivo vence, código a código. O `files` é um glob relativo à pasta do `senior-lsp.json`, em texto ou em lista. Ele não diferencia maiúsculas, o `*` não atravessa pastas, o `**` atravessa e um nome de pasta com barra no fim (`Modelos/`) vale para tudo o que há dentro dela.
 - Os erros de sintaxe não mudam de nível.
-- O `extraTables` lista tabelas e visões criadas direto no banco, que o SEN086 não cobra no SQL nativo. Os nomes não diferenciam maiúsculas. A lista não vale para o Senior SQL 2 nem para o SELECT do cursor, que procuram a tabela no dicionário. Uma diretiva que só escondia o SEN086 de uma tabela da lista passa a sair como SEN073.
+- O `extraTables` lista tabelas e visões criadas direto no banco, que o SEN086 não cobra no SQL nativo. A correção rápida do SEN086 acrescenta a tabela ao arquivo que vale para a regra e grava no disco. Sem arquivo, cria um na pasta do workspace que tem a regra. Os nomes não diferenciam maiúsculas. A lista não vale para o Senior SQL 2 nem para o SELECT do cursor, que procuram a tabela no dicionário. Uma diretiva que só escondia o SEN086 de uma tabela da lista passa a sair como SEN073.
 - Um JSON inválido faz o servidor ignorar o arquivo e mostrar um aviso (`window/showMessage`), e a análise segue sem configuração. Chave desconhecida, código que não existe e nível inválido também viram aviso, e o resto do arquivo vale.
 - A configuração vale nos arquivos abertos e na análise da pasta inteira. Quando o editor avisa que um `senior-lsp.json` mudou (o VS Code avisa), o servidor lê de novo e publica os diagnósticos outra vez. Nos editores que não avisam, como o Kate, a leitura é refeita ao abrir qualquer arquivo.
 

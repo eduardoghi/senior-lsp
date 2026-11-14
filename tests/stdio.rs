@@ -462,3 +462,85 @@ fn tabela_do_extratables_nao_sai_no_sql_nativo() {
         .collect();
     assert_eq!(found, [("SEN086".to_owned(), 1)]);
 }
+
+/// A correção do SEN086 cria o `senior-lsp.json` na pasta do workspace, ou acrescenta a tabela ao
+/// que já existe, e o aviso some sem a pessoa salvar nada.
+#[test]
+fn correcao_acrescenta_a_tabela_ao_extratables() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-extra-fix-{}", std::process::id()));
+    let regra = base.join("regras/R1.LSP/Rule.txt");
+    std::fs::create_dir_all(regra.parent().unwrap()).unwrap();
+    std::fs::write(
+        base.join("regras/R1.LSP/General_Infos.json"),
+        r#"{"useSQLSenior2": false}"#,
+    )
+    .unwrap();
+    let texto = "ExecSql \"DELETE FROM TB_FORA\";\n";
+    std::fs::write(&regra, texto).unwrap();
+    let tbs = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/dicionario-ficticio.tbs"
+    );
+    let folder = senior_lsp::form::uri_from_path(&base);
+    let config = base.join("senior-lsp.json");
+    let uri = senior_lsp::form::uri_from_path(&regra);
+    // Abre a regra, aplica a correção e devolve os códigos publicados depois dela.
+    let corrigir = || {
+        let (mut child, mut stdin, mut stdout) = start_in(
+            json!({"tbs_producao": tbs}),
+            json!([{"uri": folder, "name": "x"}]),
+        );
+        send(
+            &mut stdin,
+            &json!({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                    "params": {"textDocument": {"uri": uri, "languageId": "lsp-senior",
+                                                "version": 1, "text": texto}}}),
+        );
+        let is_diagnostics = |m: &Value| m["method"] == "textDocument/publishDiagnostics";
+        assert_eq!(
+            diagnostic_codes(&recv_until(&mut stdout, is_diagnostics)),
+            ["SEN086"]
+        );
+        send(
+            &mut stdin,
+            &json!({"jsonrpc": "2.0", "id": 2, "method": "textDocument/codeAction",
+                    "params": {"textDocument": {"uri": uri},
+                               "range": {"start": {"line": 0, "character": 23},
+                                         "end": {"line": 0, "character": 23}},
+                               "context": {"diagnostics": []}}}),
+        );
+        let reply = recv_until(&mut stdout, |m| m["id"] == 2);
+        let action = reply["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["title"] == "Acrescentar TB_FORA ao extraTables do senior-lsp.json")
+            .cloned()
+            .expect("sem a correção do extraTables");
+        send(
+            &mut stdin,
+            &json!({"jsonrpc": "2.0", "id": 3, "method": "workspace/executeCommand",
+                    "params": action["command"]}),
+        );
+        let after = recv_until(&mut stdout, is_diagnostics);
+        let reply = recv_until(&mut stdout, |m| m["id"] == 3);
+        assert!(reply.get("error").is_none(), "{reply}");
+        drop(stdin);
+        assert!(child.wait().unwrap().success());
+        diagnostic_codes(&after)
+    };
+
+    // Sem o arquivo, ele é criado na pasta do workspace.
+    assert!(corrigir().is_empty());
+    let criado = std::fs::read_to_string(&config).unwrap();
+    // Com o arquivo, a tabela entra na lista dele.
+    std::fs::write(&config, "{\n    \"extraTables\": [\"TB_A\"]\n}\n").unwrap();
+    assert!(corrigir().is_empty());
+    let editado = std::fs::read_to_string(&config).unwrap();
+    std::fs::remove_dir_all(&base).unwrap();
+    assert_eq!(criado, "{\n    \"extraTables\": [\"TB_FORA\"]\n}\n");
+    assert_eq!(
+        editado,
+        "{\n    \"extraTables\": [\"TB_A\", \"TB_FORA\"]\n}\n"
+    );
+}

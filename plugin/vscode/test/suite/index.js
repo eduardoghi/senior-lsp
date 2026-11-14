@@ -2,6 +2,7 @@
 // trabalho são iguais e só diferem no Senior SQL 2, ligado em SQL2.LSP e desligado em
 // NATIVO.LSP. O dicionário é o fictício, com E070EMP (CodEmp, NomEmp, SigEmp), E070FIL,
 // E075PRO e E085CLI.
+const fs = require("node:fs");
 const path = require("node:path");
 const vscode = require("vscode");
 
@@ -119,7 +120,37 @@ async function main() {
     check("Ctrl+/ comenta a linha com /* */", document.lineAt(line).text === "/* n = n + 10; */", document.lineAt(line).text);
     await setText(sqlEditor, original);
 
-    // 5. Tirar o dicionário pela configuração tira o aviso, sem reiniciar o servidor.
+    // 5. A correção do SEN086 cria o senior-lsp.json com a tabela, e o aviso some.
+    const nativeEditor = await vscode.window.showTextDocument(native.document, { preview: false });
+    const nativeText = native.document.getText();
+    const configFile = path.join(WORKSPACE, "senior-lsp.json");
+    try {
+        await setText(nativeEditor, `${nativeText}ExecSql "DELETE FROM TB_FORA";\n`);
+        const table = await waitFor(() => diagnostics(nativeUri, "SEN086")[0], 8000);
+        check("a tabela fora do dicionário no SQL nativo é avisada (SEN086)", table, codes(nativeUri).join(" "));
+        if (table) {
+            const actions =
+                (await vscode.commands.executeCommand("vscode.executeCodeActionProvider", nativeUri, table.range)) || [];
+            const action = actions.find((a) => a.title === "Acrescentar TB_FORA ao extraTables do senior-lsp.json");
+            check("a correção oferece acrescentar a tabela ao extraTables", action, actions.map((a) => a.title).join(" | "));
+            if (action) {
+                await vscode.commands.executeCommand(action.command.command, ...(action.command.arguments || []));
+                const gone = await waitFor(() => diagnostics(nativeUri, "SEN086").length === 0, 10000);
+                const written = fs.existsSync(configFile) ? fs.readFileSync(configFile, "utf8") : "";
+                check(
+                    "a correção grava o senior-lsp.json e o aviso some",
+                    gone && written.includes('"TB_FORA"'),
+                    `${codes(nativeUri).join(" ")} :: ${JSON.stringify(written)}`,
+                );
+            }
+        }
+    } finally {
+        await setText(nativeEditor, nativeText);
+        await vscode.commands.executeCommand("workbench.action.files.saveAll");
+        fs.rmSync(configFile, { force: true });
+    }
+
+    // 6. Tirar o dicionário pela configuração tira o aviso, sem reiniciar o servidor.
     const config = vscode.workspace.getConfiguration("seniorLsp");
     const dictionary = config.get("tbsProducao");
     await config.update("tbsProducao", "", vscode.ConfigurationTarget.Global);
