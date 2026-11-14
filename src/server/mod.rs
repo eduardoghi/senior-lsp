@@ -696,6 +696,11 @@ impl Server<'_> {
                             )
                             .chain(context.refactor_actions(params.range, wants))
                             .chain(context.ignore_actions(params.range, &shown))
+                            .chain(
+                                wants(&lsp_types::CodeActionKind::SOURCE_FIX_ALL)
+                                    .then(|| context.fix_all())
+                                    .flatten(),
+                            )
                             .map(lsp_types::CodeActionOrCommand::CodeAction),
                     );
                 }

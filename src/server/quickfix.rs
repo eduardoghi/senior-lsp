@@ -312,6 +312,62 @@ impl Context<'_> {
         })
     }
 
+    /// Uma ação só com as correções que não mudam o que a regra faz: o apóstrofo minúsculo vira
+    /// maiúsculo (SEN064), que é como o compilador já o lê, sai o `definir` sem uso (SEN068) e
+    /// sai a coluna do SELECT que a regra não lê (SEN076). O `*` fica, porque trocá-lo pelos
+    /// campos lidos depende do dicionário estar em dia. Correções que caem no mesmo trecho, como
+    /// duas colunas vizinhas que levam a mesma vírgula, ficam para a próxima vez.
+    pub(crate) fn fix_all(&self) -> Option<CodeAction> {
+        use crate::validate::CheckKind;
+        if self.embedding.is_some() {
+            return None;
+        }
+        let text = &self.doc.text;
+        let mut edits: Vec<(TextRange, String)> = self
+            .doc
+            .checks()
+            .iter()
+            .filter_map(|check| match check.kind {
+                CheckKind::LowercaseChar => {
+                    Some((check.range, text[check.range].to_ascii_uppercase()))
+                }
+                CheckKind::Unused => Some((self.definition_statement(check.range)?, String::new())),
+                CheckKind::CursorColumnUnused => {
+                    Some((self.column_with_comma(check.range)?, String::new()))
+                }
+                _ => None,
+            })
+            .collect();
+        edits.sort_by_key(|(range, _)| range.start());
+        let mut end = TextSize::new(0);
+        edits.retain(|(range, _)| {
+            let keep = range.start() >= end;
+            if keep {
+                end = range.end();
+            }
+            keep
+        });
+        if edits.is_empty() {
+            return None;
+        }
+        let edits = edits
+            .into_iter()
+            .map(|(range, new_text)| TextEdit::new(self.range(range), new_text))
+            .collect();
+        #[allow(clippy::mutable_key_type)]
+        let changes = HashMap::from([(self.uri.clone(), edits)]);
+        Some(CodeAction {
+            title: "Corrigir o arquivo (apóstrofos, definir sem uso e colunas não lidas)"
+                .to_owned(),
+            kind: Some(CodeActionKind::SOURCE_FIX_ALL),
+            edit: Some(WorkspaceEdit {
+                changes: Some(changes),
+                ..WorkspaceEdit::default()
+            }),
+            ..CodeAction::default()
+        })
+    }
+
     /// Trecho da coluna do SELECT com a vírgula que a separa da vizinha. Sai a vírgula de depois,
     /// com o espaço e a emenda de linha que a seguem, ou a de antes quando a coluna é a última.
     fn column_with_comma(&self, column: TextRange) -> Option<TextRange> {

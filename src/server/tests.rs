@@ -1657,6 +1657,23 @@ fn modelos_no_completar_so_com_editor_que_aceita_snippets() {
     assert!(snippets(&mut editor).is_empty());
 }
 
+#[test]
+fn corrigir_o_arquivo_aplica_so_as_correcoes_seguras() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "definir alfa aSobra;\ndefinir cursor c; definir numero n; definir alfa a;\n\
+                c.SQL \"SELECT A, B, C FROM T\";\nn = c.A;\na = 'x';\nx = n > 1;\n";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let fixed = apply_fix(&mut editor, text, 0, 0, "Corrigir o arquivo");
+    // Sai o definir sem uso, sai B e C fica para a próxima vez, porque leva a mesma vírgula. O
+    // apóstrofo vira maiúsculo, e a comparação sem parênteses (um erro, não uma limpeza) fica.
+    assert_eq!(
+        fixed,
+        "definir cursor c; definir numero n; definir alfa a;\n\
+         c.SQL \"SELECT A, C FROM T\";\nn = c.A;\na = 'X';\nx = n > 1;\n"
+    );
+}
+
 fn apply_fix(editor: &mut Editor, text: &str, line: u32, character: u32, title: &str) -> String {
     let response = editor.request(
         lsp_types::request::CodeActionRequest::METHOD,
