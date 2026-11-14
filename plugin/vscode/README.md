@@ -6,8 +6,9 @@ LSP Senior, com destaque de sintaxe, e os JSON dos modelos de relatório (pasta 
 passam pelo servidor.
 
 Na primeira vez, a extensão baixa o binário do servidor do release do GitHub da mesma versão,
-confere o SHA-256 e guarda no armazenamento da extensão. Há binário para Linux x86_64 e Windows
-x86_64. Em outro sistema, compile o servidor e informe o caminho em `seniorLsp.server.path`.
+confere o SHA-256 e guarda no armazenamento da extensão, apagando o binário das versões
+anteriores. Há binário para Linux x86_64 e Windows x86_64. Em outro sistema, compile o servidor e
+informe o caminho em `seniorLsp.server.path`.
 
 Configurações:
 

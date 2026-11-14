@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-languageclient/node";
@@ -279,7 +279,34 @@ async function download(context: vscode.ExtensionContext, output: vscode.LogOutp
     await chmod(tmp, 0o755);
     await rm(binary, { force: true });
     await rename(tmp, binary);
+    await removeOldBinaries(dir, binary, output);
     return binary;
+}
+
+/**
+ * Apaga os binários de outras versões e os downloads interrompidos, que ficam na pasta a cada
+ * versão nova da extensão. Um que não pôde ser apagado, como o que outra janela do VS Code ainda
+ * roda no Windows, fica para o próximo download.
+ */
+async function removeOldBinaries(dir: string, keep: string, output: vscode.LogOutputChannel): Promise<void> {
+    let names: string[];
+    try {
+        names = await readdir(dir);
+    } catch {
+        return;
+    }
+    for (const name of names) {
+        const file = path.join(dir, name);
+        if (!name.startsWith("senior-lsp-") || file === keep) {
+            continue;
+        }
+        try {
+            await rm(file, { force: true });
+            output.info(`apagado ${file}`);
+        } catch (error) {
+            output.warn(`não foi possível apagar ${file}: ${error}`);
+        }
+    }
 }
 
 function releaseTarget(): string {
