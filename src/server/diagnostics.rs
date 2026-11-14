@@ -13,7 +13,7 @@ use super::config::Levels;
 use super::directives;
 use super::documents::Document;
 use crate::line_index::{ColumnEncoding, LineIndex};
-use crate::validate::{Check, CheckKind};
+use crate::validate::{Check, CheckKind, Sql2Error};
 use crate::{LexErrorKind, ParseErrorKind, SyntaxKind, Tree};
 
 /// Diagnóstico ainda na posição do texto da regra, antes das diretivas, da configuração e da
@@ -492,6 +492,65 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                 ),
             )
         }
+        CheckKind::CommandSql2(error) => {
+            // O texto entre parênteses é o da mensagem que o ERP mostra na execução.
+            let (explanation, erp) = match error {
+                Sql2Error::Join => (
+                    "O Senior SQL 2 não aceita JOIN. Junte as tabelas pela vírgula no FROM e \
+                     pela condição no WHERE."
+                        .to_owned(),
+                    format!("Era esperado <fim-de-arquivo>, mas {name} foi encontrado"),
+                ),
+                Sql2Error::UnknownTable => (
+                    format!("A tabela {name} não está no dicionário de dados."),
+                    format!("Tabela ou view \"{name}\" inexistente na base de dados"),
+                ),
+                Sql2Error::UnknownSymbol => (
+                    format!("O Senior SQL 2 não acha {name} nas tabelas do FROM."),
+                    format!("Símbolo não encontrado no comando: \"{name}\""),
+                ),
+                Sql2Error::UnknownField => {
+                    let (table, field) = name.split_once('.').unwrap_or(("", name));
+                    (
+                        format!("O campo {field} não existe na tabela {table}."),
+                        format!("Campo não encontrado na tabela \"{table}\": \"{field}\""),
+                    )
+                }
+                Sql2Error::AmbiguousField => (
+                    format!(
+                        "Mais de uma tabela do FROM tem o campo {name}, e o Senior SQL 2 exige a \
+                         tabela na frente."
+                    ),
+                    format!(
+                        "Ambiguidade detectada: há mais de uma tabela que possui o campo \
+                         \"{name}\""
+                    ),
+                ),
+                Sql2Error::OrderBy => (
+                    "O Senior SQL 2 só aceita no ORDER BY o que está no SELECT.".to_owned(),
+                    format!(
+                        "A expressão \"{name}\" não aparece na lista de expressões selecionadas \
+                         e por isso não pode ser utilizado no Order By"
+                    ),
+                ),
+                Sql2Error::InsertValues => {
+                    let mut parts = name.splitn(3, '|').map(|p| p.parse::<usize>().unwrap_or(0));
+                    let (columns, values) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+                    let quantity = if values < columns { "menos" } else { "mais" };
+                    (
+                        format!("O INSERT tem {values} valores para {columns} campos."),
+                        format!("Cláusula VALUES tem {quantity} valores do que o necessário"),
+                    )
+                }
+            };
+            (
+                "SEN088",
+                format!(
+                    "{explanation} O SQL_DefinirComando compila, e a execução para com o Senior \
+                     SQL 2 ({erp})."
+                ),
+            )
+        }
         CheckKind::CursorColumnUnused => (
             "SEN076",
             format!(
@@ -654,6 +713,12 @@ mod tests {
         assert_eq!(
             message(CheckKind::CursorStarUnused, "A", "C|T|35|").1,
             "O * busca os 35 campos de T para o cursor C, e a regra não lê nenhum."
+        );
+        assert_eq!(
+            message(CheckKind::CommandSql2(Sql2Error::OrderBy), "A", "NOMEMP").1,
+            "O Senior SQL 2 só aceita no ORDER BY o que está no SELECT. O SQL_DefinirComando \
+             compila, e a execução para com o Senior SQL 2 (A expressão \"NOMEMP\" não aparece \
+             na lista de expressões selecionadas e por isso não pode ser utilizado no Order By)."
         );
         assert_eq!(
             message(CheckKind::Sql2InsertValues, "A", "2|1").1,

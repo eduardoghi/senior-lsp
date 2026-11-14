@@ -6,7 +6,7 @@ use super::documents::Document;
 use crate::builtins;
 use crate::symbols::DefKind;
 use crate::tbs::Field;
-use crate::validate::{Check, CheckKind};
+use crate::validate::{Check, CheckKind, Sql2Error};
 
 /// Distância entre dois nomes, sem diferença de caixa, contando letra trocada, a mais, a menos e
 /// duas vizinhas invertidas. `None` quando passa de `limit`.
@@ -98,14 +98,18 @@ pub(super) fn suggestion(check: &Check, doc: &Document) -> Option<(text_size::Te
         (&written[start..], range)
     };
     let (name, range, found) = match check.kind {
-        CheckKind::CursorUnknownField | CheckKind::Sql2UnknownField => {
+        CheckKind::CursorUnknownField
+        | CheckKind::Sql2UnknownField
+        | CheckKind::CommandSql2(Sql2Error::UnknownField) => {
             let (table, _) = check.label.as_deref()?.split_once('.')?;
             let (name, range) = last();
             let fields = fields(doc, table)?;
             let found = closest(name, fields.iter().map(|f| f.name.as_str()))?;
             (name, range, found.to_owned())
         }
-        CheckKind::CursorUnknownTable | CheckKind::Sql2UnknownTable => {
+        CheckKind::CursorUnknownTable
+        | CheckKind::Sql2UnknownTable
+        | CheckKind::CommandSql2(Sql2Error::UnknownTable) => {
             let dictionaries = &doc.inherited.dictionaries;
             let names = [&dictionaries.production, &dictionaries.test]
                 .into_iter()
@@ -130,7 +134,9 @@ pub(super) fn suggestion(check: &Check, doc: &Document) -> Option<(text_size::Te
         }
         // O nome solto do WHERE, do SET ou dos valores, procurado nos campos das tabelas que o
         // comando cita nessa posição.
-        CheckKind::Sql2UnknownSymbol if !written.contains('.') => {
+        CheckKind::Sql2UnknownSymbol | CheckKind::CommandSql2(Sql2Error::UnknownSymbol)
+            if !written.contains('.') =>
+        {
             let tables = super::sql::cited_tables(text, &doc.tree, check.range.start());
             let names = tables
                 .iter()

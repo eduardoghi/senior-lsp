@@ -5,8 +5,8 @@
 //! variável. O `SQL_UsarSQLSenior2`, que liga o SQL nativo, e o `SQL_Retornar*` de coluna que não
 //! está no SELECT só falham na execução. A tabela e o campo de cada coluna do cursor, que o
 //! gerador procura no dicionário de dados, seguem a leitura descrita no [`compiler_columns`].
-//! Todos os casos foram conferidos no ERP. O SQL nativo de um `SQL_DefinirComando` vai para o
-//! banco como está, e o que o dicionário não tem nele é avisado pelo [`Native`].
+//! Todos os casos foram conferidos no ERP. O comando de um `SQL_DefinirComando` só é lido na
+//! execução, e o que ela recusaria nele é avisado no [`NativeSql::finish`].
 //!
 //! As colunas de um cursor ou de um objeto de SQL juntam todos os SQL literais que ele recebe no
 //! arquivo, sem olhar a ordem, então um nome só é cobrado quando não está em nenhum. Um SQL que não
@@ -29,6 +29,7 @@ use sqlparser::parser::Parser;
 
 use super::{Check, CheckKind};
 use crate::dictionary::Dictionaries;
+use crate::form::Inherited;
 use crate::symbols::{DefKind, Symbols, VarType};
 use crate::tbs::Field;
 use crate::{NodeId, SyntaxKind, Tree};
@@ -2223,7 +2224,7 @@ pub(super) fn exec_sql(
 
 /// Objetos de SQL com `SQL_UsarSQLSenior2(x, 0)`, com `SQL_UsarAbrangencia(x, 0)` e o SQL literal
 /// de cada `SQL_DefinirComando`, para avisar no fim os objetos que ligam o SQL nativo sem desligar
-/// a abrangência e o que o banco recusaria no SQL nativo deles. Os nomes não diferenciam caixa, e
+/// a abrangência e o que a execução recusaria no comando de cada objeto. Os nomes não diferenciam caixa, e
 /// a ordem das chamadas no arquivo não importa.
 #[derive(Default)]
 pub(super) struct NativeSql {
@@ -2267,16 +2268,33 @@ impl NativeSql {
         }
     }
 
-    pub(super) fn finish(self, text: &str, dictionaries: &Dictionaries, checks: &mut Vec<Check>) {
+    /// Com o SQL nativo, o banco recebe o comando como está. Com o Senior SQL 2, o comando passa
+    /// na execução pelo mesmo leitor que confere o cursor na compilação, e para com as mesmas
+    /// mensagens, conferidas no ERP com o SELECT. Só o SELECT é conferido, e só na regra que usa o
+    /// Senior SQL 2, que foi como o teste rodou.
+    pub(super) fn finish(self, text: &str, inherited: &Inherited, checks: &mut Vec<Check>) {
         let native: FxHashSet<&str> = self.native.iter().map(|(o, _)| o.as_str()).collect();
         for (object, literal) in &self.commands {
-            if !native.contains(object.as_str()) {
+            let is_native = native.contains(object.as_str());
+            if !is_native && inherited.senior_sql2 != Some(true) {
                 continue;
             }
-            let analysis = analysis(&text[*literal], dictionaries);
+            let analysis = analysis(&text[*literal], &inherited.dictionaries);
+            let found: Vec<(CheckKind, &Unknown)> = if is_native {
+                analysis.native.iter().map(|u| (u.kind, u)).collect()
+            } else if analysis.selection.is_some() {
+                analysis
+                    .sql2
+                    .iter()
+                    .chain(&analysis.sql2_select)
+                    .filter_map(|u| Some((CheckKind::CommandSql2(u.kind.sql2_error()?), u)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let at = |offset: usize| literal.start() + text_size::TextSize::new(offset as u32);
-            checks.extend(analysis.native.iter().map(|unknown| Check {
-                kind: unknown.kind,
+            checks.extend(found.into_iter().map(|(kind, unknown)| Check {
+                kind,
                 range: text_size::TextRange::new(at(unknown.range.start), at(unknown.range.end)),
                 name: None,
                 label: unknown.label.clone(),

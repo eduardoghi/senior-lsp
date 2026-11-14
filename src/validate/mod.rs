@@ -17,6 +17,19 @@ use crate::{Element, NodeId, Tree};
 pub use sql::cursor_columns;
 pub(crate) use sql::cursor_sql_literals;
 
+/// O que o Senior SQL 2 recusa num comando, igual no cursor, no `ExecSql` e no
+/// `SQL_DefinirComando`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sql2Error {
+    Join,
+    UnknownTable,
+    UnknownSymbol,
+    UnknownField,
+    AmbiguousField,
+    OrderBy,
+    InsertValues,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckKind {
     /// `2 * -f(1)`. Depois de `*`, `/` ou `e`, o `-` pega só o próximo token, e o resto sobra.
@@ -98,6 +111,9 @@ pub enum CheckKind {
     Sql2OrderBy,
     /// INSERT com a quantidade de valores diferente da de campos, com o Senior SQL 2.
     Sql2InsertValues,
+    /// O que o Senior SQL 2 recusa no SELECT literal de um `SQL_DefinirComando`. O comando só é
+    /// lido na execução, então compila, e a execução para.
+    CommandSql2(Sql2Error),
     /// `SQL_Retornar*(obj, "coluna", ...)` com uma coluna que não está no SELECT. Compila, e a
     /// execução para.
     ReturnedColumnNotInSelect,
@@ -117,6 +133,21 @@ pub enum CheckKind {
 }
 
 impl CheckKind {
+    /// O erro do Senior SQL 2 de uma conferência dele, na compilação ou na execução.
+    pub fn sql2_error(self) -> Option<Sql2Error> {
+        Some(match self {
+            CheckKind::Sql2Join => Sql2Error::Join,
+            CheckKind::Sql2UnknownTable => Sql2Error::UnknownTable,
+            CheckKind::Sql2UnknownSymbol => Sql2Error::UnknownSymbol,
+            CheckKind::Sql2UnknownField => Sql2Error::UnknownField,
+            CheckKind::Sql2AmbiguousField => Sql2Error::AmbiguousField,
+            CheckKind::Sql2OrderBy => Sql2Error::OrderBy,
+            CheckKind::Sql2InsertValues => Sql2Error::InsertValues,
+            CheckKind::CommandSql2(error) => error,
+            _ => return None,
+        })
+    }
+
     /// Erro de compilação. As outras verificações são avisos.
     pub fn is_error(self) -> bool {
         matches!(
@@ -277,7 +308,7 @@ pub fn validate(
         // Em ordem de texto, para os diagnósticos saírem na ordem do arquivo.
         stack[first..].reverse();
     }
-    native_sql.finish(text, &inherited.dictionaries, &mut checks);
+    native_sql.finish(text, inherited, &mut checks);
     if let Some(uses) = column_uses {
         uses.finish(text, &inherited.dictionaries, &mut checks);
     }

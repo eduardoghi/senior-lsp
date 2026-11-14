@@ -599,6 +599,78 @@ mod tests {
     }
 
     #[test]
+    fn senior_sql_2_no_sql_definircomando() {
+        use crate::validate::Sql2Error::*;
+        let checks = |text: &str, sql2: Option<bool>| -> Vec<(CheckKind, std::string::String)> {
+            let tree = crate::parse(text).unwrap();
+            let symbols = crate::symbols::Symbols::build(&tree, text);
+            let mut inherited = crate::form::Inherited::default();
+            inherited.dictionaries = dicionarios();
+            inherited.senior_sql2 = sql2;
+            crate::validate::validate(
+                &tree,
+                &symbols,
+                text,
+                crate::builtins::Context::Rule,
+                &inherited,
+            )
+            .into_iter()
+            .filter(|c| c.kind != Unused)
+            .map(|c| (c.kind, text[c.range].to_owned()))
+            .collect()
+        };
+        let regra = |sql: &str| {
+            format!("definir alfa aQ;\nSQL_Criar(aQ);\nSQL_DefinirComando(aQ, \"{sql}\");")
+        };
+        let um = |error, text: &str| vec![(CommandSql2(error), text.to_owned())];
+        // Os casos que rodaram no ERP, com a mesma mensagem que o Senior SQL 2 dá no cursor.
+        for (sql, esperado) in [
+            (
+                "SELECT NAOEXISTE FROM E070EMP",
+                um(UnknownSymbol, "NAOEXISTE"),
+            ),
+            (
+                "SELECT CodEmp FROM E070EMP WHERE NAOEXISTE = 1",
+                um(UnknownSymbol, "NAOEXISTE"),
+            ),
+            (
+                "SELECT CodEmp FROM NAOEXISTE",
+                um(UnknownTable, "NAOEXISTE"),
+            ),
+            (
+                "SELECT E070EMP.CodEmp FROM E070EMP INNER JOIN E070FIL ON E070FIL.CodEmp = 1",
+                um(Join, "INNER"),
+            ),
+            (
+                "SELECT CodEmp FROM E070EMP ORDER BY NomEmp",
+                um(OrderBy, "NomEmp"),
+            ),
+            (
+                "SELECT E070EMP.NAOEXISTE FROM E070EMP",
+                um(UnknownField, "E070EMP.NAOEXISTE"),
+            ),
+            (
+                "SELECT CodEmp FROM E070EMP GROUP BY NAOEXISTE",
+                um(UnknownField, "NAOEXISTE"),
+            ),
+            ("SELECT E.CodEmp, NomEmp FROM E070EMP E", Vec::new()),
+        ] {
+            assert_eq!(checks(&regra(sql), Some(true)), esperado, "{sql}");
+            // Sem o Senior SQL 2 na regra, o teste não rodou.
+            assert!(checks(&regra(sql), None).is_empty(), "{sql}");
+        }
+        // Só o SELECT foi testado.
+        assert!(checks(&regra("UPDATE E070EMP SET NAOEXISTE = 1"), Some(true)).is_empty());
+        // O objeto com o SQL nativo fica com a conferência do SQL nativo.
+        let nativo = "definir alfa aQ;\nSQL_Criar(aQ);\nSQL_UsarSQLSenior2(aQ, 0);\n\
+                      SQL_UsarAbrangencia(aQ, 0);\nSQL_DefinirComando(aQ, \"SELECT NAOEXISTE FROM E999XXX\");";
+        assert_eq!(
+            checks(nativo, Some(true)),
+            [(NativeUnknownTable, "E999XXX".to_owned())]
+        );
+    }
+
+    #[test]
     fn campo_de_cursor_pelo_sql_e_pelo_dicionario() {
         let cursor = |sql: &str, uso: &str| {
             format!(
