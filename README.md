@@ -168,7 +168,8 @@ do modelo.
 
 ### Formatação
 
-O "Formatar documento" e o "Formatar seleção" acertam a indentação, e só ela. O tamanho do nível e
+O "Formatar documento", o "Formatar seleção" e a formatação ao digitar acertam a indentação, e só
+ela. O tamanho do nível e
 a escolha entre espaço e tabulação vêm do editor, no pedido de formatação (no VS Code, o "Tab Size"
 e o "Insert Spaces" do arquivo). O formatador não junta nem quebra linhas, não mexe nos espaços de
 dentro da linha e não muda a chave de lugar.
@@ -180,6 +181,12 @@ dentro da linha e não muda a chave de lugar.
 - A linha que continua um comando começado numa linha de cima, como uma condição longa, anda junto
   com a primeira e mantém o alinhamento que a pessoa fez, sem ficar à esquerda dela.
 - O comentário sozinho na linha segue o nível do bloco em que está.
+
+Ao digitar, o `}` e o `fim` levam a linha para o nível dela, e a linha nova do Enter já começa no
+nível do bloco. Enquanto o bloco ainda não tem fechamento e a regra tem erro, o Enter usa o recuo
+da linha de cima, com um nível a mais quando ela termina em `{` ou `inicio`. A extensão do VS Code
+liga o `editor.formatOnType` para a linguagem, e as regras de indentação dela fazem o "Reindentar
+linhas" seguir o `inicio` e o `fim`.
 
 Ficam como estão a linha de dentro de um texto que continua na linha de baixo, em que os espaços
 fazem parte do texto, o miolo de um comentário `/* */` de várias linhas, a linha que passaria do

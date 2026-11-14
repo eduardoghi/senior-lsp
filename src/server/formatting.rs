@@ -1,7 +1,7 @@
-//! Formatação do documento e do trecho selecionado, pelo [`crate::format`]. Por enquanto só a
-//! indentação, com o tamanho e o caractere que o editor manda no pedido.
+//! Formatação do documento, do trecho selecionado e ao digitar, pelo [`crate::format`]. Por
+//! enquanto só a indentação, com o tamanho e o caractere que o editor manda no pedido.
 
-use lsp_types::{FormattingOptions, Range, TextEdit};
+use lsp_types::{FormattingOptions, Position, Range, TextEdit};
 use text_size::TextRange;
 
 use super::documents::Document;
@@ -31,6 +31,33 @@ pub(super) fn edits(
         TextRange::new(a.min(b), a.max(b))
     });
     let edits = crate::format::indentation(&doc.text, &doc.tree, indent, only)?;
+    let to_range = super::diagnostics::lsp_range(doc, encoding);
+    Some(
+        edits
+            .into_iter()
+            .map(|e| TextEdit::new(to_range(e.range), e.new_text))
+            .collect(),
+    )
+}
+
+/// As trocas de recuo depois de o editor digitar `typed` em `position`.
+pub(super) fn on_type(
+    doc: &Document,
+    encoding: ColumnEncoding,
+    options: &FormattingOptions,
+    position: Position,
+    typed: &str,
+) -> Option<Vec<TextEdit>> {
+    let indent = crate::format::Indent {
+        tab_size: options.tab_size,
+        spaces: options.insert_spaces,
+    };
+    let lc = LineCol {
+        line: position.line,
+        col: position.character,
+    };
+    let offset = doc.index.offset(&doc.text, lc, encoding);
+    let edits = crate::format::on_type(&doc.text, &doc.tree, indent, offset, typed)?;
     let to_range = super::diagnostics::lsp_range(doc, encoding);
     Some(
         edits

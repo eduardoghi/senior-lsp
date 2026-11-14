@@ -204,7 +204,29 @@ async function main() {
         await setText(fmtEditor, original);
     }
 
-    // 8. Tirar o dicionário pela configuração tira o aviso, sem reiniciar o servidor.
+    // 8. Digitar: o Enter depois do inicio entra um nível e o fim volta para a coluna do se.
+    const typeEditor = await vscode.window.showTextDocument(document, { preview: false });
+    try {
+        await setText(typeEditor, "se (n = 1)\ninicio");
+        typeEditor.options = { tabSize: 4, insertSpaces: true };
+        const end = document.positionAt(document.getText().length);
+        typeEditor.selection = new vscode.Selection(end, end);
+        for (const text of ["\n", "n = 2;", "\n", "fim"]) {
+            await vscode.commands.executeCommand("type", { text });
+            await sleep(300);
+        }
+        const typed = await waitFor(() => document.getText() === "se (n = 1)\ninicio\n    n = 2;\nfim", 5000);
+        // As regras de indentação da extensão valem para o "Reindentar linhas" do VS Code.
+        await setText(typeEditor, "se (n = 1)\ninicio\nn = 2;\nfim\n");
+        await vscode.commands.executeCommand("editor.action.reindentlines");
+        const reindented = await waitFor(() => document.getText() === "se (n = 1)\ninicio\n    n = 2;\nfim\n", 3000);
+        check("o Reindentar linhas segue o inicio e o fim", reindented, JSON.stringify(document.getText()));
+        check("digitar inicio, Enter e fim deixa cada linha no nível", typed, JSON.stringify(document.getText()));
+    } finally {
+        await setText(typeEditor, original);
+    }
+
+    // 9. Tirar o dicionário pela configuração tira o aviso, sem reiniciar o servidor.
     const config = vscode.workspace.getConfiguration("seniorLsp");
     const dictionary = config.get("tbsProducao");
     await config.update("tbsProducao", "", vscode.ConfigurationTarget.Global);

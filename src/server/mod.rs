@@ -130,6 +130,17 @@ fn serve(connection: &Connection, out: Output) -> Result<()> {
             folding_range_provider: Some(lsp_types::FoldingRangeProviderCapability::Simple(true)),
             document_formatting_provider: Some(OneOf::Left(true)),
             document_range_formatting_provider: Some(OneOf::Left(true)),
+            // O `m` é o do `fim`, e o servidor confere a palavra antes de mexer.
+            document_on_type_formatting_provider: Some(
+                lsp_types::DocumentOnTypeFormattingOptions {
+                    first_trigger_character: "}".to_owned(),
+                    more_trigger_character: Some(vec![
+                        "\n".to_owned(),
+                        "m".to_owned(),
+                        "M".to_owned(),
+                    ]),
+                },
+            ),
             inlay_hint_provider: Some(OneOf::Left(true)),
             references_provider: Some(OneOf::Left(true)),
             hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -678,6 +689,24 @@ impl Server<'_> {
                     .get(&params.text_document.uri)
                     .and_then(|doc| {
                         formatting::edits(doc, self.encoding, &params.options, Some(params.range))
+                    });
+                Ok(self.out.json(&edits)?)
+            }
+            lsp_types::request::OnTypeFormatting::METHOD => {
+                let params: lsp_types::DocumentOnTypeFormattingParams =
+                    serde_json::from_value(request.params)?;
+                let position = &params.text_document_position;
+                let edits = self
+                    .documents
+                    .get(&position.text_document.uri)
+                    .and_then(|doc| {
+                        formatting::on_type(
+                            doc,
+                            self.encoding,
+                            &params.options,
+                            position.position,
+                            &params.ch,
+                        )
                     });
                 Ok(self.out.json(&edits)?)
             }

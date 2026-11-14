@@ -157,6 +157,93 @@ impl Plan {
     }
 }
 
+/// As trocas de recuo da linha em que o editor acabou de digitar `typed`, para a formatação ao
+/// digitar. Com `}` ou com o `m` que fecha um `fim`, a linha vai para o nível dela. Com a quebra de
+/// linha, a linha nova, ainda vazia ou com o que veio depois do cursor, vai para o nível do bloco em
+/// que está. Como o cálculo usa a árvore, nada muda enquanto a regra tem erro de sintaxe.
+pub fn on_type(
+    text: &str,
+    tree: &Tree,
+    indent: Indent,
+    offset: TextSize,
+    typed: &str,
+) -> Option<Vec<Edit>> {
+    let at = usize::from(offset).min(text.len());
+    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+    let line = &text[start..end];
+    let content = line.trim_start_matches([' ', '\t']).trim_end_matches('\r');
+    let closes = |word: &str| {
+        content.len() >= word.len()
+            && content[..word.len()].eq_ignore_ascii_case(word)
+            && !content[word.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    let range = TextRange::new(TextSize::new(start as u32), TextSize::new(end as u32));
+    match typed {
+        "}" if content.starts_with('}') => indentation(text, tree, indent, Some(range)),
+        "m" | "M" if closes("fim") => indentation(text, tree, indent, Some(range)),
+        "\n" if !content.is_empty() => indentation(text, tree, indent, Some(range)),
+        "\n" => {
+            let columns = if tree.errors().is_empty() && tree.tokens().errors().is_empty() {
+                let plan = Plan::build(tree);
+                let level = plan
+                    .blocks
+                    .iter()
+                    .filter(|(r, _)| r.contains(offset))
+                    .max_by_key(|(r, _)| r.start())
+                    .map_or(0, |(_, level)| *level);
+                level * indent.tab_size.max(1)
+            } else {
+                // Ao digitar um bloco, a regra fica com erro até o fechamento. O nível vem da
+                // linha de cima, com um a mais quando ela abre um bloco.
+                previous_line_columns(&text[..start], indent)
+            };
+            let ws_len = line.len() - line.trim_start_matches([' ', '\t']).len();
+            let new_text = indent.whitespace(columns);
+            if new_text == line[..ws_len] {
+                return Some(Vec::new());
+            }
+            let ws = TextRange::new(range.start(), range.start() + TextSize::new(ws_len as u32));
+            Some(vec![Edit {
+                range: ws,
+                new_text,
+            }])
+        }
+        _ => None,
+    }
+}
+
+/// Coluna para a linha nova depois de `before`, pela última linha com algo escrito. Ela soma um nível
+/// quando termina em `{` ou em `inicio`, fora um comentário `@ ... @` no fim.
+fn previous_line_columns(before: &str, indent: Indent) -> u32 {
+    let Some(line) = before.lines().rev().find(|l| !l.trim().is_empty()) else {
+        return 0;
+    };
+    let ws_len = line.len() - line.trim_start_matches([' ', '\t']).len();
+    let mut code = line.trim_end();
+    if code.ends_with('@')
+        && let Some(open) = code[..code.len() - 1].rfind('@')
+    {
+        code = code[..open].trim_end();
+    }
+    let lower = code.to_ascii_lowercase();
+    let opens = lower.ends_with('{')
+        || (lower.ends_with("inicio")
+            && !lower[..lower.len() - 6]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_'));
+    let columns = indent.columns(&line[..ws_len]);
+    if opens {
+        columns + indent.tab_size.max(1)
+    } else {
+        columns
+    }
+}
+
 /// Índice do token que começa em `at`, quando há um.
 fn tokens_at(tokens: &crate::Tokens, at: TextSize) -> Option<usize> {
     let (mut lo, mut hi) = (0, tokens.len());
@@ -560,6 +647,70 @@ mod tests {
         assert_eq!(
             format(&text),
             format!("se (b = 1) {{\n{longa}\n  c = 1;\n}}\n")
+        );
+    }
+
+    #[test]
+    fn ao_digitar_o_fechamento_e_a_quebra_de_linha() {
+        let spaces = Indent {
+            tab_size: 2,
+            spaces: true,
+        };
+        let typed = |text: &str, at: usize, typed: &str| {
+            let tree = crate::parse(text).unwrap();
+            let edits = on_type(text, &tree, spaces, TextSize::new(at as u32), typed)?;
+            let mut out = text.to_owned();
+            for edit in edits.iter().rev() {
+                let range = usize::from(edit.range.start())..usize::from(edit.range.end());
+                out.replace_range(range, &edit.new_text);
+            }
+            Some(out)
+        };
+        // O `}` digitado com o recuo do conteúdo volta para a coluna do `se`.
+        let text = "se (a = 1) {\n  x = 1;\n  }\n";
+        assert_eq!(typed(text, 24, "}").unwrap(), "se (a = 1) {\n  x = 1;\n}\n");
+        // O `fim` digitado também.
+        let text = "se (a = 1)\ninicio\n  x = 1;\n  fim\n";
+        assert_eq!(
+            typed(text, 29, "m").unwrap(),
+            "se (a = 1)\ninicio\n  x = 1;\nfim\n"
+        );
+        // O `m` de outra palavra não mexe na linha.
+        assert!(typed("se (a = 1) {\n  nome = 1;\n}\n", 17, "m").is_none());
+        // A linha nova dentro do bloco entra um nível.
+        let text = "se (a = 1) {\n\n}\n";
+        assert_eq!(typed(text, 13, "\n").unwrap(), "se (a = 1) {\n  \n}\n");
+    }
+
+    #[test]
+    fn quebra_de_linha_com_o_bloco_ainda_aberto() {
+        let spaces = Indent {
+            tab_size: 4,
+            spaces: true,
+        };
+        let typed = |text: &str| {
+            let tree = crate::parse(text).unwrap();
+            let at = TextSize::new(text.len() as u32);
+            let edits = on_type(text, &tree, spaces, at, "\n").unwrap();
+            let mut out = text.to_owned();
+            for edit in edits.iter().rev() {
+                let range = usize::from(edit.range.start())..usize::from(edit.range.end());
+                out.replace_range(range, &edit.new_text);
+            }
+            out
+        };
+        // Sem o `fim` a regra tem erro, e o nível vem da linha de cima.
+        assert_eq!(
+            typed("se (n = 1)\nInicio @ x @\n"),
+            "se (n = 1)\nInicio @ x @\n    "
+        );
+        assert_eq!(
+            typed("se (n = 1)\ninicio\n    n = 2;\n"),
+            "se (n = 1)\ninicio\n    n = 2;\n    "
+        );
+        assert_eq!(
+            typed("se (n = 1)\nmeuinicio = 1;\n"),
+            "se (n = 1)\nmeuinicio = 1;\n"
         );
     }
 }

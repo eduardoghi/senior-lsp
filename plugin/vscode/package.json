@@ -21,6 +21,11 @@
         "workspaceContains:**/Modelos/**/*.json"
     ],
     "contributes": {
+        "configurationDefaults": {
+            "[lsp-senior]": {
+                "editor.formatOnType": true
+            }
+        },
         "languages": [
             {
                 "id": "lsp-senior",

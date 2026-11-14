@@ -4396,3 +4396,23 @@ fn formata_a_indentacao_pelo_pedido_do_editor() {
     assert!(response.response_result.unwrap().is_null());
     editor.stop();
 }
+
+#[test]
+fn formata_ao_digitar_o_fechamento() {
+    let (mut editor, _) = Editor::start(None);
+    let trigger = &editor.capabilities["documentOnTypeFormattingProvider"];
+    assert_eq!(trigger["firstTriggerCharacter"], "}");
+    let text = "se (a = 1) {\n  x = 1;\n  }\n";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let response = editor.request(
+        lsp_types::request::OnTypeFormatting::METHOD,
+        json!({ "textDocument": { "uri": RULE }, "position": { "line": 2, "character": 3 },
+                "ch": "}", "options": { "tabSize": 2, "insertSpaces": true } }),
+    );
+    let edits = response.response_result.unwrap();
+    assert_eq!(edits.as_array().unwrap().len(), 1);
+    assert_eq!(edits[0]["range"]["start"]["line"], 2);
+    assert_eq!(edits[0]["newText"], "");
+    editor.stop();
+}
