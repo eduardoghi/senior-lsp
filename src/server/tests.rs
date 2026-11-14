@@ -4141,3 +4141,113 @@ fn tirar_parametro_muda_as_chamadas_das_regras_seguintes_do_formulario_sgi() {
     // O `, 2` e o `, 4` saem das chamadas da ação.
     assert_eq!(found, [(0, 10, 13, ""), (1, 10, 13, "")]);
 }
+
+/// Aplica as edições de `uri` num `WorkspaceEdit` em JSON ao texto.
+fn apply_json_edits(text: &str, edit: &serde_json::Value, uri: &str) -> String {
+    let offset = |p: &serde_json::Value| {
+        text.split_inclusive('\n')
+            .take(p["line"].as_u64().unwrap() as usize)
+            .map(str::len)
+            .sum::<usize>()
+            + p["character"].as_u64().unwrap() as usize
+    };
+    let mut edits: Vec<(usize, usize, String)> = edit["changes"][uri]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                offset(&e["range"]["start"]),
+                offset(&e["range"]["end"]),
+                e["newText"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    let mut out = text.to_owned();
+    for (start, end, new_text) in edits {
+        out.replace_range(start..end, &new_text);
+    }
+    out
+}
+
+#[test]
+fn acrescentar_parametro_com_as_respostas_do_editor() {
+    let text = "definir funcao F(numero pA, alfa pB);\n\
+                definir numero n;\n\
+                F(1, \"x\");\n\
+                funcao F(numero pA, alfa pB); {\n  n = pA;\n}\n";
+    let actions_at = |editor: &mut Editor, needle: &str| {
+        let ((line, character), _) = span_of(text, needle);
+        let response = editor.request(
+            lsp_types::request::CodeActionRequest::METHOD,
+            json!({ "textDocument": { "uri": RULE },
+                    "range": { "start": { "line": line, "character": character },
+                               "end": { "line": line, "character": character } },
+                    "context": { "diagnostics": [] } }),
+        );
+        response
+            .response_result
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    // Sem a opção, o editor não sabe perguntar, e a ação não aparece.
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, text);
+    assert!(
+        actions_at(&mut editor, "pA")
+            .iter()
+            .all(|a| !a["title"].as_str().unwrap().starts_with("Acrescentar"))
+    );
+    editor.stop();
+
+    let (mut editor, _) = Editor::start_with(None, json!({ "acrescentar_parametro": true }));
+    editor.open(RULE, 1, text);
+    let actions = actions_at(&mut editor, "pA");
+    let action = actions
+        .iter()
+        .find(|a| a["title"] == "Acrescentar parâmetro depois de pA")
+        .expect("sem a ação de acrescentar");
+    let command = &action["command"];
+    assert_eq!(command["command"], "senior-lsp.acrescentarParametro");
+    let arguments = command["arguments"].as_array().unwrap().clone();
+    assert_eq!(arguments[2], 1);
+    let ask = |editor: &mut Editor, at: &serde_json::Value, tipo: &str, nome: &str, valor: &str| {
+        editor.request(
+            "senior-lsp/acrescentarParametro",
+            json!({ "uri": RULE, "position": arguments[1], "at": at,
+                    "tipo": tipo, "nome": nome, "valor": valor }),
+        )
+    };
+    let response = ask(&mut editor, &arguments[2], "Data", "pData", "0");
+    let added = apply_json_edits(text, &response.response_result.unwrap(), RULE);
+    // O tipo segue a caixa dos outros parâmetros, e as chamadas recebem o valor.
+    assert_eq!(
+        added,
+        "definir funcao F(numero pA, data pData, alfa pB);\n\
+         definir numero n;\n\
+         F(1, 0, \"x\");\n\
+         funcao F(numero pA, data pData, alfa pB); {\n  n = pA;\n}\n"
+    );
+    assert!(errors_in(&added).is_empty());
+    // No nome da função, o parâmetro entra no fim.
+    let actions = actions_at(&mut editor, "F(numero");
+    let end = actions
+        .iter()
+        .find(|a| a["title"] == "Acrescentar parâmetro no fim")
+        .expect("sem a ação de acrescentar no fim");
+    assert_eq!(end["command"]["arguments"][2], 2);
+    // Nome que já existe, tipo que não existe e valor vazio voltam como erro.
+    for (tipo, nome, valor) in [
+        ("Numero", "n", "0"),
+        ("Texto", "pX", "0"),
+        ("Numero", "1x", "0"),
+        ("Numero", "pX", " "),
+    ] {
+        let response = ask(&mut editor, &json!(1), tipo, nome, valor);
+        assert!(response.response_result.is_err(), "{tipo} {nome} {valor:?}");
+    }
+    editor.stop();
+}

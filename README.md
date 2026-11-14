@@ -83,6 +83,11 @@ O servidor oferece:
   SGI, nas regras seguintes que chamam a função. Não aparecem quando alguma chamada não tem um
   argumento por parâmetro, nas regras de modelo de relatório e, para tirar, quando o corpo usa o
   parâmetro ou o argumento tem uma chamada dentro, que deixaria de rodar
+- ação de código "Acrescentar parâmetro" (`refactor.rewrite`), depois do parâmetro no cursor ou, com
+  o cursor no nome da função, no fim. A extensão do VS Code pergunta o tipo, o nome e o valor que as
+  chamadas que já existem passam a receber, e as mesmas listas e chamadas mudam. O tipo segue a
+  caixa dos outros parâmetros. Como precisa perguntar, só aparece no editor que liga a opção
+  `acrescentar_parametro`, e a extensão liga sozinha
 - hover com a linha do `definir` e, com o dicionário de dados do ERP configurado, o tipo, a
   descrição, as chaves, os relacionamentos e a busca dos campos de tabela
 - dentro do SQL de um texto (`cur.SQL "..."`, `ExecSql` e `SQL_DefinirComando`), o `:variavel` vai para o
@@ -260,7 +265,10 @@ e `seniorLsp.tbsTeste`, com os dicionários descritos em [Dicionário de dados](
 Mudar o caminho do executável reinicia o servidor. As outras valem na hora, sem reiniciar. A
 extensão manda as opções no `settings` do `workspace/didChangeConfiguration`, com as mesmas chaves
 das opções de inicialização (`tbs_producao`, `tbs_teste`, `tipo_padrao` e `analisar_pasta`), e
-qualquer editor pode mandar o mesmo aviso. Só as chaves que vêm no aviso mudam.
+qualquer editor pode mandar o mesmo aviso. Só as chaves que vêm no aviso mudam. A extensão também
+manda `acrescentar_parametro` ligada, porque sabe perguntar o que a ação "Acrescentar parâmetro"
+precisa. Um editor que liga a opção tem que atender o comando `senior-lsp.acrescentarParametro` da
+ação e mandar as respostas no pedido `senior-lsp/acrescentarParametro`, que devolve as edições.
 
 Num arquivo fora da exportação, a barra de status mostra o tipo da regra e troca ao clicar, como o
 comando "Senior LSP: Escolher o tipo da regra". A extensão guarda a escolha de cada arquivo no

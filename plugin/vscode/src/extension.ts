@@ -3,7 +3,12 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { LanguageClient, LanguageClientOptions, ServerOptions } from "vscode-languageclient/node";
+import {
+    LanguageClient,
+    LanguageClientOptions,
+    ServerOptions,
+    WorkspaceEdit as LspWorkspaceEdit,
+} from "vscode-languageclient/node";
 
 const REPO = "eduardoghi/senior-lsp";
 
@@ -65,6 +70,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
                     ),
                 ),
         ),
+        vscode.commands.registerCommand(
+            "senior-lsp.acrescentarParametro",
+            (uri: string, position: LspPosition, at: number) => addParameter(uri, position, at),
+        ),
         vscode.window.onDidChangeActiveTextEditor(() => void updateStatusBar()),
         // Trocar o modo de linguagem não troca o editor ativo. O VS Code fecha e reabre o mesmo
         // documento com a linguagem nova, e é por aqui que a barra fica sabendo. A comparação é
@@ -114,6 +123,8 @@ function serverOptions(config: vscode.WorkspaceConfiguration): Record<string, st
         tbs_teste: config.get<string>("tbsTeste", ""),
         tipo_padrao: config.get<string>("tipoPadrao", "comum"),
         analisar_pasta: config.get<boolean>("analisarPasta", false),
+        // A extensão sabe perguntar o tipo, o nome e o valor de um parâmetro novo.
+        acrescentar_parametro: true,
     };
 }
 
@@ -329,4 +340,53 @@ async function fetchBytes(url: string): Promise<Uint8Array> {
         throw new Error(`não foi possível baixar ${url} (HTTP ${response.status}).`);
     }
     return new Uint8Array(await response.arrayBuffer());
+}
+
+/**
+ * Ação "Acrescentar parâmetro" do servidor. Pergunta o tipo, o nome e o valor que as chamadas que
+ * já existem passam a receber, e aplica as edições que o servidor devolve.
+ */
+async function addParameter(uri: string, position: LspPosition, at: number): Promise<void> {
+    if (!client) {
+        return;
+    }
+    const tipo = await vscode.window.showQuickPick(["Numero", "Alfa", "Data"], {
+        title: "Tipo do parâmetro novo",
+    });
+    if (!tipo) {
+        return;
+    }
+    const nome = await vscode.window.showInputBox({
+        title: "Nome do parâmetro novo",
+        validateInput: (value) =>
+            /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.trim())
+                ? undefined
+                : "Use letras, dígitos e _, começando por letra ou _.",
+    });
+    if (!nome) {
+        return;
+    }
+    const valor = await vscode.window.showInputBox({
+        title: `Valor de ${nome.trim()} nas chamadas que já existem`,
+        value: tipo === "Alfa" ? '""' : "0",
+        validateInput: (value) => (value.trim() ? undefined : "Informe o valor."),
+    });
+    if (valor === undefined) {
+        return;
+    }
+    try {
+        const result = await client.sendRequest<LspWorkspaceEdit>("senior-lsp/acrescentarParametro", {
+            uri,
+            position,
+            at,
+            tipo,
+            nome,
+            valor,
+        });
+        const edit = await client.protocol2CodeConverter.asWorkspaceEdit(result);
+        await vscode.workspace.applyEdit(edit);
+    } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        void vscode.window.showErrorMessage(`Não foi possível acrescentar o parâmetro porque ${message}`);
+    }
 }

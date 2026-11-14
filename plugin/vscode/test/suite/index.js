@@ -150,7 +150,39 @@ async function main() {
         fs.rmSync(configFile, { force: true });
     }
 
-    // 6. Tirar o dicionário pela configuração tira o aviso, sem reiniciar o servidor.
+    // 6. Acrescentar parâmetro pergunta o tipo, o nome e o valor, e muda a função e a chamada.
+    const funcText = "definir funcao F(numero pA);\ndefinir numero n;\nF(1);\nfuncao F(numero pA); {\n  n = pA;\n}\n";
+    const window = vscode.window;
+    const originalPick = window.showQuickPick;
+    const originalInput = window.showInputBox;
+    const funcEditor = await vscode.window.showTextDocument(document, { preview: false });
+    try {
+        await setText(funcEditor, funcText);
+        await sleep(500);
+        const at = document.positionAt(funcText.indexOf("pA") + 1);
+        const actions =
+            (await vscode.commands.executeCommand("vscode.executeCodeActionProvider", uri, new vscode.Range(at, at))) || [];
+        const action = actions.find((a) => a.title === "Acrescentar parâmetro depois de pA");
+        check("a ação de acrescentar parâmetro aparece no VS Code", action, actions.map((a) => a.title).join(" | "));
+        if (action) {
+            const answers = ["pNovo", "0"];
+            window.showQuickPick = async () => "Alfa";
+            window.showInputBox = async () => answers.shift();
+            await vscode.commands.executeCommand(action.command.command, ...(action.command.arguments || []));
+            const changed = await waitFor(() => document.getText().includes("alfa pNovo"), 5000);
+            check(
+                "o parâmetro novo entra na declaração, na funcao e na chamada",
+                changed && document.getText().includes("F(1, 0);") && document.getText().includes("funcao F(numero pA, alfa pNovo);"),
+                JSON.stringify(document.getText()),
+            );
+        }
+    } finally {
+        window.showQuickPick = originalPick;
+        window.showInputBox = originalInput;
+        await setText(funcEditor, original);
+    }
+
+    // 7. Tirar o dicionário pela configuração tira o aviso, sem reiniciar o servidor.
     const config = vscode.workspace.getConfiguration("seniorLsp");
     const dictionary = config.get("tbsProducao");
     await config.update("tbsProducao", "", vscode.ConfigurationTarget.Global);

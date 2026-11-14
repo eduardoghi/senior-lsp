@@ -99,6 +99,7 @@ fn serve(connection: &Connection, out: Output) -> Result<()> {
     let default_kind = default_kind(params.options);
     let folders = params.folders.clone();
     let analyze_folders = analyze_folders(params.options);
+    let ask_parameters = ask_parameters(params.options);
     let encoding = negotiate_encoding(&params);
     let result = InitializeResult {
         capabilities: ServerCapabilities {
@@ -182,6 +183,7 @@ fn serve(connection: &Connection, out: Output) -> Result<()> {
         chosen: HashMap::new(),
         folders,
         analyze_folders,
+        ask_parameters,
         snippets: params.snippets,
         index: Default::default(),
         configs: Default::default(),
@@ -280,7 +282,9 @@ fn option_warnings(options: Options) -> Vec<String> {
         }
         let problem = match key.as_str() {
             "tbs_producao" | "tbs_teste" if !value.is_string() => Some("deveria ser texto"),
-            "analisar_pasta" if !value.is_boolean() => Some("deveria ser true ou false"),
+            "analisar_pasta" | "acrescentar_parametro" if !value.is_boolean() => {
+                Some("deveria ser true ou false")
+            }
             "tipo_padrao" => match value.as_str() {
                 None => Some("deveria ser texto"),
                 Some(name) if kind::parse(name).is_none() => {
@@ -288,7 +292,7 @@ fn option_warnings(options: Options) -> Vec<String> {
                 }
                 Some(_) => None,
             },
-            "tbs_producao" | "tbs_teste" | "analisar_pasta" => None,
+            "tbs_producao" | "tbs_teste" | "analisar_pasta" | "acrescentar_parametro" => None,
             _ => Some("não é uma opção do senior-lsp"),
         };
         if let Some(problem) = problem {
@@ -332,6 +336,15 @@ fn default_kind(options: Options) -> Context {
         .and_then(|v| v.as_str())
         .and_then(kind::parse)
         .unwrap_or(Context::Rule)
+}
+
+/// Opção `acrescentar_parametro`, que a extensão do VS Code liga porque sabe perguntar o tipo, o
+/// nome e o valor do parâmetro novo.
+fn ask_parameters(options: Options) -> bool {
+    options
+        .get("acrescentar_parametro")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// Opção `analisar_pasta`, que liga os diagnósticos da pasta inteira.
@@ -391,6 +404,8 @@ struct Server<'a> {
     folders: Vec<std::path::PathBuf>,
     /// Opção `analisar_pasta`: analisa as regras das pastas sem abrir cada arquivo.
     analyze_folders: bool,
+    /// Opção `acrescentar_parametro`: o editor pergunta o que o parâmetro novo precisa.
+    ask_parameters: bool,
     /// O editor aceita snippets, e o completar oferece os modelos de comando.
     snippets: bool,
     /// Definições das regras das pastas, para a busca de símbolos do workspace.
@@ -709,7 +724,9 @@ impl Server<'_> {
                             .chain(context.refactor_actions(params.range, wants))
                             .chain(
                                 wants(&lsp_types::CodeActionKind::REFACTOR_REWRITE)
-                                    .then(|| context.parameter_actions(params.range))
+                                    .then(|| {
+                                        context.parameter_actions(params.range, self.ask_parameters)
+                                    })
                                     .into_iter()
                                     .flatten(),
                             )
@@ -733,6 +750,25 @@ impl Server<'_> {
                     return Err(Failure::boxed(ErrorCode::InvalidParams, message));
                 }
                 Ok(self.out.null())
+            }
+            parameters::ADD_PARAMETER_REQUEST => {
+                let params: parameters::AddParameter = serde_json::from_value(request.params)?;
+                let Some(doc) = self.documents.get(&params.uri) else {
+                    return Err(Failure::boxed(
+                        ErrorCode::InvalidParams,
+                        "a regra não está aberta".to_owned(),
+                    ));
+                };
+                let context = navigation::Context {
+                    doc,
+                    uri: &params.uri,
+                    encoding: self.encoding,
+                    embedding: None,
+                };
+                match context.add_parameter(&params) {
+                    Ok(edit) => Ok(self.out.json(&edit)?),
+                    Err(message) => Err(Failure::boxed(ErrorCode::InvalidParams, message)),
+                }
             }
             kind::REQUEST => {
                 let uri: Uri = serde_json::from_value(request.params["uri"].clone())?;
@@ -1119,6 +1155,9 @@ impl Server<'_> {
             .get("analisar_pasta")
             .map(|_| analyze_folders(options))
             .filter(|&on| on != self.analyze_folders);
+        if options.get("acrescentar_parametro").is_some() {
+            self.ask_parameters = ask_parameters(options);
+        }
         self.default_kind = kind.unwrap_or(self.default_kind);
         self.analyze_folders = folders.unwrap_or(self.analyze_folders);
         if dictionaries {

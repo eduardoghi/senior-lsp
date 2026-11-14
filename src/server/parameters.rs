@@ -1,60 +1,101 @@
-//! Ações que tiram um parâmetro de uma função ou o trocam de lugar com o vizinho, mudando junto o
-//! `Definir Funcao`, a `funcao` e o argumento de cada chamada, nesta regra e, num formulário SGI,
-//! nas regras seguintes que chamam a função.
+//! Ações que mudam os parâmetros de uma função (tirar, trocar de lugar com o vizinho ou
+//! acrescentar), mudando junto o `Definir Funcao`, a `funcao` e o argumento de cada chamada, nesta
+//! regra e, num formulário SGI, nas regras seguintes que chamam a função.
 //!
 //! A ação só aparece quando todas as chamadas são achadas e têm um argumento por parâmetro. Tirar
 //! também exige que o corpo não use o parâmetro e que o argumento não tenha chamada dentro, que
-//! deixaria de rodar.
+//! deixaria de rodar. Acrescentar precisa do tipo, do nome e do valor que as chamadas passam a
+//! receber, então só aparece no editor que sabe perguntar (a extensão do VS Code).
 
 use std::collections::HashMap;
 
-use lsp_types::{CodeAction, CodeActionKind, Position, Range, TextEdit, Uri, WorkspaceEdit};
-use text_size::TextRange;
+use lsp_types::{
+    CodeAction, CodeActionKind, Command, Position, Range, TextEdit, Uri, WorkspaceEdit,
+};
+use text_size::{TextRange, TextSize};
 
 use super::navigation::{Context, name_at};
 use crate::symbols::DefKind;
 use crate::{NodeId, SyntaxKind, Tree};
 
-/// Uma lista de parâmetros ou de argumentos num texto, com o trecho de cada item.
+/// Comando da extensão que pergunta o tipo, o nome e o valor do parâmetro novo e depois manda o
+/// [`ADD_PARAMETER_REQUEST`].
+pub(crate) const ADD_PARAMETER_COMMAND: &str = "senior-lsp.acrescentarParametro";
+
+/// Pedido da extensão com as respostas, que devolve as edições.
+pub(crate) const ADD_PARAMETER_REQUEST: &str = "senior-lsp/acrescentarParametro";
+
+/// O que a extensão manda no [`ADD_PARAMETER_REQUEST`].
+#[derive(serde::Deserialize)]
+pub(crate) struct AddParameter {
+    pub(crate) uri: Uri,
+    pub(crate) position: Position,
+    /// Posição do parâmetro novo na lista, de 0 até a quantidade de parâmetros.
+    pub(crate) at: usize,
+    pub(crate) tipo: String,
+    pub(crate) nome: String,
+    pub(crate) valor: String,
+}
+
+/// Uma lista de parâmetros ou de argumentos, com os parênteses, e o trecho de cada item.
 struct List {
+    range: TextRange,
     items: Vec<TextRange>,
 }
 
 /// O que muda em cada lista.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Change {
     Remove(usize),
     Swap(usize, usize),
+    /// O parâmetro novo, com o texto dele e o do argumento das chamadas, na posição `at`.
+    Insert {
+        at: usize,
+        param: String,
+        arg: String,
+    },
 }
 
 impl List {
     fn of(tree: &Tree, node: NodeId) -> List {
         List {
+            range: tree.text_range(node),
             items: tree.children(node).map(|c| tree.text_range(c)).collect(),
         }
     }
 
     /// As trocas de texto que fazem a mudança. Tirar leva junto a vírgula de um dos lados.
-    fn edits(&self, text: &str, change: Change) -> Vec<(TextRange, String)> {
+    /// `params` diz se a lista é de parâmetros ou de argumentos.
+    fn edits(&self, text: &str, change: &Change, params: bool) -> Vec<(TextRange, String)> {
         let items = &self.items;
         match change {
-            Change::Remove(i) if items.len() == 1 => vec![(items[i], String::new())],
-            Change::Remove(i) if i + 1 < items.len() => {
-                vec![(
-                    TextRange::new(items[i].start(), items[i + 1].start()),
-                    String::new(),
-                )]
-            }
-            Change::Remove(i) => {
-                vec![(
-                    TextRange::new(items[i - 1].end(), items[i].end()),
-                    String::new(),
-                )]
-            }
+            Change::Remove(i) if items.len() == 1 => vec![(items[*i], String::new())],
+            Change::Remove(i) if i + 1 < items.len() => vec![(
+                TextRange::new(items[*i].start(), items[i + 1].start()),
+                String::new(),
+            )],
+            Change::Remove(i) => vec![(
+                TextRange::new(items[i - 1].end(), items[*i].end()),
+                String::new(),
+            )],
             Change::Swap(a, b) => vec![
-                (items[a], text[items[b]].to_owned()),
-                (items[b], text[items[a]].to_owned()),
+                (items[*a], text[items[*b]].to_owned()),
+                (items[*b], text[items[*a]].to_owned()),
             ],
+            Change::Insert { at, param, arg } => {
+                let new = if params { param } else { arg };
+                match items.get(*at) {
+                    _ if items.is_empty() => {
+                        let open = self.range.start() + TextSize::new(1);
+                        vec![(TextRange::empty(open), new.clone())]
+                    }
+                    Some(item) => vec![(TextRange::empty(item.start()), format!("{new}, "))],
+                    None => {
+                        let last = items[items.len() - 1].end();
+                        vec![(TextRange::empty(last), format!(", {new}"))]
+                    }
+                }
+            }
         }
     }
 }
@@ -82,61 +123,216 @@ fn has_call(tree: &Tree, node: NodeId) -> bool {
     false
 }
 
+/// A mesma caixa de `model` em `word`, que vem como `Numero`, `Alfa` ou `Data`.
+fn same_case(word: &str, model: &str) -> String {
+    if model
+        .chars()
+        .all(|c| !c.is_alphabetic() || c.is_lowercase())
+    {
+        word.to_lowercase()
+    } else if model
+        .chars()
+        .all(|c| !c.is_alphabetic() || c.is_uppercase())
+    {
+        word.to_uppercase()
+    } else {
+        word.to_owned()
+    }
+}
+
 impl Context<'_> {
-    /// As ações para o parâmetro no cursor, na declaração ou na implementação da função.
-    pub(crate) fn parameter_actions(&self, range: Range) -> Vec<CodeAction> {
-        // Num modelo de relatório a função vale em todas as regras dele, e a edição teria que ir
-        // para dentro do texto escapado do JSON.
+    /// As ações para o parâmetro no cursor ou, com o cursor no nome da função, a de acrescentar
+    /// no fim. `ask` diz se o editor sabe perguntar o que o parâmetro novo precisa.
+    pub(crate) fn parameter_actions(&self, range: Range, ask: bool) -> Vec<CodeAction> {
+        let Some((name, index)) = self.signature_target(self.offset(range.start)) else {
+            return Vec::new();
+        };
+        let mut actions = Vec::new();
+        if let Some((index, param)) = &index {
+            let index = *index;
+            if index > 0 {
+                let title = format!("Mover {param} para a esquerda");
+                actions.extend(self.signature_action(
+                    &name,
+                    Change::Swap(index - 1, index),
+                    &title,
+                ));
+            }
+            let title = format!("Mover {param} para a direita");
+            actions.extend(self.signature_action(&name, Change::Swap(index, index + 1), &title));
+            let title = format!("Tirar o parâmetro {param}");
+            actions.extend(self.signature_action(&name, Change::Remove(index), &title));
+        }
+        if ask {
+            let (at, title) = match &index {
+                Some((index, param)) => (
+                    index + 1,
+                    format!("Acrescentar parâmetro depois de {param}"),
+                ),
+                None => (
+                    self.parameter_count(&name).unwrap_or(0),
+                    "Acrescentar parâmetro no fim".to_owned(),
+                ),
+            };
+            let probe = Change::Insert {
+                at,
+                param: String::new(),
+                arg: String::new(),
+            };
+            if self.signature_edit(&name, &probe).is_some() {
+                let arguments = vec![
+                    serde_json::json!(self.uri.as_str()),
+                    serde_json::json!(range.start),
+                    serde_json::json!(at),
+                ];
+                actions.push(CodeAction {
+                    title: title.clone(),
+                    kind: Some(CodeActionKind::REFACTOR_REWRITE),
+                    command: Some(Command::new(
+                        title,
+                        ADD_PARAMETER_COMMAND.to_owned(),
+                        Some(arguments),
+                    )),
+                    ..CodeAction::default()
+                });
+            }
+        }
+        actions
+    }
+
+    /// As edições que acrescentam o parâmetro com as respostas da extensão. O erro vai para a
+    /// pessoa, que pode tentar de novo.
+    pub(crate) fn add_parameter(&self, request: &AddParameter) -> Result<WorkspaceEdit, String> {
+        let (name, _) = self
+            .signature_target(self.offset(request.position))
+            .ok_or("o cursor não está mais num parâmetro nem no nome da função")?;
+        let tipo = ["Numero", "Alfa", "Data"]
+            .into_iter()
+            .find(|t| t.eq_ignore_ascii_case(request.tipo.trim()))
+            .ok_or_else(|| format!("\"{}\" não é Numero, Alfa nem Data", request.tipo))?;
+        let nome = request.nome.trim();
+        let valid = nome
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && nome.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && nome.len() <= 100;
+        if !valid {
+            return Err(format!(
+                "\"{nome}\" não é um nome válido. Use letras, dígitos e _, começando por letra ou _."
+            ));
+        }
+        if SyntaxKind::keyword(nome).is_some() {
+            return Err(format!("\"{nome}\" é palavra reservada da linguagem."));
+        }
+        // Um nome que já existe no arquivo mudaria o que o corpo da função lê.
+        let text = self.doc.text.as_str();
+        if self
+            .doc
+            .symbols
+            .definitions
+            .iter()
+            .any(|d| text[d.name].eq_ignore_ascii_case(nome))
+        {
+            return Err(format!("Já existe \"{nome}\" definido neste arquivo."));
+        }
+        let valor = request.valor.trim();
+        if valor.is_empty() {
+            return Err("falta o valor que as chamadas passam a receber".to_owned());
+        }
+        let param = format!("{} {nome}", self.type_keyword(&name, tipo));
+        let change = Change::Insert {
+            at: request.at,
+            param,
+            arg: valor.to_owned(),
+        };
+        self.signature_edit(&name, &change).ok_or_else(|| {
+            "a função ou as chamadas dela mudaram desde que a ação foi oferecida".to_owned()
+        })
+    }
+
+    /// A função e, com o cursor num parâmetro, a posição e o nome dele. Só na regra comum e na de
+    /// formulário SGI. Num modelo de relatório a função vale em todas as regras dele, e a edição
+    /// teria que ir para dentro do texto escapado do JSON.
+    fn signature_target(&self, offset: TextSize) -> Option<(String, Option<(usize, String)>)> {
         if self.embedding.is_some()
             || !matches!(
                 self.doc.context,
                 crate::builtins::Context::Rule | crate::builtins::Context::Sgi
             )
         {
-            return Vec::new();
+            return None;
         }
-        let offset = self.offset(range.start);
         let (tree, text, symbols) = (&self.doc.tree, self.doc.text.as_str(), &self.doc.symbols);
-        let Some(param) = symbols
+        let header_name = |header: NodeId| {
+            symbols
+                .definitions
+                .iter()
+                .find(|d| d.kind == DefKind::Function && d.node == header)
+                .map(|d| text[d.name].to_owned())
+        };
+        if let Some(param) = symbols
             .definitions
             .iter()
             .find(|d| matches!(d.kind, DefKind::Parameter(_)) && d.name.contains_inclusive(offset))
-        else {
-            return Vec::new();
-        };
-        let Some(header) = tree.parent(param.node).and_then(|list| tree.parent(list)) else {
-            return Vec::new();
-        };
-        let Some(function) = symbols
+        {
+            let list = tree.parent(param.node)?;
+            let index = tree.children(list).position(|c| c == param.node)?;
+            let name = header_name(tree.parent(list)?)?;
+            return Some((name, Some((index, text[param.name].to_owned()))));
+        }
+        let function = symbols
             .definitions
             .iter()
-            .find(|d| d.kind == DefKind::Function && d.node == header)
-        else {
-            return Vec::new();
-        };
-        let name = &text[function.name];
-        let index = tree
-            .parent(param.node)
-            .and_then(|list| tree.children(list).position(|c| c == param.node));
-        let Some(index) = index else {
-            return Vec::new();
-        };
-        let mut actions = Vec::new();
-        let param_name = &text[param.name];
-        if index > 0 {
-            let title = format!("Mover {param_name} para a esquerda");
-            actions.extend(self.signature_action(name, Change::Swap(index - 1, index), &title));
-        }
-        let title = format!("Mover {param_name} para a direita");
-        actions.extend(self.signature_action(name, Change::Swap(index, index + 1), &title));
-        let title = format!("Tirar o parâmetro {param_name}");
-        actions.extend(self.signature_action(name, Change::Remove(index), &title));
-        actions
+            .find(|d| d.kind == DefKind::Function && d.name.contains_inclusive(offset))?;
+        Some((text[function.name].to_owned(), None))
     }
 
-    /// A ação que faz `change` em todas as listas de parâmetros da função `name` e nos argumentos
-    /// de todas as chamadas. `None` quando alguma não pode ser mudada com segurança.
+    /// Quantos parâmetros a primeira lista da função tem.
+    fn parameter_count(&self, name: &str) -> Option<usize> {
+        let lists = self.parameter_lists(name)?;
+        Some(self.doc.tree.children(*lists.first()?).count())
+    }
+
+    /// O tipo com a caixa do primeiro parâmetro da função ou, sem parâmetro, a dos `definir`.
+    fn type_keyword(&self, name: &str, tipo: &str) -> String {
+        let (tree, text) = (&self.doc.tree, self.doc.text.as_str());
+        let model = self
+            .parameter_lists(name)
+            .and_then(|lists| tree.children(*lists.first()?).next())
+            .map(|param| &text[tree.tokens().range(tree.token_range(param).start)]);
+        match model {
+            Some(model) => same_case(tipo, model),
+            None => self.keyword_case(tipo),
+        }
+    }
+
+    /// As listas de parâmetros do `Definir Funcao` e da `funcao`.
+    fn parameter_lists(&self, name: &str) -> Option<Vec<NodeId>> {
+        let (tree, text, symbols) = (&self.doc.tree, self.doc.text.as_str(), &self.doc.symbols);
+        symbols
+            .definitions
+            .iter()
+            .filter(|d| d.kind == DefKind::Function && text[d.name].eq_ignore_ascii_case(name))
+            .map(|d| {
+                tree.children(d.node)
+                    .find(|&c| tree.kind(c) == SyntaxKind::ParamList)
+            })
+            .collect()
+    }
+
     fn signature_action(&self, name: &str, change: Change, title: &str) -> Option<CodeAction> {
+        Some(CodeAction {
+            title: title.to_owned(),
+            kind: Some(CodeActionKind::REFACTOR_REWRITE),
+            edit: Some(self.signature_edit(name, &change)?),
+            ..CodeAction::default()
+        })
+    }
+
+    /// As edições que fazem `change` em todas as listas de parâmetros da função `name` e nos
+    /// argumentos de todas as chamadas. `None` quando alguma não pode ser mudada com segurança.
+    fn signature_edit(&self, name: &str, change: &Change) -> Option<WorkspaceEdit> {
         let (tree, text, symbols) = (&self.doc.tree, self.doc.text.as_str(), &self.doc.symbols);
         let functions: Vec<usize> = symbols
             .definitions
@@ -145,28 +341,20 @@ impl Context<'_> {
             .filter(|(_, d)| d.kind == DefKind::Function && text[d.name].eq_ignore_ascii_case(name))
             .map(|(i, _)| i)
             .collect();
-        let mut lists = Vec::new();
-        for &f in &functions {
-            let header = symbols.definitions[f].node;
-            let list = tree
-                .children(header)
-                .find(|&c| tree.kind(c) == SyntaxKind::ParamList)?;
-            lists.push(list);
-        }
+        let lists = self.parameter_lists(name)?;
         let count = tree.children(*lists.first()?).count();
-        let in_range = |i: usize| i < count;
-        match change {
-            Change::Remove(i) if !in_range(i) => return None,
-            Change::Swap(a, b) if !in_range(a) || !in_range(b) => return None,
-            _ => {}
-        }
-        if lists.iter().any(|&l| tree.children(l).count() != count) {
+        let valid = match change {
+            Change::Remove(i) => *i < count,
+            Change::Swap(a, b) => *a < count && *b < count,
+            Change::Insert { at, .. } => *at <= count,
+        };
+        if !valid || lists.iter().any(|&l| tree.children(l).count() != count) {
             return None;
         }
         // O parâmetro que sai não pode ser lido nem escrito no corpo.
         if let Change::Remove(i) = change {
             for &list in &lists {
-                let param = tree.children(list).nth(i)?;
+                let param = tree.children(list).nth(*i)?;
                 let used = symbols.definitions.iter().enumerate().any(|(d, def)| {
                     def.node == param && symbols.references.iter().any(|r| r.targets.contains(&d))
                 });
@@ -177,7 +365,7 @@ impl Context<'_> {
         }
         let mut edits: Vec<(TextRange, String)> = lists
             .iter()
-            .flat_map(|&l| List::of(tree, l).edits(text, change))
+            .flat_map(|&l| List::of(tree, l).edits(text, change, true))
             .collect();
         // As chamadas desta regra.
         for reference in &symbols.references {
@@ -234,14 +422,9 @@ impl Context<'_> {
                 );
             }
         }
-        Some(CodeAction {
-            title: title.to_owned(),
-            kind: Some(CodeActionKind::REFACTOR_REWRITE),
-            edit: Some(WorkspaceEdit {
-                changes: Some(changes),
-                ..WorkspaceEdit::default()
-            }),
-            ..CodeAction::default()
+        Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..WorkspaceEdit::default()
         })
     }
 }
@@ -253,7 +436,7 @@ fn arguments_edits(
     tree: &Tree,
     text: &str,
     node: NodeId,
-    change: Change,
+    change: &Change,
     count: usize,
 ) -> Option<Vec<(TextRange, String)>> {
     let args = call_arguments(tree, node)?;
@@ -261,9 +444,9 @@ fn arguments_edits(
         return None;
     }
     if let Change::Remove(i) = change
-        && has_call(tree, tree.children(args).nth(i)?)
+        && has_call(tree, tree.children(args).nth(*i)?)
     {
         return None;
     }
-    Some(List::of(tree, args).edits(text, change))
+    Some(List::of(tree, args).edits(text, change, false))
 }
