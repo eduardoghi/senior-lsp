@@ -430,6 +430,53 @@ impl Context<'_> {
         Some(items)
     }
 
+    /// Tabela e campo do dicionário de dados na posição, com os nomes como o dicionário os
+    /// escreve. Vale o `TABELA.Campo` do código e, dentro do texto de um SQL, o campo com a
+    /// tabela, com o apelido dela ou sozinho, quando uma só das tabelas que o comando cita o tem.
+    /// `None` quando a posição não está num campo que o dicionário conhece.
+    pub(super) fn dictionary_field_at(
+        &self,
+        position: lsp_types::Position,
+    ) -> Option<(String, String)> {
+        let offset = self.offset(position);
+        let dictionaries = &self.doc.inherited.dictionaries;
+        let found = |table: &str, field: &str| {
+            dictionaries
+                .field(table, field)
+                .map(|f| (f.table.name.clone(), f.field.name.clone()))
+        };
+        if let Some((literal, mask, spot)) = self.spot_at(offset) {
+            let source = &self.doc.text[literal];
+            let at = usize::from(offset - literal.start());
+            return match spot {
+                Spot::Column { table, field } if at > table.end => {
+                    let real = resolve_alias(&mask, &table).map_or(table, |alias| alias.table);
+                    found(&source[real], &source[field])
+                }
+                Spot::Word(word) if starts_statement(&mask) => {
+                    let name = &source[word.clone()];
+                    let mut owners = from_tables(&mask)
+                        .into_iter()
+                        .filter(|t| t.scope.start <= word.start && word.start <= t.scope.end)
+                        .filter_map(|t| found(&source[t.table], name));
+                    let first = owners.next()?;
+                    owners.next().is_none().then_some(first)
+                }
+                _ => None,
+            };
+        }
+        let node = field_expr_at(&self.doc.tree, offset)?;
+        let found = crate::validate::dictionary_field(
+            &self.doc.tree,
+            &self.doc.symbols,
+            &self.doc.text,
+            self.doc.context,
+            &self.doc.inherited,
+            node,
+        )?;
+        Some((found.table.name.clone(), found.field.name.clone()))
+    }
+
     /// Variáveis que cabem depois de `:` num SQL que começa em `literal`. O compilador só aceita
     /// ali a variável que já apareceu na regra, então entram as definidas antes do texto, os
     /// parâmetros da função em que ele está e as variáveis das regras anteriores da tela.
@@ -502,6 +549,85 @@ impl Context<'_> {
         let spot = spot_at(&mask, at)?;
         Some((literal, mask, spot))
     }
+}
+
+/// Trechos do nome do campo onde `table.field` aparece num texto de regra, sem diferença de caixa.
+/// No código vale o campo com a tabela na frente. Num texto vale também o campo com o apelido da
+/// tabela e, num texto que começa como SQL, o campo sozinho num comando que cita a tabela, no
+/// parêntese dele ou fora. O `:nome` é variável e não conta.
+pub(super) fn field_occurrences(text: &str, table: &str, field: &str) -> Vec<TextRange> {
+    let Ok(tokens) = crate::lex(text) else {
+        return Vec::new();
+    };
+    let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
+    let significant: Vec<usize> = (0..tokens.len())
+        .filter(|&i| !tokens.kind(i).is_trivia())
+        .collect();
+    let mut out = Vec::new();
+    for (k, &i) in significant.iter().enumerate() {
+        let range = tokens.range(i);
+        match tokens.kind(i) {
+            SyntaxKind::Ident if same(&text[range], field) && k >= 2 => {
+                let (dot, base) = (significant[k - 1], significant[k - 2]);
+                if tokens.kind(dot) == SyntaxKind::Dot
+                    && tokens.kind(base) == SyntaxKind::Ident
+                    && same(&text[tokens.range(base)], table)
+                {
+                    out.push(range);
+                }
+            }
+            SyntaxKind::String => {
+                let literal = &text[range];
+                if !literal
+                    .to_ascii_uppercase()
+                    .contains(&field.to_ascii_uppercase())
+                {
+                    continue;
+                }
+                let mask = mask(literal);
+                let sql = starts_statement(&mask);
+                let cited = if sql { from_tables(&mask) } else { Vec::new() };
+                let pieces = pieces(&mask);
+                for (p, piece) in pieces.iter().enumerate() {
+                    let Piece::Word(word) = piece else {
+                        continue;
+                    };
+                    if !same(&literal[word.clone()], field) {
+                        continue;
+                    }
+                    let qualifier = match (
+                        p.checked_sub(2).map(|q| &pieces[q]),
+                        pieces.get(p.wrapping_sub(1)),
+                    ) {
+                        (Some(Piece::Word(q)), Some(Piece::Dot)) if p >= 2 => Some(q.clone()),
+                        _ => None,
+                    };
+                    let hit = match qualifier {
+                        Some(q) => {
+                            let real = resolve_alias(&mask, &q).map_or(q, |alias| alias.table);
+                            same(&literal[real], table)
+                        }
+                        None => {
+                            let qualifies = pieces.get(p + 1) == Some(&Piece::Dot);
+                            let parameter = word.start > 0 && mask[word.start - 1] == b':';
+                            sql && !qualifies
+                                && !parameter
+                                && cited.iter().any(|t| {
+                                    t.scope.start <= word.start
+                                        && word.start <= t.scope.end
+                                        && same(&literal[t.table.clone()], table)
+                                })
+                        }
+                    };
+                    if hit {
+                        out.push(shift(range, word));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Tabelas que o SQL do literal em `offset` cita e que valem nessa posição, as do parêntese dela
@@ -1101,6 +1227,33 @@ mod tests {
             [
                 ("NomEnp", "NomEmp".to_owned()),
                 ("NonEmp", "NomEmp".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn onde_o_campo_aparece_num_texto() {
+        let text = "definir cursor c; definir numero n; definir alfa a;\n\
+                    n = E070EMP.CodEmp + c.CodEmp + e070emp . codemp;\n\
+                    c.SQL \"SELECT E.CodEmp, CodEmp FROM E070EMP E, E070FIL F \\\n\
+                    WHERE F.CodEmp = 1 AND E070FIL.CodEmp = :CodEmp \\\n\
+                    AND EXISTS (SELECT 1 FROM E085CLI WHERE CodEmp = 2)\";\n\
+                    a = \"CodEmp e E070EMP.CodEmp\";\n\
+                    c.SQL \"SELECT CodEmp FROM E070FIL\";";
+        let found: Vec<String> = field_occurrences(text, "E070EMP", "CodEmp")
+            .into_iter()
+            .map(|r| {
+                let line = text[..usize::from(r.start())].matches('\n').count();
+                format!("{}:{}", line, &text[r])
+            })
+            .collect();
+        // No código só com a tabela na frente. No SQL, com o apelido, sozinho no comando que cita
+        // a tabela e na subconsulta que enxerga a de fora. A outra tabela, o `:CodEmp`, o cursor
+        // e a palavra solta num texto que não é SQL ficam de fora.
+        assert_eq!(
+            found,
+            [
+                "1:CodEmp", "1:codemp", "2:CodEmp", "2:CodEmp", "4:CodEmp", "5:CodEmp"
             ]
         );
     }

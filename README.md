@@ -12,6 +12,10 @@ O servidor oferece:
 - avisos de código que compila mas faz outra coisa do que parece
 - [diretivas em comentário](#esconder-diagnósticos) e um arquivo `senior-lsp.json` que escondem diagnósticos por código ou mudam o nível deles, com a correção rápida "Ignorar SENxxx nesta linha"
 - ir para a definição e achar as referências de variáveis, funções, parâmetros e rótulos
+- achar onde um campo do dicionário de dados é usado em todas as regras da pasta aberta, a partir
+  do `TABELA.Campo` no código ou do campo dentro de um SQL. Vale o campo com a tabela na frente e,
+  nos textos de SQL, com o apelido dela ou sozinho num comando que cita a tabela, inclusive nas
+  regras dos JSON de modelo
 - ir para a implementação, do `definir funcao` ou da chamada para a `funcao`, e da `funcao` de volta
 - hierarquia de chamadas, com quem chama a função (outras funções, o corpo da regra e, numa tela
   SGI, as outras regras) e as funções da regra que ela chama

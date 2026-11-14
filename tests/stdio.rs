@@ -96,6 +96,11 @@ fn start() -> Running {
 
 /// Sobe o executável e faz o `initialize` com as opções de inicialização.
 fn start_with(options: Value) -> Running {
+    start_in(options, Value::Null)
+}
+
+/// Como o `start_with`, com as pastas do workspace.
+fn start_in(options: Value, folders: Value) -> Running {
     let mut child = Command::new(env!("CARGO_BIN_EXE_senior-lsp"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -107,7 +112,8 @@ fn start_with(options: Value) -> Running {
     send(
         &mut stdin,
         &json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"capabilities": {}, "initializationOptions": options}}),
+                "params": {"capabilities": {}, "initializationOptions": options,
+                           "workspaceFolders": folders}}),
     );
     assert_eq!(recv(&mut stdout)["id"], 1);
     send(
@@ -320,4 +326,86 @@ fn dicionario_lido_do_arquivo_configurado() {
     );
     drop(stdin);
     assert!(child.wait().unwrap().success());
+}
+
+/// Referências de um campo do dicionário procuradas nas regras da pasta, numa regra fechada e na
+/// regra de um JSON de modelo. Fica aqui porque o dicionário configurado vale para o processo
+/// inteiro, e cada teste daqui roda o servidor num processo próprio.
+#[test]
+fn referencias_do_campo_do_dicionario_nas_regras_da_pasta() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-campo-{}", std::process::id()));
+    let aberta = base.join("regras/R1.LSP/Rule.txt");
+    let fechada = base.join("regras/R2.LSP/Rule.txt");
+    let modelo = base.join("Modelos/M1.GER/Detalhe.json");
+    for path in [&aberta, &fechada, &modelo] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    }
+    let texto = "definir alfa a;\na = E070EMP.NomEmp;\n";
+    std::fs::write(&aberta, texto).unwrap();
+    std::fs::write(
+        &fechada,
+        "definir cursor c;\nc.SQL \"SELECT NomEmp FROM E070EMP WHERE SigEmp = 'X'\";\n\
+         c.SQL \"SELECT NomFil FROM E070FIL\";\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &modelo,
+        r#"{"rule": {"prop_name": "SOnPrint", "lines": ["definir cursor c;", "c.SQL \"SELECT E.NomEmp FROM E070EMP E\";"]}}"#,
+    )
+    .unwrap();
+    let tbs = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/dicionario-ficticio.tbs"
+    );
+    let folder = senior_lsp::form::uri_from_path(&base);
+    let (mut child, mut stdin, mut stdout) = start_in(
+        json!({"tbs_producao": tbs}),
+        json!([{"uri": folder, "name": "x"}]),
+    );
+    let uri = senior_lsp::form::uri_from_path(&aberta);
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                "params": {"textDocument": {"uri": uri, "languageId": "lsp-senior",
+                                            "version": 1, "text": texto}}}),
+    );
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "id": 2, "method": "textDocument/references",
+                "params": {"textDocument": {"uri": uri},
+                           "position": {"line": 1, "character": 14},
+                           "context": {"includeDeclaration": true}}}),
+    );
+    let reply = recv_until(&mut stdout, |m| m["id"] == 2);
+    let found: Vec<(String, u64, u64)> = reply["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            let path = senior_lsp::form::path_from_uri(l["uri"].as_str().unwrap()).unwrap();
+            let name = path
+                .strip_prefix(&base)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            let start = &l["range"]["start"];
+            (
+                name,
+                start["line"].as_u64().unwrap(),
+                start["character"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    std::fs::remove_dir_all(&base).unwrap();
+    // A regra aberta, o SQL da fechada e a regra do JSON, com a posição no JSON.
+    assert_eq!(
+        found,
+        [
+            ("Modelos/M1.GER/Detalhe.json".to_owned(), 0, 84),
+            ("regras/R1.LSP/Rule.txt".to_owned(), 1, 12),
+            ("regras/R2.LSP/Rule.txt".to_owned(), 1, 14),
+        ]
+    );
 }

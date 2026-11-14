@@ -7,7 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
-use lsp_types::Uri;
+use lsp_types::{Location, Position, Range, Uri};
+use text_size::TextRange;
 
 use super::documents::{Documents, is_report, is_report_rule, is_rule};
 use super::{Result, Server};
@@ -158,6 +159,86 @@ impl Server<'_> {
                 .parse::<Uri>()
                 .is_ok_and(|u| is_rule(&u) || is_report(&u) || is_report_rule(&u))
     }
+}
+
+impl Server<'_> {
+    /// Onde o campo do dicionário aparece nas regras das pastas do workspace e nos documentos
+    /// abertos, no código e nos textos de SQL (veja o [`super::sql::field_occurrences`]). O
+    /// documento aberto vale como está no editor. Nos JSON de modelo, a busca é nas regras de
+    /// cada JSON, e a posição volta para o JSON. Os arquivos que não citam o nome do campo nem
+    /// são analisados.
+    pub(super) fn field_references(&self, table: &str, field: &str) -> Vec<Location> {
+        let mut files = Vec::new();
+        for folder in &self.folders {
+            collect(folder, &mut files);
+        }
+        for uri in self.documents.uris() {
+            files.extend(crate::form::path_from_uri(uri.as_str()));
+        }
+        files.sort();
+        files.dedup();
+        let mut out = Vec::new();
+        for path in files {
+            let Ok(uri) = crate::form::uri_from_path(&path).parse::<Uri>() else {
+                continue;
+            };
+            let json = is_report(&uri);
+            let text = match (self.documents.report(&uri), self.documents.get(&uri)) {
+                (Some(report), _) => Some(report.json.to_string()),
+                (_, Some(doc)) => Some(doc.text.clone()),
+                _ if json => read(&path, false),
+                _ if is_rule(&uri) || is_report_rule(&uri) => read(&path, true),
+                _ => None,
+            };
+            let Some(text) = text.filter(|t| contains_ignore_case(t, field)) else {
+                continue;
+            };
+            let ranges: Vec<TextRange> = if json {
+                crate::report::extract(&text)
+                    .iter()
+                    .flat_map(|rule| {
+                        super::sql::field_occurrences(&rule.text, table, field)
+                            .into_iter()
+                            .map(|r| rule.range_to_json(r))
+                    })
+                    .collect()
+            } else {
+                super::sql::field_occurrences(&text, table, field)
+            };
+            if ranges.is_empty() {
+                continue;
+            }
+            let index = crate::line_index::LineIndex::new(&text);
+            let position = |offset| {
+                let lc = index.line_col(&text, offset, self.encoding);
+                Position::new(lc.line, lc.col)
+            };
+            for range in ranges {
+                let range = Range::new(position(range.start()), position(range.end()));
+                out.push(Location::new(uri.clone(), range));
+            }
+        }
+        out
+    }
+}
+
+/// Diz se `text` tem `needle` sem diferença de caixa. O nome é ASCII, e a busca começa pela
+/// primeira letra, nas duas caixas.
+fn contains_ignore_case(text: &str, needle: &str) -> bool {
+    let (bytes, needle) = (text.as_bytes(), needle.as_bytes());
+    let Some(&first) = needle.first() else {
+        return false;
+    };
+    memchr::memchr2_iter(
+        first.to_ascii_lowercase(),
+        first.to_ascii_uppercase(),
+        bytes,
+    )
+    .any(|at| {
+        bytes
+            .get(at..at + needle.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(needle))
+    })
 }
 
 /// Regras e JSON de modelo abaixo de `dir`.

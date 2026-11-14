@@ -460,7 +460,14 @@ impl Server<'_> {
                 let at = params.text_document_position;
                 let declaration = params.context.include_declaration;
                 self.with(&at.text_document.uri, Some(at.position), |c| {
-                    self.out.json(&c.references(at.position, declaration))
+                    // Campo do dicionário de dados não tem definição no arquivo, e o uso dele
+                    // é procurado nas regras da pasta.
+                    match c.dictionary_field_at(at.position) {
+                        Some((table, field)) => {
+                            self.out.json(&self.field_references(&table, &field))
+                        }
+                        None => self.out.json(&c.references(at.position, declaration)),
+                    }
                 })
             }
             HoverRequest::METHOD => {
