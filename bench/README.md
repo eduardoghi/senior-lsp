@@ -4,7 +4,10 @@ Os scripts conversam com o executável pelo stdio, como o editor, e precisam da 
 exportadas pelo gerenciador de artefatos e do dicionário `.tbs`. Rode a partir da pasta de regras.
 
 `bench.py` mede o tempo de abertura, de digitação e de cada pedido, a memória e a análise da pasta
-inteira. Os tempos de pedidos e de digitação vêm de regras escolhidas por quem roda.
+inteira. Os tempos de pedidos e de digitação vêm de regras escolhidas por quem roda. Inclua
+sempre a maior regra da pasta. Um custo por comando ou por SQL só aparece nela, e uma regra de
+tamanho comum não mostra quando a análise deixa de caber num cache. Um cache que guardava 512 KB
+de SQL deixou a maior regra 30 vezes mais lenta por tecla, e as outras ficaram iguais.
 
 ```sh
 python3 -I bench/bench.py BINARIO sapiens.tbs . regras/REGRA.LSP/Rule.txt
