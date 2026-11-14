@@ -359,6 +359,7 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN082 | erro | nome do WHERE, do valor do SET, dos valores do INSERT ou das colunas do SELECT do `ExecSql` que não é campo das tabelas do comando, ou que mais de uma delas tem, e campo do SET, do INSERT ou do GROUP BY que a tabela não tem, na regra que usa o Senior SQL 2 |
 | SEN083 | erro | campo do ORDER BY de um cursor que não está no SELECT, na regra que usa o Senior SQL 2 |
 | SEN084 | erro | INSERT com a quantidade de valores diferente da de campos, na regra que usa o Senior SQL 2 |
+| SEN085 | aviso | `enquanto ()` com a condição vazia, que o compilador trata como verdadeira, sem `Pare`, `VaPara`, `Cancel` nem outra saída no bloco |
 
 O SEN068 e o SEN070 saem como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
 conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da

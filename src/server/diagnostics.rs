@@ -505,6 +505,12 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                 &text[check.range]
             ),
         ),
+        CheckKind::EndlessLoop => (
+            "SEN085",
+            "O enquanto com a condição vazia repete para sempre, e o bloco não tem Pare, VaPara, \
+             Cancel nem outra saída. A regra trava quando chega aqui."
+                .to_owned(),
+        ),
         CheckKind::Unreachable => (
             "SEN071",
             format!("Código depois de {name} não é executado."),

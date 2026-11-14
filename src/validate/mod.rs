@@ -106,6 +106,8 @@ pub enum CheckKind {
     CursorStarUnused,
     /// Instruções depois de `Pare`, `Cancel` ou `VaPara` no mesmo bloco, que nunca executam.
     Unreachable,
+    /// `enquanto ()` sem nada no bloco que saia do laço. A condição vazia vale como verdadeira.
+    EndlessLoop,
 }
 
 impl CheckKind {
@@ -226,6 +228,7 @@ pub fn validate(
             BinaryExpr => binary(tree, node, &mut checks),
             Assign => assignment(tree, node, &mut checks),
             CallExpr => message_text(tree, &scope, node, &mut checks),
+            While => endless_loop(tree, symbols, text, inherited, node, &mut checks),
             CallStmt => {
                 unknown_function(tree, symbols, text, context, inherited, node, &mut checks);
                 native_sql.visit(tree, text, node);
@@ -665,6 +668,79 @@ fn flow_stop(tree: &Tree, node: NodeId) -> Option<&'static str> {
     }
 }
 
+/// `enquanto ()` com a condição vazia, que o compilador aceita e trata como verdadeira (conferido
+/// no ERP executando a regra), e sem nada no bloco que possa sair do laço. Conta como saída o
+/// `Pare`, o `VaPara`, o `Cancel` e o `Cancelar` em qualquer ponto do bloco, a `Mensagem` de
+/// `Erro` ou `Refaz` e a chamada a uma função da regra ou de outra regra, que pode ter um `Cancel`.
+/// O `Pare` de um laço de dentro também conta, então o aviso pode deixar de sair num caso que
+/// trava, mas não sai num que termina.
+fn endless_loop(
+    tree: &Tree,
+    symbols: &Symbols,
+    text: &str,
+    inherited: &Inherited,
+    node: NodeId,
+    checks: &mut Vec<Check>,
+) {
+    let mut significant = tree.elements(node).filter(|e| match e {
+        Element::Token(t) => !tree.tokens().kind(*t).is_trivia(),
+        Element::Node(_) => true,
+    });
+    let (Some(Element::Token(keyword)), Some(Element::Token(open)), Some(Element::Token(close))) =
+        (significant.next(), significant.next(), significant.next())
+    else {
+        return;
+    };
+    let kind = |t: usize| tree.tokens().kind(t);
+    if kind(open) != LParen || kind(close) != RParen {
+        return;
+    }
+    let Some(body) = tree.children(node).last() else {
+        return;
+    };
+    let user_function = |name: &str| {
+        inherited.contains(name)
+            || symbols
+                .definitions
+                .iter()
+                .any(|d| d.kind == DefKind::Function && text[d.name].eq_ignore_ascii_case(name))
+    };
+    let mut stack = vec![body];
+    while let Some(n) = stack.pop() {
+        if flow_stop(tree, n).is_some() || operator(tree, n) == Some(CancelarKw) {
+            return;
+        }
+        if tree.kind(n) == CallExpr {
+            let mut parts = tree.children(n);
+            let callee = parts
+                .next()
+                .map(|c| &text[tree.text_range(c)])
+                .unwrap_or_default();
+            let first = parts
+                .next()
+                .and_then(|args| tree.children(args).next())
+                .map(|a| text[tree.text_range(a)].trim());
+            let stops_rule = callee.eq_ignore_ascii_case("Mensagem")
+                && first.is_some_and(|f| {
+                    f.eq_ignore_ascii_case("Erro") || f.eq_ignore_ascii_case("Refaz")
+                });
+            if stops_rule || user_function(callee) {
+                return;
+            }
+        }
+        stack.extend(tree.children(n));
+    }
+    checks.push(Check {
+        kind: CheckKind::EndlessLoop,
+        range: TextRange::new(
+            tree.tokens().range(keyword).start(),
+            tree.tokens().range(close).end(),
+        ),
+        name: None,
+        label: None,
+    });
+}
+
 /// Rótulo em `node` ou abaixo dele (fora de funções), que um `VaPara` pode alcançar.
 fn contains_label(tree: &Tree, node: NodeId) -> bool {
     let mut stack = vec![node];
@@ -859,6 +935,41 @@ mod tests {
             .map(|(_, n)| n)
             .collect();
         assert_eq!(sobra, ["Sobra"]);
+    }
+
+    #[test]
+    fn enquanto_vazio_sem_saida() {
+        let laco = |corpo: &str| format!("definir numero n;\nenquanto () {{ n = n + 1; {corpo} }}");
+        assert_eq!(checks(&laco("")), [(EndlessLoop, "enquanto ()")]);
+        assert_eq!(
+            checks("definir numero n;\nenquanto ( @ nada @ )\n  n = n + 1;"),
+            [(EndlessLoop, "enquanto ( @ nada @ )")]
+        );
+        // Qualquer coisa que possa sair do laço tira o aviso.
+        for corpo in [
+            "se (n > 3) Pare;",
+            "se (n > 3) { VaPara Saida; }",
+            "se (n > 3) cancel;",
+            "se (n > 3) Cancel(1);",
+            "se (n > 3) Mensagem(Erro, \"x\");",
+            "se (n > 3) Mensagem(refaz, \"x\");",
+            "Verifica();",
+        ] {
+            let text = format!(
+                "definir funcao Verifica();\n{}\nSaida:\nfuncao Verifica(); {{ }}",
+                laco(corpo)
+            );
+            assert!(
+                checks_all(&text).iter().all(|(k, _)| *k != EndlessLoop),
+                "{corpo}"
+            );
+        }
+        // Mensagem que só avisa não sai, e a condição escrita não é cobrada.
+        assert_eq!(
+            checks(&laco("Mensagem(Retorna, \"x\");")),
+            [(EndlessLoop, "enquanto ()")]
+        );
+        assert!(checks("definir numero n;\nenquanto (n < 3) { n = n + 1; }").is_empty());
     }
 
     #[test]
