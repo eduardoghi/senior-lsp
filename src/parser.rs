@@ -145,9 +145,12 @@ impl<'a> Parser<'a> {
                 self.expect(Semicolon);
                 self.b.finish_node();
             }
-            ExecSqlKw | InsirirKw | CancelKw | CancelarKw if self.b.peek_second() != LParen => {
+            ExecSqlKw | InsirirKw | CancelKw if self.b.peek_second() != LParen => {
                 self.keyword_with_value();
             }
+            // O `Cancelar` sem parênteses não leva valor. Com `Cancelar 1;` o compilador diz que
+            // falta o `;` (conferido no ERP).
+            CancelarKw if self.b.peek_second() != LParen => self.keyword_statement(KeywordStmt),
             DefinirKw => self.definition(),
             FuncaoKw => self.func_impl(),
             PareKw => self.keyword_statement(Break),

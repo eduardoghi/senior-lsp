@@ -2609,16 +2609,16 @@ fn severity_of(
 #[test]
 fn diretiva_da_proxima_linha_esconde_o_diagnostico() {
     let (editor, _) = Editor::start(None);
-    editor.open(RULE, 1, "Pare;\nx = 1;");
+    editor.open(RULE, 1, "Cancel;\nx = 1;");
     assert_eq!(codes(&editor.diagnostics()), ["SEN071"]);
 
     // A diretiva pula a linha vazia e o comentário entre ela e o código.
-    let text = "Pare;\n@ senior-lsp-disable-next-line SEN071 @\n\n/* outro\n   comentário */\nx = 1;\ny = 2;";
+    let text = "Cancel;\n@ senior-lsp-disable-next-line SEN071 @\n\n/* outro\n   comentário */\nx = 1;\ny = 2;";
     editor.change(RULE, 2, text);
     assert!(editor.diagnostics().diagnostics.is_empty());
 
     // A diretiva de outra linha não esconde.
-    let text = "@ senior-lsp-disable-next-line SEN071 @\nx = 1;\nPare;\nx = 1;";
+    let text = "@ senior-lsp-disable-next-line SEN071 @\nx = 1;\nCancel;\nx = 1;";
     editor.change(RULE, 3, text);
     let d = editor.diagnostics();
     assert_eq!(codes(&d), ["SEN071", "SEN073"]);
@@ -2628,7 +2628,7 @@ fn diretiva_da_proxima_linha_esconde_o_diagnostico() {
 #[test]
 fn diretiva_de_trecho_com_varios_codigos_e_enable() {
     let (editor, _) = Editor::start(None);
-    let text = "@ senior-lsp-disable SEN060, sen071 @\nPare;\nx = 2 e -3;\n@ senior-lsp-enable SEN060 @\ny = 2 e -3;";
+    let text = "@ senior-lsp-disable SEN060, sen071 @\nCancel;\nx = 2 e -3;\n@ senior-lsp-enable SEN060 @\ny = 2 e -3;";
     editor.open(RULE, 1, text);
     // O SEN060 volta depois do enable, e o SEN071 vale até o fim do arquivo.
     let d = editor.diagnostics();
@@ -2814,7 +2814,7 @@ fn configuracao_muda_o_nivel_com_override_e_recarrega() {
         "regras/R1.LSP/Rule.txt",
         "",
     );
-    let text = "Pare;\nx = 2 e -3;";
+    let text = "Cancel;\nx = 2 e -3;";
     let modelo = base.join("Modelos/M1.LSP/Rule.txt");
     std::fs::create_dir_all(modelo.parent().unwrap()).unwrap();
     std::fs::write(&modelo, text).unwrap();
@@ -2861,7 +2861,7 @@ fn configuracao_em_off_nao_torna_a_diretiva_sem_efeito() {
         "",
     );
     let (editor, _) = Editor::start(None);
-    let text = "Pare;\n@ senior-lsp-disable-next-line SEN071 @\nx = 1;";
+    let text = "Cancel;\n@ senior-lsp-disable-next-line SEN071 @\nx = 1;";
     editor.open(&uri, 1, text);
     assert!(editor.diagnostics().diagnostics.is_empty());
     editor.stop();
@@ -2970,14 +2970,14 @@ fn ignore_titles(editor: &mut Editor, line: u32, character: u32) -> Vec<String> 
 #[test]
 fn correcao_rapida_insere_e_acrescenta_a_diretiva() {
     let (mut editor, _) = Editor::start(None);
-    let text = "se (1 = 1) {\n    Pare;\n    x = 2 e -3;\n}";
+    let text = "se (1 = 1) {\n    Cancel;\n    x = 2 e -3;\n}";
     editor.open(RULE, 1, text);
     editor.diagnostics();
     // O SEN071 começa na linha 2, e a diretiva entra acima, com a indentação dela.
     let fixed = apply_fix(&mut editor, text, 2, 4, "Ignorar SEN071");
     assert_eq!(
         fixed,
-        "se (1 = 1) {\n    Pare;\n    @ senior-lsp-disable-next-line SEN071 @\n    x = 2 e -3;\n}"
+        "se (1 = 1) {\n    Cancel;\n    @ senior-lsp-disable-next-line SEN071 @\n    x = 2 e -3;\n}"
     );
 
     // Com a diretiva na linha de cima, o outro código entra nela.
@@ -2988,7 +2988,7 @@ fn correcao_rapida_insere_e_acrescenta_a_diretiva() {
     let again = apply_fix(&mut editor, &fixed, at.line, at.character, "Ignorar SEN060");
     assert_eq!(
         again,
-        "se (1 = 1) {\n    Pare;\n    @ senior-lsp-disable-next-line SEN071, SEN060 @\n    x = 2 e -3;\n}"
+        "se (1 = 1) {\n    Cancel;\n    @ senior-lsp-disable-next-line SEN071, SEN060 @\n    x = 2 e -3;\n}"
     );
     editor.change(RULE, 3, &again);
     assert!(editor.diagnostics().diagnostics.is_empty());
@@ -3012,7 +3012,7 @@ fn correcao_rapida_so_para_o_que_se_pode_esconder() {
 #[test]
 fn correcao_rapida_oferece_uma_acao_por_codigo_e_respeita_crlf() {
     let (mut editor, _) = Editor::start(None);
-    let text = "Pare;\r\nx = 2 e -3;";
+    let text = "Cancel;\r\nx = 2 e -3;";
     editor.open(RULE, 1, text);
     editor.diagnostics();
     let mut titles = ignore_titles(&mut editor, 1, 8);
@@ -3024,7 +3024,7 @@ fn correcao_rapida_oferece_uma_acao_por_codigo_e_respeita_crlf() {
     let fixed = apply_fix(&mut editor, text, 1, 8, "Ignorar SEN071");
     assert_eq!(
         fixed,
-        "Pare;\r\n@ senior-lsp-disable-next-line SEN071 @\r\nx = 2 e -3;"
+        "Cancel;\r\n@ senior-lsp-disable-next-line SEN071 @\r\nx = 2 e -3;"
     );
     editor.stop();
 }

@@ -362,7 +362,7 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN068 | dica | variável, cursor, lista, tabela ou web service definido e nunca usado, só na regra comum |
 | SEN069 | aviso | membro de web service que não é parâmetro da porta no `Port.json` da exportação, nem um dos implícitos (`Usuario`, `Senha`, `Token`, `ModoExecucao`, `ErroExecucao`) |
 | SEN070 | dica | função definida e nunca chamada, só na regra comum |
-| SEN071 | aviso | instruções depois de `Pare`, `Cancel` ou `VaPara` no mesmo bloco, que nunca executam |
+| SEN071 | aviso | instruções depois de `Pare`, `Continue`, `Cancel`, `Cancelar` ou `VaPara` no mesmo bloco, que nunca executam |
 | SEN072 | aviso | diretiva `senior-lsp-*` mal escrita, como sem código, com código que não existe ou de erro de sintaxe, e `senior-lsp-enable` sem `senior-lsp-disable` antes |
 | SEN073 | aviso | diretiva que não escondeu nenhum diagnóstico do código citado |
 | SEN074 | erro | coluna do SELECT de um cursor com uma tabela que não está no dicionário de dados, como um apelido de tabela ou uma função |
@@ -380,6 +380,8 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN086 | aviso | tabela do SQL nativo que não está no dicionário de dados, fora as do catálogo do Oracle, a `DUAL`, os nomes do `WITH` e as do `extraTables` do [`senior-lsp.json`](#arquivo-de-configuração) |
 | SEN087 | aviso | campo com a tabela ou o apelido na frente, no SQL nativo, que a tabela não tem no dicionário de dados |
 | SEN088 | aviso | o que o Senior SQL 2 recusa (SEN080 a SEN083) no SELECT de um `SQL_DefinirComando`, que compila e para na execução. O objeto usa o Senior SQL 2 até receber `SQL_UsarSQLSenior2(x, 0)`, também na regra que não usa a opção |
+| SEN089 | erro | `Pare` ou `Continue` fora de um `para` ou `enquanto` |
+| SEN090 | aviso | `Continue` num `para`, que volta sem rodar o incremento, e o laço não termina se nada mais muda o contador |
 
 O SEN068 e o SEN070 saem como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
 conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da
@@ -397,8 +399,8 @@ O SQL nativo vai para o banco como está, e a tabela ou o campo que não existe 
 
 O SEN071 cobre da primeira instrução depois do comando até a última do bloco, e o editor esmaece
 o trecho. Um rótulo (`nome:`) no meio do bloco volta a tornar o código alcançável, porque um
-`VaPara` pode chegar nele. Um `Pare`, `Cancel` ou `VaPara` dentro de um `se` só afeta o resto do
-bloco do `se`. O `Continue` e o `Cancelar` ainda não geram o aviso.
+`VaPara` pode chegar nele. Um `Pare`, `Continue`, `Cancel`, `Cancelar` ou `VaPara` dentro de um `se` só afeta o resto
+do bloco do `se`.
 
 ## Esconder diagnósticos
 

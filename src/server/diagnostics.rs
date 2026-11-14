@@ -556,6 +556,20 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                 ),
             )
         }
+        CheckKind::LoopClauseOutsideLoop => (
+            "SEN089",
+            format!(
+                "{name} só pode ser usado dentro de um para ou enquanto (Esta cláusula só pode ser \
+                 usada com o comando \"Para\" ou \"Enquanto\")."
+            ),
+        ),
+        CheckKind::ContinueSkipsStep => (
+            "SEN090",
+            format!(
+                "O Continue volta ao começo do para sem rodar o incremento ({name}). Se nada mais \
+                 mudar o contador, o laço não termina."
+            ),
+        ),
         CheckKind::CursorColumnUnused => (
             "SEN076",
             format!(
@@ -809,12 +823,12 @@ mod tests {
 
     #[test]
     fn codigo_inalcancavel_e_aviso_esmaecido() {
-        let text = "Pare;\nx = 1;\ny = 2;\nCancel(1);";
+        let text = "Cancel;\nx = 1;\ny = 2;\nCancel(1);";
         let d = run(text, ColumnEncoding::Utf16);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].code, Some(NumberOrString::String("SEN071".to_owned())));
         assert_eq!(d[0].severity, Some(DiagnosticSeverity::WARNING));
-        assert_eq!(d[0].message, "Código depois de Pare não é executado.");
+        assert_eq!(d[0].message, "Código depois de Cancel não é executado.");
         assert_eq!(d[0].tags, Some(vec![lsp_types::DiagnosticTag::UNNECESSARY]));
         // Do começo da primeira instrução ao fim da última antes do fim do bloco.
         assert_eq!(
@@ -835,7 +849,7 @@ mod tests {
 
     #[test]
     fn diretiva_esconde_o_aviso_mas_nao_o_erro_de_sintaxe() {
-        let text = "Pare;\n@ senior-lsp-disable-next-line SEN071, SEN020 @\nx = 1;\ny = ;";
+        let text = "Cancel;\n@ senior-lsp-disable-next-line SEN071, SEN020 @\nx = 1;\ny = ;";
         let d = diags(text, ColumnEncoding::Utf16);
         let codes: Vec<_> = d.iter().map(|(c, _, _)| c.as_str()).collect();
         // O SEN071 some, o SEN020 da diretiva é recusado e o erro de sintaxe da linha 3 continua.
@@ -846,7 +860,7 @@ mod tests {
     fn configuracao_troca_o_nivel_e_tira_o_codigo() {
         let uri: lsp_types::Uri = "file:///regras/R.LSP/Rule.txt".parse().unwrap();
         let mut documents = Documents::default();
-        let text = "Pare;\nx = 1;\nx = 2 e -3;";
+        let text = "Cancel;\nx = 1;\nx = 2 e -3;";
         documents
             .set(uri.clone(), text.to_owned(), 1, Context::Rule)
             .unwrap();

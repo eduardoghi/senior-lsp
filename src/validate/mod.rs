@@ -132,6 +132,10 @@ pub enum CheckKind {
     Unreachable,
     /// `enquanto ()` sem nada no bloco que saia do laço. A condição vazia vale como verdadeira.
     EndlessLoop,
+    /// `Pare` ou `Continue` fora de um `para` ou `enquanto`.
+    LoopClauseOutsideLoop,
+    /// `Continue` num `para`, que volta sem rodar o incremento.
+    ContinueSkipsStep,
 }
 
 impl CheckKind {
@@ -182,6 +186,7 @@ impl CheckKind {
                 | CheckKind::Sql2AmbiguousField
                 | CheckKind::Sql2OrderBy
                 | CheckKind::Sql2InsertValues
+                | CheckKind::LoopClauseOutsideLoop
         )
     }
 }
@@ -311,6 +316,7 @@ pub fn validate(
         stack[first..].reverse();
     }
     native_sql.finish(text, inherited, &mut checks);
+    loop_clauses(tree, text, &mut checks);
     if let Some(uses) = column_uses {
         uses.finish(text, &inherited.dictionaries, &mut checks);
     }
@@ -686,24 +692,69 @@ fn is_definition(tree: &Tree, node: NodeId) -> bool {
 }
 
 /// Comando que desvia o fluxo para fora do resto do bloco, com o nome que a mensagem cita.
-/// `Cancel` vale com e sem parênteses. `Continue` e `Cancelar` ainda não foram conferidos no
-/// compilador e ficam de fora.
+/// `Cancel` e `Cancelar` valem com e sem parênteses e terminam a regra, e o `Continue` volta ao
+/// começo do laço. Todos conferidos no ERP executando a regra.
 fn flow_stop(tree: &Tree, node: NodeId) -> Option<&'static str> {
+    let name = |kind| match kind {
+        CancelKw => Some("Cancel"),
+        CancelarKw => Some("Cancelar"),
+        _ => None,
+    };
     match tree.kind(node) {
         Break => Some("Pare"),
+        Continue => Some("Continue"),
         Goto => Some("VaPara"),
-        KeywordStmt if operator(tree, node) == Some(CancelKw) => Some("Cancel"),
+        KeywordStmt => operator(tree, node).and_then(name),
         // O `Cancel(...)` é uma chamada, e o nome fica num `NameRef`.
         CallStmt => tree
             .children(node)
             .find(|&c| tree.kind(c) == CallExpr)
             .and_then(|call| tree.children(call).next())
-            .filter(|&name| {
-                tree.kind(name) == NameRef
-                    && tree.tokens().kind(tree.token_range(name).start) == CancelKw
-            })
-            .map(|_| "Cancel"),
+            .filter(|&callee| tree.kind(callee) == NameRef)
+            .and_then(|callee| name(tree.tokens().kind(tree.token_range(callee).start))),
         _ => None,
+    }
+}
+
+/// `Pare` e `Continue` fora de um `para` ou `enquanto`, que o compilador recusa, e o `Continue`
+/// num `para`, que volta sem rodar o incremento e repete o laço sem fim quando nada mais muda o
+/// contador. Os dois conferidos no ERP. O laço vale só dentro da mesma função.
+fn loop_clauses(tree: &Tree, text: &str, checks: &mut Vec<Check>) {
+    let mut stack = vec![(tree.root(), None)];
+    while let Some((node, inner)) = stack.pop() {
+        let kind = tree.kind(node);
+        if matches!(kind, Break | Continue) {
+            match inner {
+                None => checks.push(Check {
+                    kind: CheckKind::LoopClauseOutsideLoop,
+                    range: tree.text_range(node),
+                    name: None,
+                    label: Some(if kind == Break { "Pare" } else { "Continue" }.to_owned()),
+                }),
+                Some(lp) if kind == Continue && tree.kind(lp) == For => {
+                    let step = tree
+                        .children(lp)
+                        .find(|&c| tree.kind(c) == ForStep)
+                        .map(|s| text[tree.text_range(s)].trim().to_owned())
+                        .filter(|s| !s.is_empty());
+                    if let Some(step) = step {
+                        checks.push(Check {
+                            kind: CheckKind::ContinueSkipsStep,
+                            range: tree.text_range(node),
+                            name: None,
+                            label: Some(step),
+                        });
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        let inner = match kind {
+            While | For => Some(node),
+            FuncImpl => None,
+            _ => inner,
+        };
+        stack.extend(tree.children(node).map(|c| (c, inner)));
     }
 }
 
@@ -746,7 +797,8 @@ fn endless_loop(
     };
     let mut stack = vec![body];
     while let Some(n) = stack.pop() {
-        if flow_stop(tree, n).is_some() || operator(tree, n) == Some(CancelarKw) {
+        // O `Continue` volta ao começo e não sai do laço.
+        if flow_stop(tree, n).is_some_and(|stop| stop != "Continue") {
             return;
         }
         if tree.kind(n) == CallExpr {
@@ -1105,7 +1157,7 @@ mod tests {
 
     #[test]
     fn faixa_do_codigo_inalcancavel_vai_ate_o_fim_do_bloco() {
-        let text = "Pare;\na = 1;\n@ comentário @\nb = 2;\nc = 3;";
+        let text = "Cancel;\na = 1;\n@ comentário @\nb = 2;\nc = 3;";
         assert_eq!(
             checks(text),
             [(Unreachable, "a = 1;\n@ comentário @\nb = 2;\nc = 3;")]
@@ -1126,24 +1178,24 @@ mod tests {
         // Rótulo logo depois do comando, sem nada entre os dois.
         assert!(checks("vapara saida;\nsaida:\nx = 1;").is_empty());
         // Rótulo dentro de um bloco inalcançável ainda pode ser alvo do VaPara de fora.
-        assert!(checks("Pare;\n{ x = 1; alvo: y = 2; }\nvapara alvo;").is_empty());
+        assert!(checks("Cancel;\n{ x = 1; alvo: y = 2; }\nvapara alvo;").is_empty());
     }
 
     #[test]
     fn comando_dentro_do_se_nao_afeta_o_que_vem_depois() {
-        let text = "se (a = 1) {\nPare;\n}\nx = 1;\nse (b = 2) { Cancel(1); }\ny = 2;\n\
+        let text = "se (a = 1) {\nCancel;\n}\nx = 1;\nse (b = 2) { Cancel(1); }\ny = 2;\n\
                     se (c = 3) { vapara saida; } senao { z = 3; }\nw = 4;\nsaida:";
         assert!(checks(text).is_empty());
         // Dentro do próprio bloco do se, o que vem depois do comando não executa.
         assert_eq!(
-            checks("se (a = 1) { Pare; x = 1; }\ny = 2;"),
+            checks("se (a = 1) { Cancel; x = 1; }\ny = 2;"),
             [(Unreachable, "x = 1;")]
         );
     }
 
     #[test]
     fn bloco_vazio_depois_do_comando() {
-        assert!(checks("Pare;").is_empty());
+        assert!(checks("Cancel;").is_empty());
         assert!(checks("enquanto (a < 1) { Pare; }").is_empty());
         assert!(checks("Cancel(1);\n").is_empty());
         // Só definições depois do comando, que não executam.
@@ -1158,16 +1210,54 @@ mod tests {
     fn cancel_sem_parenteses_e_outros_comandos() {
         assert_eq!(checks("cancel;\nx = 1;"), [(Unreachable, "x = 1;")]);
         assert_eq!(checks("Cancel(1);\nx = 1;"), [(Unreachable, "x = 1;")]);
-        // O retorna e o ExecSql não desviam o fluxo para fora do bloco nesta verificação, e o
-        // Continue e o Cancelar não foram conferidos.
+        // O ExecSql não desvia o fluxo para fora do bloco.
         assert!(checks("ExecSql \"UPDATE T SET A = 1\";\nx = 1;").is_empty());
-        assert!(checks("enquanto (a < 1) { continue; x = 1; }").is_empty());
-        assert!(checks("Cancelar(1);\nx = 1;").is_empty());
+    }
+
+    #[test]
+    fn continue_e_cancelar() {
+        // A regra conferida no ERP. O B nunca entrou na mensagem, e o Cancelar terminou a regra
+        // com e sem parênteses.
+        assert_eq!(
+            checks("enquanto (a < 3) { a = a + 1; Continue; b = 1; }"),
+            [(Unreachable, "b = 1;")]
+        );
+        assert_eq!(checks("Cancelar(1);\nx = 1;"), [(Unreachable, "x = 1;")]);
+        assert_eq!(checks("Cancelar;\nx = 1;"), [(Unreachable, "x = 1;")]);
+        // Com valor sem parênteses o compilador diz que falta o ;.
+        let tree = crate::parse("Cancelar 1;").unwrap();
+        assert!(!tree.errors().is_empty());
+        // O Continue não sai do laço sem fim, e o Cancelar sai.
+        assert_eq!(
+            checks("enquanto () { Continue; }"),
+            [(EndlessLoop, "enquanto ()")]
+        );
+        assert!(checks("enquanto () { Cancelar; }").is_empty());
+    }
+
+    #[test]
+    fn pare_e_continue_fora_de_laco_e_continue_no_para() {
+        assert_eq!(checks("Pare;"), [(LoopClauseOutsideLoop, "Pare;")]);
+        assert_eq!(
+            checks("se (a = 1) { Continue; }"),
+            [(LoopClauseOutsideLoop, "Continue;")]
+        );
+        // O laço de fora não vale dentro da função.
+        let funcao = "Definir Funcao F();\nenquanto (a < 1) { F(); }\nfuncao F(); { Pare; }";
+        assert_eq!(checks(funcao), [(LoopClauseOutsideLoop, "Pare;")]);
+        // No para, o Continue volta sem rodar o incremento. No enquanto de dentro do para, não.
+        assert_eq!(
+            checks(
+                "para (n = 1; n <= 3; n++) { se (n = 2) Continue; }\n\
+                 para (n = 1; n <= 3; n++) { enquanto (a < 1) { Continue; } Pare; }"
+            ),
+            [(ContinueSkipsStep, "Continue;")]
+        );
     }
 
     #[test]
     fn codigo_inalcancavel_dentro_de_funcao() {
-        let text = "Definir Funcao F();\nF();\nfuncao F(); {\nPare;\nx = 1;\n}";
+        let text = "Definir Funcao F();\nF();\nfuncao F(); {\nCancel;\nx = 1;\n}";
         assert_eq!(checks(text), [(Unreachable, "x = 1;")]);
         // O comando antes de uma funcao não faz as funcoes seguintes inalcançáveis.
         let text = "Definir Funcao F();\nF();\nCancel(1);\nfuncao F(); {\nx = 1;\n}";
