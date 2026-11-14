@@ -1,11 +1,14 @@
-//! Destaque das ocorrências do nome que está no cursor, no arquivo aberto.
+//! Destaque das ocorrências do nome que está no cursor, no arquivo aberto, e das palavras que
+//! andam juntas, como o laço com os `Pare` e `Continue` dele, o `se` com o `senao` e a abertura do
+//! bloco com o fechamento.
 
 use std::collections::HashSet;
 
 use lsp_types::{DocumentHighlight, DocumentHighlightKind, Position};
+use text_size::{TextRange, TextSize};
 
 use super::navigation::{Context, name_at};
-use crate::SyntaxKind;
+use crate::{Element, NodeId, SyntaxKind, Tree};
 
 impl Context<'_> {
     /// Definições e usos do nome no cursor. A definição vem marcada como escrita e os usos como
@@ -33,6 +36,8 @@ impl Context<'_> {
                     highlights.push((r.range, DocumentHighlightKind::READ));
                 }
             }
+        } else if let Some(ranges) = keyword_partners(&self.doc.tree, offset) {
+            highlights.extend(ranges.into_iter().map(|r| (r, DocumentHighlightKind::TEXT)));
         } else if let Some((node, call)) = name_at(&self.doc.tree, offset) {
             let tree = &self.doc.tree;
             let text = &self.doc.text;
@@ -69,4 +74,99 @@ impl Context<'_> {
             })
             .collect()
     }
+}
+
+/// Token que não é espaço nem comentário no cursor, com o nó que o contém. O cursor logo depois da
+/// palavra também vale.
+fn token_at(tree: &Tree, offset: TextSize) -> Option<(NodeId, usize)> {
+    let mut node = tree.root();
+    'descend: loop {
+        for element in tree.elements(node) {
+            match element {
+                Element::Node(child) if tree.text_range(child).contains_inclusive(offset) => {
+                    node = child;
+                    continue 'descend;
+                }
+                Element::Token(t)
+                    if !tree.tokens().kind(t).is_trivia()
+                        && tree.tokens().range(t).contains_inclusive(offset) =>
+                {
+                    return Some((node, t));
+                }
+                _ => {}
+            }
+        }
+        return None;
+    }
+}
+
+/// Primeiro token do nó que não é espaço nem comentário, como a palavra que abre o comando.
+fn keyword(tree: &Tree, node: NodeId) -> Option<TextRange> {
+    tree.elements(node).find_map(|e| match e {
+        Element::Token(t) if !tree.tokens().kind(t).is_trivia() => Some(tree.tokens().range(t)),
+        _ => None,
+    })
+}
+
+/// As palavras que andam com a do cursor. No `enquanto` ou no `para`, e num `Pare` ou `Continue`,
+/// o laço e os `Pare` e `Continue` que valem para ele, sem os de um laço de dentro. No `se` ou no
+/// `senao`, os dois. Na abertura ou no fechamento de um bloco, o par.
+fn keyword_partners(tree: &Tree, offset: TextSize) -> Option<Vec<TextRange>> {
+    use SyntaxKind::*;
+    let (node, token) = token_at(tree, offset)?;
+    let kind = tree.tokens().kind(token);
+    match (kind, tree.kind(node)) {
+        (EnquantoKw, While) | (ParaKw, For) => loop_partners(tree, node),
+        (PareKw, Break) | (ContinueKw, Continue) => {
+            let mut up = tree.parent(node);
+            while let Some(n) = up {
+                match tree.kind(n) {
+                    While | For => return loop_partners(tree, n),
+                    FuncImpl => return None,
+                    _ => up = tree.parent(n),
+                }
+            }
+            None
+        }
+        (SeKw, If) | (SenaoKw, ElseBranch) => {
+            let branch_if = if kind == SeKw {
+                node
+            } else {
+                tree.parent(node)?
+            };
+            let mut ranges = vec![keyword(tree, branch_if)?];
+            let senao = tree
+                .children(branch_if)
+                .find(|&c| tree.kind(c) == ElseBranch)
+                .and_then(|e| keyword(tree, e));
+            ranges.extend(senao);
+            Some(ranges)
+        }
+        (LBrace | InicioKw | RBrace | FimKw, Block) => {
+            let close = tree.elements(node).filter_map(|e| match e {
+                Element::Token(t) if matches!(tree.tokens().kind(t), RBrace | FimKw) => {
+                    Some(tree.tokens().range(t))
+                }
+                _ => None,
+            });
+            let mut ranges = vec![keyword(tree, node)?];
+            ranges.extend(close.last());
+            Some(ranges)
+        }
+        _ => None,
+    }
+}
+
+fn loop_partners(tree: &Tree, lp: NodeId) -> Option<Vec<TextRange>> {
+    use SyntaxKind::*;
+    let mut ranges = vec![keyword(tree, lp)?];
+    let mut stack: Vec<NodeId> = tree.children(lp).collect();
+    while let Some(n) = stack.pop() {
+        match tree.kind(n) {
+            Break | Continue => ranges.extend(keyword(tree, n)),
+            While | For | FuncImpl => {}
+            _ => stack.extend(tree.children(n)),
+        }
+    }
+    Some(ranges)
 }

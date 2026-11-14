@@ -11,7 +11,7 @@
 
 use std::io::Write;
 
-use lsp_server::{Connection, ErrorCode, Message, Notification, RequestId, Response};
+use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 
 use super::Result;
 
@@ -91,6 +91,31 @@ impl Output<'_> {
                     "jsonrpc": "2.0",
                     "id": id,
                     "error": { "code": code as i32, "message": message },
+                });
+                write_frame(&serde_json::to_vec(&body)?)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Pedido do servidor ao editor. A resposta chega pela conexão e é ignorada.
+    pub(super) fn request<P: serde::Serialize>(
+        &self,
+        id: RequestId,
+        method: &str,
+        params: &P,
+    ) -> Result<()> {
+        match self {
+            Output::Channel(connection) => {
+                let request = Request::new(id, method.to_owned(), params);
+                connection.sender.send(request.into())?;
+            }
+            Output::Stdout => {
+                let body = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": method,
+                    "params": params,
                 });
                 write_frame(&serde_json::to_vec(&body)?)?;
             }

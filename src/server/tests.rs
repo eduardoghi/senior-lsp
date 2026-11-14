@@ -66,6 +66,14 @@ impl Editor {
             params["capabilities"]["textDocument"] =
                 json!({ "completion": { "completionItem": { "snippetSupport": snippets } } });
         }
+        // `workDoneProgress` dentro das opções vira capacidade do editor, para o teste do progresso
+        // da análise da pasta.
+        if let Some(progress) = params["initializationOptions"]
+            .as_object_mut()
+            .and_then(|o| o.remove("workDoneProgress"))
+        {
+            params["capabilities"]["window"] = json!({ "workDoneProgress": progress });
+        }
         // `workspaceFolders` dentro das opções vira parâmetro do initialize, para os testes da
         // análise da pasta.
         if let Some(folders) = params["initializationOptions"]
@@ -4250,4 +4258,90 @@ fn acrescentar_parametro_com_as_respostas_do_editor() {
         assert!(response.response_result.is_err(), "{tipo} {nome} {valor:?}");
     }
     editor.stop();
+}
+
+#[test]
+fn destaca_o_laco_com_pare_e_continue_o_se_com_senao_e_o_par_do_bloco() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "enquanto (a < 3) {\n\
+                se (a = 1) Pare; senao Continue;\n\
+                para (b = 1; b < 2; b++) { Pare; }\n\
+                inicio\nPare;\nfim;\n\
+                }";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let mut at = |line: u32, character: u32| -> Vec<String> {
+        let response = editor.request(
+            lsp_types::request::DocumentHighlightRequest::METHOD,
+            json!({ "textDocument": { "uri": RULE },
+                    "position": { "line": line, "character": character } }),
+        );
+        let list: Vec<lsp_types::DocumentHighlight> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        list.iter()
+            .map(|h| format!("{}:{}", h.range.start.line, h.range.start.character))
+            .collect()
+    };
+    // O enquanto e os Pare e Continue dele, sem o Pare do para de dentro.
+    let laco = ["0:0", "1:11", "1:23", "4:0"];
+    assert_eq!(at(0, 3), laco);
+    assert_eq!(at(1, 13), laco);
+    // O para de dentro tem o Pare dele.
+    assert_eq!(at(2, 1), ["2:0", "2:27"]);
+    // O se e o senao.
+    assert_eq!(at(1, 1), ["1:0", "1:17"]);
+    assert_eq!(at(1, 19), ["1:0", "1:17"]);
+    // A chave e o par, e o inicio e o fim.
+    assert_eq!(at(0, 17), ["0:17", "6:0"]);
+    assert_eq!(at(6, 0), ["0:17", "6:0"]);
+    assert_eq!(at(3, 2), ["3:0", "5:0"]);
+    assert_eq!(at(5, 1), ["3:0", "5:0"]);
+    editor.stop();
+}
+
+#[test]
+fn progresso_da_analise_da_pasta() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-progresso-{}", std::process::id()));
+    for i in 1..=3 {
+        let rule = base.join(format!("regras/R{i}.LSP/Rule.txt"));
+        std::fs::create_dir_all(rule.parent().unwrap()).unwrap();
+        std::fs::write(&rule, "x = 1;").unwrap();
+    }
+    let folder = crate::form::uri_from_path(&base);
+    let (editor, _) = Editor::start_with(
+        None,
+        json!({ "analisar_pasta": true, "workDoneProgress": true,
+                "workspaceFolders": [{ "uri": folder, "name": "x" }] }),
+    );
+    let mut seen = Vec::new();
+    loop {
+        match editor.recv() {
+            Message::Request(r) => seen.push(r.method),
+            Message::Notification(n) if n.method == "$/progress" => {
+                let kind = n.params["value"]["kind"].as_str().unwrap().to_owned();
+                let message = n.params["value"]["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned();
+                seen.push(format!("{kind} {message}"));
+                if kind == "end" {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+    assert_eq!(
+        seen,
+        [
+            "window/workDoneProgress/create",
+            "begin 0 de 3",
+            "report 1 de 3",
+            "report 2 de 3",
+            "report 3 de 3",
+            "end 3 arquivos analisados"
+        ]
+    );
 }

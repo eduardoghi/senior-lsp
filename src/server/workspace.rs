@@ -13,6 +13,90 @@ use text_size::TextRange;
 use super::documents::{Documents, is_report, is_report_rule, is_rule};
 use super::{Result, Server};
 
+/// Indicador de progresso da análise da pasta no editor, pelo `window/workDoneProgress/create` e
+/// pelo `$/progress`. A porcentagem só é mandada quando muda, então são no máximo cem avisos.
+struct Progress<'a> {
+    out: super::output::Output<'a>,
+    token: lsp_types::NumberOrString,
+    total: usize,
+    done: usize,
+    shown: usize,
+}
+
+impl<'a> Progress<'a> {
+    /// Começa o indicador, quando o editor aceita (`enabled`) e há arquivo para ler.
+    fn begin(
+        out: super::output::Output<'a>,
+        enabled: bool,
+        total: usize,
+    ) -> Result<Option<Progress<'a>>> {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static RUNS: AtomicU32 = AtomicU32::new(0);
+        if !enabled || total == 0 {
+            return Ok(None);
+        }
+        let run = RUNS.fetch_add(1, Ordering::Relaxed);
+        let name = format!("senior-lsp/analisar-pasta/{run}");
+        let token = lsp_types::NumberOrString::String(name.clone());
+        let id = lsp_server::RequestId::from(name);
+        out.request(
+            id,
+            "window/workDoneProgress/create",
+            &lsp_types::WorkDoneProgressCreateParams {
+                token: token.clone(),
+            },
+        )?;
+        let progress = Progress {
+            out,
+            token,
+            total,
+            done: 0,
+            shown: 0,
+        };
+        progress.send(lsp_types::WorkDoneProgress::Begin(
+            lsp_types::WorkDoneProgressBegin {
+                title: "Analisando as regras da pasta".to_owned(),
+                cancellable: Some(false),
+                message: Some(format!("0 de {total}")),
+                percentage: Some(0),
+            },
+        ))?;
+        Ok(Some(progress))
+    }
+
+    fn step(&mut self, files: usize) -> Result<()> {
+        self.done = (self.done + files).min(self.total);
+        let percentage = self.done * 100 / self.total;
+        if percentage == self.shown {
+            return Ok(());
+        }
+        self.shown = percentage;
+        self.send(lsp_types::WorkDoneProgress::Report(
+            lsp_types::WorkDoneProgressReport {
+                cancellable: Some(false),
+                message: Some(format!("{} de {}", self.done, self.total)),
+                percentage: Some(percentage as u32),
+            },
+        ))
+    }
+
+    fn end(self) -> Result<()> {
+        self.send(lsp_types::WorkDoneProgress::End(
+            lsp_types::WorkDoneProgressEnd {
+                message: Some(format!("{} arquivos analisados", self.total)),
+            },
+        ))
+    }
+
+    fn send(&self, value: lsp_types::WorkDoneProgress) -> Result<()> {
+        let params = lsp_types::ProgressParams {
+            token: self.token.clone(),
+            value: lsp_types::ProgressParamsValue::WorkDone(value),
+        };
+        self.out.notify("$/progress", &params)
+    }
+}
+
 /// Pastas que nunca têm regra e só custam tempo.
 const SKIPPED: [&str; 4] = [".git", "node_modules", "target", ".vscode"];
 
@@ -26,6 +110,7 @@ impl Server<'_> {
         for folder in &self.folders {
             collect(folder, &mut files);
         }
+        let mut progress = Progress::begin(self.out, self.progress, files.len())?;
         // Os JSON de um modelo dependem uns dos outros. Montar o modelo uma vez por pasta evita
         // reler a pasta inteira para cada JSON, que num repositório com milhares de modelos
         // levava dezenas de segundos.
@@ -47,9 +132,18 @@ impl Server<'_> {
             } else if is_rule(&uri) {
                 self.analyze_rule(&path, &uri, false)?;
             }
+            if let Some(p) = &mut progress {
+                p.step(1)?;
+            }
         }
         for paths in models.values() {
             self.analyze_model(paths)?;
+            if let Some(p) = &mut progress {
+                p.step(paths.len())?;
+            }
+        }
+        if let Some(p) = progress {
+            p.end()?;
         }
         // As regras foram lidas e analisadas, e as definições delas já estão no índice.
         self.index.set_loaded();

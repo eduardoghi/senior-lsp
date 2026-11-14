@@ -27,7 +27,10 @@ O servidor oferece:
   acrescenta a toda porta (`Usuario`, `Senha`, `Token`, `ModoExecucao` e `ErroExecucao`). Depois de
   `ws.conjunto.` ou `ws.conjunto[i].` vêm as colunas do conjunto e `QtdLinhas`, `LinhaAtual`,
   `CriarLinha` e `ExcluirLinha`
-- destacar as outras ocorrências do nome que está no cursor
+- destacar as outras ocorrências do nome que está no cursor e as palavras que andam juntas. No
+  `enquanto`, no `para`, num `Pare` ou num `Continue` acendem o laço e os `Pare` e `Continue` dele,
+  sem os de um laço de dentro. No `se` ou no `senao` acendem os dois, e na abertura ou no
+  fechamento de um bloco, o par
 - contagem de referências em cima de cada `funcao`, que abre a lista das chamadas no VS Code. Nos
   outros editores, o clique chama o comando `senior-lsp.mostrarReferencias`, que o editor precisa
   tratar
@@ -162,7 +165,8 @@ do modelo.
 
 Com a opção `analisar_pasta` ligada, o servidor procura ao iniciar todas as regras das pastas do
 workspace, os `Rule.txt` e os JSON de `Modelos`, e publica os diagnósticos de todas, sem precisar
-abrir cada arquivo. Só vão os arquivos com algum diagnóstico. Quando o editor avisa que um arquivo
+abrir cada arquivo. Só vão os arquivos com algum diagnóstico. No editor que mostra progresso
+(`window.workDoneProgress`), como o VS Code, a análise aparece com a contagem de arquivos. Quando o editor avisa que um arquivo
 mudou no disco (`workspace/didChangeWatchedFiles`), ele é analisado de novo, e um arquivo fechado
 volta a mostrar os diagnósticos do disco. Numa exportação com cerca de 1.400 regras e 24 mil
 JSON de modelo, a primeira análise leva alguns segundos, quase tudo nos modelos.
@@ -396,6 +400,7 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN088 | aviso | o que o Senior SQL 2 recusa (SEN080 a SEN083) no SELECT de um `SQL_DefinirComando`, que compila e para na execução. O objeto usa o Senior SQL 2 até receber `SQL_UsarSQLSenior2(x, 0)`, também na regra que não usa a opção |
 | SEN089 | erro | `Pare` ou `Continue` fora de um `para` ou `enquanto` |
 | SEN090 | aviso | `Continue` num `para`, que volta sem rodar o incremento, e o laço não termina se nada mais muda o contador |
+| SEN091 | dica | parâmetro da `funcao` que o corpo não usa, com a ação "Tirar o parâmetro" |
 
 O SEN068 e o SEN070 saem como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
 conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da

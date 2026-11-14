@@ -136,6 +136,8 @@ pub enum CheckKind {
     LoopClauseOutsideLoop,
     /// `Continue` num `para`, que volta sem rodar o incremento.
     ContinueSkipsStep,
+    /// Parâmetro da `funcao` que o corpo não lê nem escreve.
+    UnusedParameter,
 }
 
 impl CheckKind {
@@ -317,6 +319,7 @@ pub fn validate(
     }
     native_sql.finish(text, inherited, &mut checks);
     loop_clauses(tree, text, &mut checks);
+    unused_parameters(tree, symbols, text, &mut checks);
     if let Some(uses) = column_uses {
         uses.finish(text, &inherited.dictionaries, &mut checks);
     }
@@ -342,6 +345,48 @@ pub fn validate(
 /// Definições sem nenhum uso. Um nome citado dentro de um texto conta como usado, porque o SQL de
 /// um cursor ou do `ExecSql` lê a variável como `:nome`, e há regras que passam o nome da
 /// variável num texto para uma função preencher.
+/// Parâmetros da `funcao` que o corpo não usa. Vale em todo tipo de regra, porque o parâmetro só
+/// existe dentro da função. O nome citado num texto conta como usado, como no [`unused`], porque o
+/// SQL lê o parâmetro como `:nome`. Os da declaração não contam, porque o corpo é o da `funcao`.
+fn unused_parameters(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
+    let mut used = vec![false; symbols.definitions.len()];
+    for target in symbols.references.iter().flat_map(|r| &r.targets) {
+        used[*target] = true;
+    }
+    let in_impl = |def: &crate::symbols::Definition| {
+        tree.parent(def.node)
+            .and_then(|list| tree.parent(list))
+            .is_some_and(|header| tree.kind(header) == FuncImpl)
+    };
+    let unused: Vec<usize> = symbols
+        .definitions
+        .iter()
+        .enumerate()
+        .filter(|(i, d)| matches!(d.kind, DefKind::Parameter(_)) && !used[*i] && in_impl(d))
+        .map(|(i, _)| i)
+        .collect();
+    if unused.is_empty() {
+        return;
+    }
+    let wanted = unused
+        .iter()
+        .map(|&i| text[symbols.definitions[i].name].to_ascii_uppercase())
+        .collect();
+    let in_strings = names_in_strings(tree, text, &wanted);
+    for i in unused {
+        let def = &symbols.definitions[i];
+        let name = &text[def.name];
+        if !in_strings.contains(&name.to_ascii_uppercase()) {
+            checks.push(Check {
+                kind: CheckKind::UnusedParameter,
+                range: def.name,
+                name: None,
+                label: Some(name.to_owned()),
+            });
+        }
+    }
+}
+
 fn unused(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
     let mut used = vec![false; symbols.definitions.len()];
     for target in symbols.references.iter().flat_map(|r| &r.targets) {
@@ -987,12 +1032,13 @@ mod tests {
             &Inherited::default(),
         )
         .into_iter()
-        // A função de exemplo de muitos testes não é chamada, e os cursores de exemplo não têm
-        // os campos lidos. Os testes da dica de função sem uso usam `checks_all`.
+        // A função de exemplo de muitos testes não é chamada nem usa os parâmetros, e os cursores
+        // de exemplo não têm os campos lidos. Os testes dessas dicas usam `checks_all`.
         .filter(|c| {
             !matches!(
                 c.kind,
                 CheckKind::UnusedFunction
+                    | CheckKind::UnusedParameter
                     | CheckKind::CursorColumnUnused
                     | CheckKind::CursorStarUnused
             )
@@ -1013,6 +1059,20 @@ mod tests {
         .into_iter()
         .map(|c| (c.kind, &text[c.range]))
         .collect()
+    }
+
+    #[test]
+    fn parametro_sem_uso() {
+        let text = "Definir Funcao F(Numero pA, Numero pB, Alfa pC, Alfa End pD);\n\
+                    definir cursor c;\nF(1, 2, \"x\", aX);\n\
+                    funcao F(Numero pA, Numero pB, Alfa pC, Alfa End pD); {\n\
+                    pA = 1;\n  c.SQL \"SELECT A FROM T WHERE B = :pC\";\n}";
+        // O pA é escrito e o pC é lido pelo SQL. Na declaração não há aviso.
+        let found: Vec<_> = checks_all(text)
+            .into_iter()
+            .filter(|(k, _)| *k == UnusedParameter)
+            .collect();
+        assert_eq!(found, [(UnusedParameter, "pB"), (UnusedParameter, "pD")]);
     }
 
     #[test]

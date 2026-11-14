@@ -67,8 +67,11 @@ pub(crate) fn diagnostics(
                 source: Some("senior-lsp".to_owned()),
                 message: f.message,
                 // O editor esmaece o nome sem uso, o código que não executa e a diretiva sem efeito.
-                tags: matches!(f.code, "SEN068" | "SEN070" | "SEN071" | "SEN073" | "SEN076")
-                    .then(|| vec![lsp_types::DiagnosticTag::UNNECESSARY]),
+                tags: matches!(
+                    f.code,
+                    "SEN068" | "SEN070" | "SEN071" | "SEN073" | "SEN076" | "SEN091"
+                )
+                .then(|| vec![lsp_types::DiagnosticTag::UNNECESSARY]),
                 ..Diagnostic::default()
             })
         })
@@ -102,6 +105,7 @@ fn found(doc: &Document, levels: &Levels) -> Vec<Found> {
             c.kind,
             CheckKind::Unused
                 | CheckKind::UnusedFunction
+                | CheckKind::UnusedParameter
                 | CheckKind::CursorColumnUnused
                 | CheckKind::CursorStarUnused
         ) {
@@ -569,6 +573,10 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                 "O Continue volta ao começo do para sem rodar o incremento ({name}). Se nada mais \
                  mudar o contador, o laço não termina."
             ),
+        ),
+        CheckKind::UnusedParameter => (
+            "SEN091",
+            format!("O parâmetro {name} não é usado no corpo da função."),
         ),
         CheckKind::CursorColumnUnused => (
             "SEN076",

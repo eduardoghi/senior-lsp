@@ -185,6 +185,7 @@ fn serve(connection: &Connection, out: Output) -> Result<()> {
         analyze_folders,
         ask_parameters,
         snippets: params.snippets,
+        progress: params.progress,
         index: Default::default(),
         configs: Default::default(),
         published: Default::default(),
@@ -231,6 +232,8 @@ struct ClientInit<'a> {
     utf8: bool,
     /// O editor aceita itens de completar com marcadores de snippet.
     snippets: bool,
+    /// O editor mostra o progresso que o servidor manda pelo `$/progress`.
+    progress: bool,
 }
 
 impl<'a> ClientInit<'a> {
@@ -254,6 +257,10 @@ impl<'a> ClientInit<'a> {
             .pointer("/capabilities/textDocument/completion/completionItem/snippetSupport")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
+        let progress = params
+            .pointer("/capabilities/window/workDoneProgress")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         ClientInit {
             options: Options(params.get("initializationOptions")),
             folders: uris
@@ -262,6 +269,7 @@ impl<'a> ClientInit<'a> {
                 .collect(),
             utf8,
             snippets,
+            progress,
         }
     }
 }
@@ -408,6 +416,8 @@ struct Server<'a> {
     ask_parameters: bool,
     /// O editor aceita snippets, e o completar oferece os modelos de comando.
     snippets: bool,
+    /// O editor mostra o progresso da análise da pasta.
+    progress: bool,
     /// Definições das regras das pastas, para a busca de símbolos do workspace.
     index: workspace_symbols::SymbolIndex,
     /// Tipo escolhido pelo editor para arquivos soltos. Fica depois de fechar o documento, para
