@@ -340,6 +340,25 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                  nativo\"."
             ),
         ),
+        CheckKind::NativeUnknownTable => (
+            "SEN086",
+            format!(
+                "A tabela {name} não está no dicionário de dados. O SQL nativo vai para o banco \
+                 como está, e a execução para se a tabela também não existir lá, como uma criada \
+                 direto no banco."
+            ),
+        ),
+        CheckKind::NativeUnknownField => {
+            let (table, field) = name.split_once('.').unwrap_or(("", name));
+            (
+                "SEN087",
+                format!(
+                    "O campo {field} não existe na tabela {table} no dicionário de dados. O SQL \
+                     nativo vai para o banco como está, e a execução para se o campo também não \
+                     existir lá."
+                ),
+            )
+        }
         CheckKind::CursorFieldNotInSelect => (
             "SEN055",
             format!(

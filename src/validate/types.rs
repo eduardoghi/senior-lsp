@@ -579,6 +579,26 @@ mod tests {
     }
 
     #[test]
+    fn sql_nativo_do_sql_definircomando_contra_o_dicionario() {
+        let regra = |nativo: &str| {
+            format!(
+                "definir alfa aQ;\nSQL_Criar(aQ);\nSQL_UsarAbrangencia(aQ, 0);\n{nativo}\
+                 SQL_DefinirComando(aQ, \"SELECT E.NomEmpp FROM E070EMP E, E999XXX\");"
+            )
+        };
+        let nativo = regra("SQL_UsarSQLSenior2(aQ, 0);\n");
+        assert_eq!(
+            checks_com_dicionario(&nativo),
+            [
+                (NativeUnknownField, "E.NomEmpp"),
+                (NativeUnknownTable, "E999XXX")
+            ]
+        );
+        // Com o Senior SQL 2 o comando passa por outro leitor, que esta conferência não cobre.
+        assert!(checks_com_dicionario(&regra("")).is_empty());
+    }
+
+    #[test]
     fn campo_de_cursor_pelo_sql_e_pelo_dicionario() {
         let cursor = |sql: &str, uso: &str| {
             format!(

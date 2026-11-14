@@ -5,7 +5,8 @@
 //! variável. O `SQL_UsarSQLSenior2`, que liga o SQL nativo, e o `SQL_Retornar*` de coluna que não
 //! está no SELECT só falham na execução. A tabela e o campo de cada coluna do cursor, que o
 //! gerador procura no dicionário de dados, seguem a leitura descrita no [`compiler_columns`].
-//! Todos os casos foram conferidos no ERP.
+//! Todos os casos foram conferidos no ERP. O SQL nativo de um `SQL_DefinirComando` vai para o
+//! banco como está, e o que o dicionário não tem nele é avisado pelo [`Native`].
 //!
 //! As colunas de um cursor ou de um objeto de SQL juntam todos os SQL literais que ele recebe no
 //! arquivo, sem olhar a ordem, então um nome só é cobrado quando não está em nenhum. Um SQL que não
@@ -13,13 +14,15 @@
 //! objeto sem conferência.
 
 use std::cell::RefCell;
+use std::ops::ControlFlow;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use sqlparser::ast::{
     AssignmentTarget, Delete, Expr, FromTable as DeleteFrom, FunctionArg, FunctionArgExpr,
     FunctionArguments, Ident, Insert, ObjectName, OrderByKind, Query, Select, SelectItem, SetExpr,
-    Statement, TableFactor, TableObject, TableWithJoins, UnaryOperator, Update,
+    Statement, TableAlias, TableFactor, TableObject, TableWithJoins, UnaryOperator, Update, Visit,
+    Visitor,
 };
 use sqlparser::dialect::OracleDialect;
 use sqlparser::parser::Parser;
@@ -127,6 +130,9 @@ pub(super) struct Analysis {
     /// O que ele recusa nas colunas de um SELECT, que só vale no `ExecSql`. No cursor as colunas
     /// já são conferidas pela leitura do compilador.
     pub(super) sql2_select: Vec<Unknown>,
+    /// A tabela e o campo com a tabela na frente que o dicionário não tem, que no SQL nativo só
+    /// falham na execução.
+    pub(super) native: Vec<Unknown>,
 }
 
 /// Campos que o SELECT dá ao cursor, como o compilador os monta.
@@ -259,6 +265,10 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
         Some(statements) => Sql2::check(&sql, statements, dictionaries),
         None => Default::default(),
     };
+    let mut native = match statements.as_deref() {
+        Some(statements) => Native::check(&sql, statements, dictionaries),
+        None => Vec::new(),
+    };
     // As posições saem no SQL montado e vão para o literal, que pode ter escape e emenda.
     let offsets = value_offsets(literal);
     let in_literal = |range: &mut std::ops::Range<usize>| {
@@ -294,6 +304,7 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
     sql2_select
         .iter_mut()
         .for_each(|u| in_literal(&mut u.range));
+    native.iter_mut().for_each(|u| in_literal(&mut u.range));
     let analysis = Rc::new(Analysis {
         constants: statements.as_deref().map(constants_of).unwrap_or_default(),
         columns: statements.and_then(|s| select_columns(&s, dictionaries)),
@@ -302,6 +313,7 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
         params,
         sql2,
         sql2_select,
+        native,
     });
     CACHE.with(|cache| {
         cache
@@ -902,30 +914,8 @@ impl<'a> Sql2<'a> {
         rowset(&dictionaries.production, table).or_else(|| rowset(&dictionaries.test, table))
     }
 
-    /// Posição de um nome no texto do SQL, pela linha e coluna que o `sqlparser` guarda.
     fn range(&self, first: &Ident, last: &Ident) -> std::ops::Range<usize> {
-        let offset = |ident: &Ident| {
-            let location = ident.span.start;
-            let mut lines = self.sql.split_inclusive('\n');
-            let before: usize = lines
-                .by_ref()
-                .take((location.line as usize).checked_sub(1)?)
-                .map(str::len)
-                .sum();
-            let line = lines.next()?;
-            let column = (location.column as usize).checked_sub(1)?;
-            let start = before + line.char_indices().nth(column)?.0;
-            let quotes = if ident.quote_style.is_some() { 2 } else { 0 };
-            let end = start + ident.value.len() + quotes;
-            // O trecho tem que ser o nome, senão a posição não é confiável.
-            let text = self.sql.get(start + quotes / 2..end - quotes / 2)?;
-            text.eq_ignore_ascii_case(&ident.value)
-                .then_some(start..end)
-        };
-        match (offset(first), offset(last)) {
-            (Some(first), Some(last)) if first.start <= last.end => first.start..last.end,
-            _ => 0..self.sql.len(),
-        }
+        ident_range(self.sql, first, last)
     }
 
     fn push(&mut self, kind: CheckKind, range: std::ops::Range<usize>, label: String) {
@@ -1219,6 +1209,267 @@ impl<'a> Sql2<'a> {
                 self.push(CheckKind::Sql2OrderBy, range, label);
             }
         }
+    }
+}
+
+/// Prefixos das visões do catálogo do Oracle, que o dicionário de dados não tem.
+const CATALOG_PREFIXES: [&str; 5] = ["ALL_", "USER_", "DBA_", "V$", "GV$"];
+
+/// Pseudocolunas do Oracle, que valem depois de qualquer tabela.
+const PSEUDO_COLUMNS: [&str; 3] = ["ROWID", "ROWNUM", "ORA_ROWSCN"];
+
+/// O que o banco recusaria no SQL nativo, que vai para o Oracle como está escrito e só falha na
+/// execução. Fica no que o dicionário de dados responde com certeza: a tabela pelo nome, fora as
+/// do catálogo do Oracle, a `DUAL` e os nomes do `WITH`, e o campo escrito com a tabela ou o
+/// apelido na frente. O campo sem a tabela na frente não é conferido, porque pode ser apelido de
+/// coluna, variável de PL/SQL ou pseudocoluna.
+struct Native<'a> {
+    sql: &'a str,
+    dictionaries: &'a Dictionaries,
+    /// As tabelas de cada consulta aberta, da de fora para a de dentro.
+    scopes: Vec<Vec<FromTable<'a>>>,
+    /// Se cada comando aberto acrescentou as tabelas dele em `scopes`.
+    statements: Vec<bool>,
+    /// Os nomes do `WITH`, que o FROM usa como tabela.
+    ctes: FxHashSet<String>,
+    found: Vec<Unknown>,
+}
+
+impl<'a> Native<'a> {
+    fn check(
+        sql: &'a str,
+        statements: &[Statement],
+        dictionaries: &'a Dictionaries,
+    ) -> Vec<Unknown> {
+        if dictionaries.is_empty() {
+            return Vec::new();
+        }
+        let mut native = Native {
+            sql,
+            dictionaries,
+            scopes: Vec::new(),
+            statements: Vec::new(),
+            ctes: FxHashSet::default(),
+            found: Vec::new(),
+        };
+        for statement in statements {
+            let _ = statement.visit(&mut native);
+        }
+        native.found
+    }
+
+    fn rowset(&self, table: &str) -> Option<&'a [Field]> {
+        let dictionaries = self.dictionaries;
+        rowset(&dictionaries.production, table).or_else(|| rowset(&dictionaries.test, table))
+    }
+
+    /// Tabelas de um FROM, com as das junções. A tabela que o dicionário não tem, a subconsulta e
+    /// o que não é tabela pelo nome entram sem campos, e o campo escrito com elas na frente não é
+    /// conferido.
+    fn scope(&self, from: &[TableWithJoins]) -> Vec<FromTable<'a>> {
+        let mut tables = Vec::new();
+        for TableWithJoins { relation, joins } in from {
+            self.factor(relation, &mut tables);
+            for join in joins {
+                self.factor(&join.relation, &mut tables);
+            }
+        }
+        tables
+    }
+
+    fn factor(&self, factor: &TableFactor, tables: &mut Vec<FromTable<'a>>) {
+        let upper =
+            |alias: &Option<TableAlias>| alias.as_ref().map(|a| a.name.value.to_uppercase());
+        match factor {
+            TableFactor::Table { name, alias, .. } => {
+                let table = Sql2::single(name)
+                    .filter(|ident| ident.quote_style.is_none())
+                    .map(|ident| ident.value.to_uppercase());
+                let fields = table
+                    .as_deref()
+                    .filter(|t| !self.ctes.contains(*t))
+                    .and_then(|t| self.rowset(t));
+                tables.push(FromTable {
+                    name: table.unwrap_or_default(),
+                    alias: upper(alias),
+                    fields,
+                });
+            }
+            TableFactor::Derived { alias, .. } => tables.push(FromTable {
+                name: String::new(),
+                alias: upper(alias),
+                fields: None,
+            }),
+            TableFactor::NestedJoin {
+                table_with_joins, ..
+            } => tables.extend(self.scope(std::slice::from_ref(table_with_joins))),
+            _ => {}
+        }
+    }
+
+    /// Acusa a tabela pelo nome que o dicionário não tem.
+    fn table(&mut self, name: &ObjectName) {
+        let Some(ident) = Sql2::single(name).filter(|i| i.quote_style.is_none()) else {
+            return;
+        };
+        let table = ident.value.to_uppercase();
+        let known = table == "DUAL"
+            || CATALOG_PREFIXES.iter().any(|p| table.starts_with(p))
+            || self.ctes.contains(&table)
+            || self.rowset(&table).is_some();
+        if !known {
+            self.found.push(Unknown {
+                kind: CheckKind::NativeUnknownTable,
+                range: ident_range(self.sql, ident, ident),
+                label: Some(table),
+            });
+        }
+    }
+}
+
+impl Visitor for Native<'_> {
+    type Break = ();
+
+    fn pre_visit_statement(&mut self, statement: &Statement) -> ControlFlow<()> {
+        let tables = match statement {
+            Statement::Update(update) => Some(self.scope(std::slice::from_ref(&update.table))),
+            Statement::Delete(delete) => {
+                let (DeleteFrom::WithFromKeyword(from) | DeleteFrom::WithoutKeyword(from)) =
+                    &delete.from;
+                Some(self.scope(from))
+            }
+            Statement::Insert(Insert {
+                table: TableObject::TableName(name),
+                ..
+            }) => {
+                self.table(name);
+                let table = Sql2::single(name)
+                    .filter(|ident| ident.quote_style.is_none())
+                    .map(|ident| ident.value.to_uppercase());
+                let fields = table.as_deref().and_then(|t| self.rowset(t));
+                Some(vec![FromTable {
+                    name: table.unwrap_or_default(),
+                    alias: None,
+                    fields,
+                }])
+            }
+            _ => None,
+        };
+        self.statements.push(tables.is_some());
+        if let Some(tables) = tables {
+            self.scopes.push(tables);
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn post_visit_statement(&mut self, _: &Statement) -> ControlFlow<()> {
+        if self.statements.pop() == Some(true) {
+            self.scopes.pop();
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<()> {
+        if let Some(with) = &query.with {
+            self.ctes.extend(
+                with.cte_tables
+                    .iter()
+                    .map(|c| c.alias.name.value.to_uppercase()),
+            );
+        }
+        // As tabelas valem também no ORDER BY, que o visitor percorre depois do SELECT.
+        let tables = match query.body.as_ref() {
+            SetExpr::Select(select) => self.scope(&select.from),
+            _ => Vec::new(),
+        };
+        self.scopes.push(tables);
+        ControlFlow::Continue(())
+    }
+
+    fn post_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+        self.scopes.pop();
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_select(&mut self, select: &Select) -> ControlFlow<()> {
+        let tables = self.scope(&select.from);
+        self.scopes.push(tables);
+        ControlFlow::Continue(())
+    }
+
+    fn post_visit_select(&mut self, _: &Select) -> ControlFlow<()> {
+        self.scopes.pop();
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_table_factor(&mut self, factor: &TableFactor) -> ControlFlow<()> {
+        if let TableFactor::Table {
+            name, args: None, ..
+        } = factor
+        {
+            self.table(name);
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
+        let Expr::CompoundIdentifier(parts) = expr else {
+            return ControlFlow::Continue(());
+        };
+        let [table, field] = parts.as_slice() else {
+            return ControlFlow::Continue(());
+        };
+        if table.quote_style.is_some() || field.quote_style.is_some() {
+            return ControlFlow::Continue(());
+        }
+        let (qualifier, name) = (table.value.to_uppercase(), field.value.to_uppercase());
+        let owner = self.scopes.iter().rev().flatten().find(|t| match &t.alias {
+            Some(alias) => *alias == qualifier,
+            None => t.name == qualifier,
+        });
+        if let Some(FromTable {
+            name: owner,
+            fields: Some(fields),
+            ..
+        }) = owner
+            && !PSEUDO_COLUMNS.contains(&name.as_str())
+            && !fields.iter().any(|f| f.name.eq_ignore_ascii_case(&name))
+        {
+            let label = format!("{owner}.{name}");
+            self.found.push(Unknown {
+                kind: CheckKind::NativeUnknownField,
+                range: ident_range(self.sql, table, field),
+                label: Some(label),
+            });
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+/// Posição de `first` a `last` no texto do SQL, pela linha e coluna que o `sqlparser` guarda.
+/// Quando a posição não confere com o nome, o trecho é o SQL inteiro.
+fn ident_range(sql: &str, first: &Ident, last: &Ident) -> std::ops::Range<usize> {
+    let offset = |ident: &Ident| {
+        let location = ident.span.start;
+        let mut lines = sql.split_inclusive('\n');
+        let before: usize = lines
+            .by_ref()
+            .take((location.line as usize).checked_sub(1)?)
+            .map(str::len)
+            .sum();
+        let line = lines.next()?;
+        let column = (location.column as usize).checked_sub(1)?;
+        let start = before + line.char_indices().nth(column)?.0;
+        let quotes = if ident.quote_style.is_some() { 2 } else { 0 };
+        let end = start + ident.value.len() + quotes;
+        // O trecho tem que ser o nome, senão a posição não é confiável.
+        let text = sql.get(start + quotes / 2..end - quotes / 2)?;
+        text.eq_ignore_ascii_case(&ident.value)
+            .then_some(start..end)
+    };
+    match (offset(first), offset(last)) {
+        (Some(first), Some(last)) if first.start <= last.end => first.start..last.end,
+        _ => 0..sql.len(),
     }
 }
 
@@ -1970,49 +2221,67 @@ pub(super) fn exec_sql(
     }
 }
 
-/// Objetos de SQL com `SQL_UsarSQLSenior2(x, 0)` e com `SQL_UsarAbrangencia(x, 0)`, para avisar
-/// no fim os que ligam o SQL nativo sem desligar a abrangência. Os nomes não diferenciam caixa,
-/// e a ordem das chamadas no arquivo não importa.
+/// Objetos de SQL com `SQL_UsarSQLSenior2(x, 0)`, com `SQL_UsarAbrangencia(x, 0)` e o SQL literal
+/// de cada `SQL_DefinirComando`, para avisar no fim os objetos que ligam o SQL nativo sem desligar
+/// a abrangência e o que o banco recusaria no SQL nativo deles. Os nomes não diferenciam caixa, e
+/// a ordem das chamadas no arquivo não importa.
 #[derive(Default)]
 pub(super) struct NativeSql {
     native: Vec<(String, text_size::TextRange)>,
     without_scope: FxHashSet<String>,
+    commands: Vec<(String, text_size::TextRange)>,
 }
 
 impl NativeSql {
     pub(super) fn visit(&mut self, tree: &Tree, text: &str, node: NodeId) {
-        let Some(call) = tree
-            .children(node)
-            .next()
-            .filter(|&c| tree.kind(c) == SyntaxKind::CallExpr)
-        else {
+        let Some((callee, args)) = call(tree, text, node) else {
             return;
         };
-        let mut parts = tree.children(call);
-        let (Some(callee), Some(args)) = (parts.next(), parts.next()) else {
+        let (Some(&object), Some(&value)) = (args.first(), args.get(1)) else {
             return;
         };
-        let mut args = tree.children(args);
-        let (Some(object), Some(value)) = (args.next(), args.next()) else {
-            return;
-        };
-        if tree.kind(object) != SyntaxKind::NameRef || tree.kind(value) != SyntaxKind::Literal {
+        if tree.kind(object) != SyntaxKind::NameRef {
             return;
         }
-        if text[tree.text_range(value)].trim() != "0" {
+        let object_name = || text[tree.text_range(object)].to_ascii_uppercase();
+        if callee.eq_ignore_ascii_case("SQL_DefinirComando") {
+            if let Some(literal) = string_literal(tree, value) {
+                self.commands.push((object_name(), literal));
+            }
             return;
         }
-        let callee_range = tree.text_range(callee);
-        let object = text[tree.text_range(object)].to_ascii_uppercase();
-        let name = &text[callee_range];
-        if name.eq_ignore_ascii_case("SQL_UsarSQLSenior2") {
-            self.native.push((object, callee_range));
-        } else if name.eq_ignore_ascii_case("SQL_UsarAbrangencia") {
-            self.without_scope.insert(object);
+        if tree.kind(value) != SyntaxKind::Literal || text[tree.text_range(value)].trim() != "0" {
+            return;
+        }
+        if callee.eq_ignore_ascii_case("SQL_UsarSQLSenior2") {
+            let callee_range = tree
+                .children(node)
+                .next()
+                .and_then(|call| tree.children(call).next())
+                .map(|callee| tree.text_range(callee));
+            if let Some(range) = callee_range {
+                self.native.push((object_name(), range));
+            }
+        } else if callee.eq_ignore_ascii_case("SQL_UsarAbrangencia") {
+            self.without_scope.insert(object_name());
         }
     }
 
-    pub(super) fn finish(self, checks: &mut Vec<Check>) {
+    pub(super) fn finish(self, text: &str, dictionaries: &Dictionaries, checks: &mut Vec<Check>) {
+        let native: FxHashSet<&str> = self.native.iter().map(|(o, _)| o.as_str()).collect();
+        for (object, literal) in &self.commands {
+            if !native.contains(object.as_str()) {
+                continue;
+            }
+            let analysis = analysis(&text[*literal], dictionaries);
+            let at = |offset: usize| literal.start() + text_size::TextSize::new(offset as u32);
+            checks.extend(analysis.native.iter().map(|unknown| Check {
+                kind: unknown.kind,
+                range: text_size::TextRange::new(at(unknown.range.start), at(unknown.range.end)),
+                name: None,
+                label: unknown.label.clone(),
+            }));
+        }
         for (object, range) in self.native {
             if !self.without_scope.contains(&object) {
                 checks.push(Check {
@@ -2234,6 +2503,86 @@ mod tests {
             .as_deref(),
             Some("V.1")
         );
+    }
+
+    #[test]
+    fn o_que_o_banco_recusa_no_sql_nativo() {
+        use crate::tbs::{Dictionary, Table};
+        let table = |name: &str, fields: &[&str]| Table {
+            name: name.to_owned(),
+            fields: fields
+                .iter()
+                .map(|f| Field {
+                    name: (*f).to_owned(),
+                    ..Field::default()
+                })
+                .collect(),
+            ..Table::default()
+        };
+        let dictionaries = Dictionaries {
+            production: Some(Arc::new(Dictionary {
+                tables: vec![table("T", &["A", "B"]), table("U", &["A", "C"])],
+                ..Dictionary::default()
+            })),
+            test: None,
+        };
+        let found = |sql: &str, dictionaries: &Dictionaries| -> Vec<(CheckKind, String, String)> {
+            let statements = Parser::parse_sql(&OracleDialect {}, sql).unwrap();
+            Native::check(sql, &statements, dictionaries)
+                .into_iter()
+                .map(|u| (u.kind, sql[u.range].to_owned(), u.label.unwrap_or_default()))
+                .collect()
+        };
+        let check = |sql: &str| found(sql, &dictionaries);
+        let table_ = |text: &str| vec![(NativeUnknownTable, text.to_owned(), text.to_uppercase())];
+        let field =
+            |text: &str, label: &str| vec![(NativeUnknownField, text.to_owned(), label.to_owned())];
+        use CheckKind::*;
+
+        assert_eq!(check("SELECT x.A FROM x"), table_("x"));
+        assert_eq!(check("DELETE FROM X WHERE A = 1"), table_("X"));
+        assert_eq!(check("UPDATE X SET A = 1"), table_("X"));
+        assert_eq!(check("INSERT INTO X (A) VALUES (SEQ.NEXTVAL)"), table_("X"));
+        // O catálogo do Oracle, a DUAL, o nome do WITH e a tabela de outro esquema não são
+        // conferidos.
+        assert!(
+            check(
+                "WITH W AS (SELECT A FROM T) SELECT W.Z FROM W, DUAL, ALL_TABLES, user_tab_columns, \
+                 V$SESSION, OUTRO.X"
+            )
+            .is_empty()
+        );
+
+        assert_eq!(check("SELECT T.Z, T.ROWID FROM T"), field("T.Z", "T.Z"));
+        assert_eq!(
+            check("SELECT 1 FROM T a LEFT JOIN U b ON b.Z = a.A"),
+            field("b.Z", "U.Z")
+        );
+        assert_eq!(check("SELECT T.A FROM T ORDER BY T.Z"), field("T.Z", "T.Z"));
+        assert_eq!(
+            check("SELECT A FROM T WHERE EXISTS (SELECT 1 FROM U WHERE U.A = T.Z)"),
+            field("T.Z", "T.Z")
+        );
+        assert_eq!(
+            check("SELECT T.A FROM T UNION SELECT U.Z FROM U"),
+            field("U.Z", "U.Z")
+        );
+        assert_eq!(
+            check("UPDATE T SET A = 1 WHERE T.Z = 1"),
+            field("T.Z", "T.Z")
+        );
+        assert_eq!(
+            check("INSERT INTO T (A) SELECT U.Z FROM U"),
+            field("U.Z", "U.Z")
+        );
+        // O campo sem a tabela na frente, o da subconsulta do FROM e a tabela com apelido escrita
+        // pelo nome não são conferidos.
+        assert!(check("SELECT Z FROM T WHERE Y = 1").is_empty());
+        assert!(check("SELECT D.Z FROM (SELECT A FROM T) D").is_empty());
+        assert!(check("SELECT T.Z FROM T a").is_empty());
+
+        // Sem dicionário nada é conferido.
+        assert!(found("SELECT X.Z FROM X", &Dictionaries::default()).is_empty());
     }
 
     #[test]
