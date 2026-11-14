@@ -1197,6 +1197,190 @@ mod tests {
         (w.0, end)
     }
 
+    /// Tabelas do dicionário fictício que os testes pelo stdio e o teste da extensão usam como
+    /// `.tbs`. Os nomes de tabela e de campo seguem o modelo padrão do ERP. Os campos, os tipos e
+    /// as descrições foram escritos à mão, só com o que os testes precisam.
+    /// Tabela fictícia, com o nome, a descrição, a chave primária e os campos (nome, tipo como o
+    /// arquivo grava e descrição).
+    type TabelaFicticia = (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static [(&'static str, &'static str, &'static str)],
+    );
+
+    const FICTICIO: &[TabelaFicticia] = &[
+        (
+            "E070EMP",
+            "Empresas",
+            "0",
+            &[
+                ("CodEmp", "2,4,0,", "Código da empresa"),
+                ("NomEmp", "1,100,0,", "Nome da empresa"),
+                ("SigEmp", "1,20,0,", "Sigla da empresa"),
+            ],
+        ),
+        (
+            "E070FIL",
+            "Filiais",
+            "0;1",
+            &[
+                ("CodEmp", "2,4,0,", "Código da empresa"),
+                ("CodFil", "2,4,0,", "Código da filial"),
+                ("NomFil", "1,100,0,", "Nome da filial"),
+            ],
+        ),
+        (
+            "E075PRO",
+            "Produtos",
+            "0;1",
+            &[
+                ("CodEmp", "2,4,0,", "Código da empresa"),
+                ("CodPro", "1,14,0,", "Código do produto"),
+                ("DesPro", "1,100,0,", "Descrição do produto"),
+                ("DatCad", "4,8,0,", "Data do cadastro"),
+            ],
+        ),
+        (
+            "E085CLI",
+            "Clientes",
+            "0",
+            &[
+                ("CodCli", "2,9,0,", "Código do cliente"),
+                ("NomCli", "1,100,0,", "Nome do cliente"),
+                ("SigUfs", "1,2,0,", "Sigla do estado"),
+            ],
+        ),
+    ];
+
+    /// Arquivo do dicionário fictício, guardado no repositório para quem não tem como rodar este
+    /// montador, como o teste da extensão.
+    const FICTICIO_ARQUIVO: &str = "tests/fixtures/dicionario-ficticio.tbs";
+
+    /// Monta o dicionário fictício no formato que o leitor entende, na mesma versão da amostra.
+    /// Sem enumerações, relacionamentos, procedimentos, visões, índices nem ligações de busca.
+    fn ficticio() -> Vec<u8> {
+        let mut texts = vec!["BASE"];
+        let mut types = Vec::new();
+        for (name, description, _, fields) in FICTICIO {
+            texts.extend([*name, *description]);
+            for (field, ty, field_description) in *fields {
+                texts.extend([*field, *field_description]);
+                if !types.contains(ty) {
+                    types.push(*ty);
+                }
+            }
+        }
+        texts.dedup();
+        let text = |s: &str| texts.iter().position(|t| *t == s).unwrap() as i32;
+        let ty = |s: &str| types.iter().position(|t| *t == s).unwrap() as i32;
+
+        let mut w = Writer::default();
+        w.str("COMPLETE").int(20_010_302).bool(true);
+        w.begin();
+        for t in &texts {
+            w.str(t);
+        }
+        w.end().begin();
+        for t in &types {
+            w.int(1).str(t);
+        }
+        w.end().str("Sessao").begin();
+        let mut version = Vec::new();
+        for v in [0x2018_0912_i32, 0x2018_0912, 0x2018_0912, 0x2016_1003, 0] {
+            version.extend(v.to_le_bytes());
+        }
+        w.raw(&version)
+            .small(0)
+            .raw(&[0xff; 8])
+            .bool(true)
+            .bool(true);
+        // Enumerações, e depois as tabelas.
+        w.begin().end().begin();
+        for (name, description, primary_key, fields) in FICTICIO {
+            w.int(text(name)).begin();
+            for (field, field_type, field_description) in *fields {
+                w.int(text(field))
+                    .int(ty(field_type))
+                    .bool(false)
+                    .raw(&[0; 8]);
+                w.int(text(field_description))
+                    .small(-1)
+                    .small(-1)
+                    .small(-1)
+                    .small(0);
+                w.raw(&[0, 0])
+                    .small(-1)
+                    .small(-1)
+                    .bool(false)
+                    .str("")
+                    .str("");
+                w.small(-1).str("");
+            }
+            // Sem restrição única nem índice, a chave primária e sem gatilho nem checagem.
+            w.end().begin().end().begin().end().str(primary_key);
+            w.begin().end().bool(false).begin().end().bool(false);
+            w.int(text(description)).small(0).bool(false);
+            for _ in *fields {
+                w.str("");
+            }
+        }
+        w.end();
+        // Relacionamentos, procedimentos e visões vazios.
+        w.begin().end().begin().end().bool(false).begin().end();
+        w.small(0).small(0).bool(false);
+        // Sem tipos especiais, os números do banco completo e a data.
+        w.begin().end();
+        w.small(5).small(10).small(4).str("EXEMPLO");
+        for v in [1, 2, 3, 4, 5] {
+            w.small(v);
+        }
+        w.raw(&[17]).raw(&[0; 8]);
+        // Nenhuma tabela mestre e nenhum campo com ligação de busca.
+        for _ in FICTICIO {
+            w.bool(false);
+        }
+        for (_, _, _, fields) in FICTICIO {
+            for _ in *fields {
+                w.small(-1).bool(false);
+            }
+        }
+        w.end();
+        w.0
+    }
+
+    /// O arquivo guardado tem que ser o que o montador gera. Com `ATUALIZAR_FIXTURES=1` o teste
+    /// grava o arquivo em vez de comparar.
+    #[test]
+    fn dicionario_ficticio_bate_com_o_arquivo() {
+        let bytes = ficticio();
+        let dict = Dictionary::read(&bytes).unwrap();
+        let names: Vec<&str> = dict.tables.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["E070EMP", "E070FIL", "E075PRO", "E085CLI"]);
+        let product = dict.table("e075pro").unwrap();
+        assert_eq!(product.primary_key, [0, 1]);
+        let date = &product.fields[3];
+        assert_eq!(
+            (date.name.as_str(), date.description.as_str()),
+            ("DatCad", "Data do cadastro")
+        );
+        assert_eq!(date.ty.var_type(), Some(VarType::Data));
+        assert_eq!(
+            dict.table("E070EMP").unwrap().fields[1].ty.var_type(),
+            Some(VarType::Alfa)
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(FICTICIO_ARQUIVO);
+        if std::env::var_os("ATUALIZAR_FIXTURES").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+        }
+        let saved = std::fs::read(&path).unwrap_or_default();
+        assert!(
+            saved == bytes,
+            "{FICTICIO_ARQUIVO} está diferente do montador. Rode com ATUALIZAR_FIXTURES=1."
+        );
+    }
+
     #[test]
     fn le_tabelas_campos_e_enumeracoes() {
         let dict = Dictionary::read(&sample()).unwrap();

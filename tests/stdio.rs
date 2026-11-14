@@ -83,12 +83,19 @@ fn conversa_pelo_stdio_e_encerra_limpo() {
     assert!(resto.is_empty(), "saída depois do exit: {resto:?}");
 }
 
-/// Sobe o executável e faz o `initialize`.
-fn start() -> (
+type Running = (
     std::process::Child,
     std::process::ChildStdin,
     BufReader<std::process::ChildStdout>,
-) {
+);
+
+/// Sobe o executável e faz o `initialize`.
+fn start() -> Running {
+    start_with(json!({}))
+}
+
+/// Sobe o executável e faz o `initialize` com as opções de inicialização.
+fn start_with(options: Value) -> Running {
     let mut child = Command::new(env!("CARGO_BIN_EXE_senior-lsp"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -100,7 +107,7 @@ fn start() -> (
     send(
         &mut stdin,
         &json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                "params": {"capabilities": {}}}),
+                "params": {"capabilities": {}, "initializationOptions": options}}),
     );
     assert_eq!(recv(&mut stdout)["id"], 1);
     send(
@@ -232,6 +239,85 @@ fn respostas_erros_e_notificacoes_saem_como_quadros_validos() {
 #[test]
 fn stdin_fechado_encerra_o_servidor() {
     let (mut child, stdin, _stdout) = start();
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+/// Próxima mensagem que atende `wanted`, descartando as outras, como avisos do servidor.
+fn recv_until(stdout: &mut impl BufRead, wanted: impl Fn(&Value) -> bool) -> Value {
+    loop {
+        let message = recv(stdout);
+        if wanted(&message) {
+            return message;
+        }
+    }
+}
+
+fn diagnostic_codes(message: &Value) -> Vec<String> {
+    message["params"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["code"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// O dicionário configurado por caminho, lido do arquivo como no editor, com o dicionário
+/// fictício de `tests/fixtures`.
+#[test]
+fn dicionario_lido_do_arquivo_configurado() {
+    let tbs = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/dicionario-ficticio.tbs"
+    );
+    let (mut child, mut stdin, mut stdout) = start_with(json!({"tbs_producao": tbs}));
+    let uri = "file:///r/Rule.txt";
+    let text = "definir cursor c;\ndefinir numero n;\n\
+                c.SQL \"SELECT CodEmp, NomEmpp FROM E070EMP\";\n\
+                n = c.CodEmp;\n\
+                c.SQL \"SELECT E070FIL. FROM E070FIL\";\n";
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                "params": {"textDocument": {"uri": uri, "languageId": "lsp-senior",
+                                            "version": 1, "text": text}}}),
+    );
+    let is_diagnostics = |m: &Value| m["method"] == "textDocument/publishDiagnostics";
+    let diag = recv_until(&mut stdout, is_diagnostics);
+    let field = diag["params"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["code"] == "SEN075")
+        .expect("sem o SEN075 do campo que a tabela não tem");
+    let message = field["message"].as_str().unwrap();
+    assert!(message.ends_with("Você quis dizer NomEmp?"), "{message}");
+
+    // Completar dentro do SQL, logo depois de `E070FIL.`.
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "id": 2, "method": "textDocument/completion",
+                "params": {"textDocument": {"uri": uri},
+                           "position": {"line": 4, "character": 22}}}),
+    );
+    let reply = recv_until(&mut stdout, |m| m["id"] == 2);
+    let items = reply["result"].as_array().unwrap();
+    let labels: Vec<&str> = items.iter().map(|i| i["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["CodEmp", "CodFil", "NomFil"]);
+    let detail = items[1]["detail"].as_str().unwrap();
+    assert!(detail.contains("Código da filial"), "{detail}");
+
+    // Sem o dicionário, a conferência dos campos some sem reiniciar o servidor.
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "workspace/didChangeConfiguration",
+                "params": {"settings": {"tbs_producao": ""}}}),
+    );
+    let diag = recv_until(&mut stdout, is_diagnostics);
+    assert!(
+        !diagnostic_codes(&diag).contains(&"SEN075".to_owned()),
+        "{diag}"
+    );
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }
