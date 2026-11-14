@@ -782,7 +782,7 @@ mod tests {
                 (Sql2OrderBy, "NomEmp".to_owned())
             ]
         );
-        // No ExecSql o SELECT tem as colunas conferidas, e o ORDER BY não.
+        // No ExecSql o SELECT tem as colunas e o ORDER BY conferidos.
         let exec = "ExecSql \"SELECT Nada FROM E070EMP ORDER BY NomEmp\";";
         let tree = crate::parse(exec).unwrap();
         let symbols = crate::symbols::Symbols::build(&tree, exec);
@@ -794,7 +794,10 @@ mod tests {
             .into_iter()
             .map(|c| (c.kind, &exec[c.range]))
             .collect();
-        assert_eq!(found, [(Sql2UnknownSymbol, "Nada")]);
+        assert_eq!(
+            found,
+            [(Sql2UnknownSymbol, "Nada"), (Sql2OrderBy, "NomEmp")]
+        );
     }
 
     #[test]

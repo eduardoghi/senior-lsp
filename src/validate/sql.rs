@@ -841,7 +841,7 @@ impl<'a> Sql2<'a> {
 
     /// `INSERT INTO T (A, B) VALUES (...)`, com a tabela, os campos, os nomes dos valores e a
     /// quantidade deles, que tem de ser a de campos. Sem a lista de campos, a conta é com todos
-    /// os campos da tabela, e só foi testado o caso de faltar valor.
+    /// os campos da tabela.
     fn insert(&mut self, insert: &Insert) {
         let TableObject::TableName(name) = &insert.table else {
             return;
@@ -890,7 +890,7 @@ impl<'a> Sql2<'a> {
                 self.push(CheckKind::Sql2InsertValues, self.range(first, last), label);
             }
         } else if let Some(fields) =
-            fields.filter(|f| insert.columns.is_empty() && values < f.len())
+            fields.filter(|f| insert.columns.is_empty() && values != f.len())
         {
             let label = format!("{}|{values}|{table}", fields.len());
             self.push(CheckKind::Sql2InsertValues, self.range(ident, ident), label);
@@ -1875,7 +1875,7 @@ pub(super) fn cursor_sql(
 }
 
 /// O que o Senior SQL 2 recusa no SQL do literal em `range`, quando a regra o usa. No `ExecSql`
-/// (`exec`) entram as colunas do SELECT e fica de fora o ORDER BY, que só foi testado no cursor.
+/// (`exec`) entram também as colunas do SELECT.
 fn senior_sql2(
     scope: &super::types::Scope,
     analysis: &Analysis,
@@ -1894,10 +1894,7 @@ fn senior_sql2(
         u.kind == CheckKind::Sql2UnknownTable && analysis.unknown.iter().any(twice)
     };
     let select_list = analysis.sql2_select.iter().filter(|_| exec);
-    let found = analysis.sql2.iter().filter(|u| match exec {
-        true => u.kind != CheckKind::Sql2OrderBy,
-        false => !reported(u),
-    });
+    let found = analysis.sql2.iter().filter(|u| exec || !reported(u));
     for unknown in found.chain(select_list) {
         checks.push(Check {
             kind: unknown.kind,
@@ -1941,7 +1938,8 @@ fn parameters(
 /// na regra. No SQL nativo o compilador só confere o `:nome` do `ExecSql`, que tem de já ter
 /// aparecido na regra. Com o Senior SQL 2 ele lê o comando dos dois, e cobra a tabela, os campos
 /// do SET e do INSERT, os nomes do WHERE e dos valores e a quantidade de valores do INSERT. O
-/// SELECT é lido como o do cursor, com as colunas junto. Todos os casos foram conferidos no ERP.
+/// SELECT é lido como o do cursor, com as colunas e o ORDER BY. Todos os casos foram conferidos
+/// no ERP.
 pub(super) fn exec_sql(
     tree: &Tree,
     scope: &super::types::Scope,
@@ -2386,6 +2384,10 @@ mod tests {
         );
         assert_eq!(check("INSERT INTO T VALUES (1)"), um(Sql2InsertValues, "T"));
         assert!(check("INSERT INTO T VALUES (1, 2)").is_empty());
+        assert_eq!(
+            check("INSERT INTO T VALUES (1, 2, 3)"),
+            um(Sql2InsertValues, "T")
+        );
         assert_eq!(
             check("INSERT INTO T (A) VALUES (Z)"),
             um(Sql2UnknownSymbol, "Z")
