@@ -177,6 +177,7 @@ fn serve(connection: &Connection, out: Output) -> Result<()> {
         chosen: HashMap::new(),
         folders,
         analyze_folders,
+        snippets: params.snippets,
         index: Default::default(),
         configs: Default::default(),
         published: Default::default(),
@@ -221,6 +222,8 @@ struct ClientInit<'a> {
     folders: Vec<std::path::PathBuf>,
     /// O editor aceita colunas em UTF-8.
     utf8: bool,
+    /// O editor aceita itens de completar com marcadores de snippet.
+    snippets: bool,
 }
 
 impl<'a> ClientInit<'a> {
@@ -240,6 +243,10 @@ impl<'a> ClientInit<'a> {
             .pointer("/capabilities/general/positionEncodings")
             .and_then(|e| e.as_array())
             .is_some_and(|kinds| kinds.iter().any(|k| k.as_str() == Some("utf-8")));
+        let snippets = params
+            .pointer("/capabilities/textDocument/completion/completionItem/snippetSupport")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         ClientInit {
             options: Options(params.get("initializationOptions")),
             folders: uris
@@ -247,6 +254,7 @@ impl<'a> ClientInit<'a> {
                 .filter_map(crate::form::path_from_uri)
                 .collect(),
             utf8,
+            snippets,
         }
     }
 }
@@ -378,6 +386,8 @@ struct Server<'a> {
     folders: Vec<std::path::PathBuf>,
     /// Opção `analisar_pasta`: analisa as regras das pastas sem abrir cada arquivo.
     analyze_folders: bool,
+    /// O editor aceita snippets, e o completar oferece os modelos de comando.
+    snippets: bool,
     /// Definições das regras das pastas, para a busca de símbolos do workspace.
     index: workspace_symbols::SymbolIndex,
     /// Tipo escolhido pelo editor para arquivos soltos. Fica depois de fechar o documento, para
@@ -464,9 +474,11 @@ impl Server<'_> {
                 let params: lsp_types::CompletionParams = serde_json::from_value(request.params)?;
                 let at = params.text_document_position;
                 self.with(&at.text_document.uri, Some(at.position), |c| {
-                    self.out.json(&lsp_types::CompletionResponse::Array(
-                        c.completion(at.position),
-                    ))
+                    let mut items = c.completion(at.position);
+                    if self.snippets {
+                        items.extend(c.snippets(at.position));
+                    }
+                    self.out.json(&lsp_types::CompletionResponse::Array(items))
                 })
             }
             PrepareRenameRequest::METHOD => {

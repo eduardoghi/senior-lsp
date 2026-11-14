@@ -100,6 +100,9 @@ O servidor oferece:
   de modelo não entram
 - completar nomes num editor, com as variáveis e funções do arquivo, as do ERP e as palavras da
   linguagem
+- modelos de comando no completar, nos editores que aceitam snippets: o laço de cursor do SQL ao
+  `FecharCursor`, `se` com `senao`, `enquanto`, `para`, `definir funcao`, o bloco da `funcao` e o
+  `ExecSqlEx` com a conferência do erro
 - completar depois do ponto, com as operações e as colunas do SELECT do cursor, as operações e os
   campos criados com `AdicionarCampo` na lista, os campos de uma `definir tabela` e, com o
   dicionário de dados, os campos da tabela do ERP

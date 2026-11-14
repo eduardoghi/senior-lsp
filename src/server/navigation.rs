@@ -618,6 +618,48 @@ impl Context<'_> {
         items
     }
 
+    /// Modelos de comando para o completar, filtrados pelo começo já digitado. Só no começo de
+    /// um nome fora de texto, de comentário e de `cur.`, e nunca dentro de um JSON de modelo, onde
+    /// cada linha da regra é uma string do JSON.
+    pub(crate) fn snippets(&self, position: Position) -> Vec<CompletionItem> {
+        if self.embedding.is_some() {
+            return Vec::new();
+        }
+        let offset = self.offset(position);
+        let text = &self.doc.text;
+        if inside_literal_or_comment(&self.doc.tree, offset) {
+            return Vec::new();
+        }
+        let before = &text[..usize::from(offset)];
+        let start = before
+            .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .map_or(0, |i| {
+                i + before[i..].chars().next().map_or(1, char::len_utf8)
+            });
+        let prefix = &before[start..];
+        if before[..start].trim_end().ends_with('.') {
+            return Vec::new();
+        }
+        SNIPPETS
+            .iter()
+            .filter(|(label, _, _)| {
+                label.len() >= prefix.len()
+                    && label.is_char_boundary(prefix.len())
+                    && label[..prefix.len()].eq_ignore_ascii_case(prefix)
+            })
+            .map(|(label, detail, body)| CompletionItem {
+                label: (*label).to_owned(),
+                kind: Some(CompletionItemKind::SNIPPET),
+                detail: Some((*detail).to_owned()),
+                insert_text: Some((*body).to_owned()),
+                insert_text_format: Some(lsp_types::InsertTextFormat::SNIPPET),
+                // Junto das palavras da linguagem, logo depois delas.
+                sort_text: Some(format!("3{}~", label.to_lowercase())),
+                ..CompletionItem::default()
+            })
+            .collect()
+    }
+
     /// Hover de uma chamada a função do ERP, como `IntParaAlfa`, ou de uma função ou variável de
     /// outra regra do formulário SGI.
     /// Campo de tabela do dicionário de dados, com o tipo e a descrição.
@@ -759,6 +801,50 @@ impl Context<'_> {
 }
 
 /// Palavras sugeridas pelo completar nomes, na grafia mais comum nas regras.
+/// Modelos de comando do completar, com o rótulo, a descrição e o texto no formato de snippet do
+/// LSP. O `\t` vira o recuo do editor. A `funcao` fica sem o `definir funcao`, porque o bloco dela
+/// vai no fim do arquivo e a declaração vai antes das chamadas.
+const SNIPPETS: &[(&str, &str, &str)] = &[
+    (
+        "cursor",
+        "laço de cursor, do SQL ao FecharCursor",
+        "definir cursor ${1:cur};\n${1:cur}.SQL \"SELECT ${2:campos} FROM ${3:tabela} WHERE ${4:condicao}\";\n\
+         ${1:cur}.AbrirCursor();\nenquanto (${1:cur}.Achou) {\n\t$0\n\t${1:cur}.Proximo();\n}\n\
+         ${1:cur}.FecharCursor();",
+    ),
+    (
+        "se senao",
+        "se com bloco e senao",
+        "se (${1:condicao}) {\n\t$2\n} senao {\n\t$0\n}",
+    ),
+    (
+        "enquanto",
+        "enquanto com bloco",
+        "enquanto (${1:condicao}) {\n\t$0\n}",
+    ),
+    (
+        "para",
+        "para com contador",
+        "para (${1:n} = ${2:1}; ${1:n} <= ${3:10}; ${1:n}++) {\n\t$0\n}",
+    ),
+    (
+        "definir funcao",
+        "declaração da função, antes das chamadas",
+        "definir funcao ${1:Nome}(${2});",
+    ),
+    (
+        "funcao",
+        "bloco da função, no fim do arquivo",
+        "funcao ${1:Nome}(${2}); {\n\t$0\n}",
+    ),
+    (
+        "execsqlex",
+        "ExecSqlEx com a conferência do erro",
+        "ExecSqlEx(\"${1:UPDATE tabela SET campo = valor WHERE condicao}\", ${2:nErro}, ${3:aErro});\n\
+         se (${2:nErro} <> 0) {\n\t$0\n}",
+    ),
+];
+
 const KEYWORDS: &[&str] = &[
     "Definir",
     "Funcao",
@@ -1099,6 +1185,41 @@ mod tests {
                 base: None,
             },
             ..Field::default()
+        }
+    }
+
+    /// Cada modelo do completar, preenchido com os valores de exemplo, é uma regra que o
+    /// analisador aceita.
+    #[test]
+    fn modelos_do_completar_sao_regras_validas() {
+        let placeholder = |body: &str| {
+            let mut out = String::new();
+            let mut rest = body;
+            while let Some(at) = rest.find('$') {
+                out.push_str(&rest[..at]);
+                rest = &rest[at + 1..];
+                if let Some(inner) = rest.strip_prefix('{') {
+                    let end = inner.find('}').unwrap();
+                    let value = inner[..end].split_once(':').map_or("", |(_, v)| v);
+                    out.push_str(value);
+                    rest = &inner[end + 1..];
+                } else {
+                    rest = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+                }
+            }
+            out.push_str(rest);
+            out.replace('\t', "    ")
+        };
+        for (label, _, body) in super::SNIPPETS {
+            let text = format!(
+                "definir numero n; definir numero nErro; definir alfa aErro;\n{}\n",
+                placeholder(body)
+            );
+            let tree = crate::parse(&text).unwrap();
+            assert!(
+                tree.errors().is_empty() && tree.tokens().errors().is_empty(),
+                "{label}:\n{text}"
+            );
         }
     }
 

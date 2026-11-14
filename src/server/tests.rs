@@ -58,6 +58,14 @@ impl Editor {
             ..ClientCapabilities::default()
         };
         let mut params = json!({ "capabilities": capabilities, "initializationOptions": options });
+        // `snippetSupport` dentro das opções vira capacidade do editor, para os testes dos modelos.
+        if let Some(snippets) = params["initializationOptions"]
+            .as_object_mut()
+            .and_then(|o| o.remove("snippetSupport"))
+        {
+            params["capabilities"]["textDocument"] =
+                json!({ "completion": { "completionItem": { "snippetSupport": snippets } } });
+        }
         // `workspaceFolders` dentro das opções vira parâmetro do initialize, para os testes da
         // análise da pasta.
         if let Some(folders) = params["initializationOptions"]
@@ -1611,6 +1619,42 @@ fn correcao_rapida_troca_pelo_nome_parecido() {
     );
     let trocada = apply_fix(&mut editor, text, 1, 3, "Trocar por IntParaAlfa");
     assert!(trocada.contains("\nIntParaAlfa(n, a);"), "{trocada}");
+}
+
+#[test]
+fn modelos_no_completar_so_com_editor_que_aceita_snippets() {
+    let text = "definir numero n;\nenq\nn = 1;\n";
+    let snippets = |editor: &mut Editor| {
+        let response = editor.request(
+            lsp_types::request::Completion::METHOD,
+            json!({ "textDocument": { "uri": RULE }, "position": { "line": 1, "character": 3 } }),
+        );
+        let items: Vec<lsp_types::CompletionItem> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        items
+            .into_iter()
+            .filter(|i| i.kind == Some(lsp_types::CompletionItemKind::SNIPPET))
+            .collect::<Vec<_>>()
+    };
+    let (mut editor, _) = Editor::start_with(None, json!({ "snippetSupport": true }));
+    editor.open(RULE, 1, text);
+    let found = snippets(&mut editor);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].label, "enquanto");
+    assert_eq!(
+        found[0].insert_text_format,
+        Some(lsp_types::InsertTextFormat::SNIPPET)
+    );
+    assert!(
+        found[0]
+            .insert_text
+            .as_deref()
+            .unwrap()
+            .contains("${1:condicao}")
+    );
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, text);
+    assert!(snippets(&mut editor).is_empty());
 }
 
 fn apply_fix(editor: &mut Editor, text: &str, line: u32, character: u32, title: &str) -> String {
