@@ -2319,17 +2319,15 @@ impl NativeSql {
         }
     }
 
-    /// Com o SQL nativo, o banco recebe o comando como está. Com o Senior SQL 2, o comando passa
-    /// na execução pelo mesmo leitor que confere o cursor na compilação, e para com as mesmas
-    /// mensagens, conferidas no ERP com o SELECT. Só o SELECT é conferido, e só na regra que usa o
-    /// Senior SQL 2, que foi como o teste rodou.
+    /// Com o SQL nativo, o banco recebe o comando como está. Sem ele, o comando passa na execução
+    /// pelo Senior SQL 2, o mesmo leitor que confere o cursor na compilação, e para com as mesmas
+    /// mensagens. O objeto usa o Senior SQL 2 até receber `SQL_UsarSQLSenior2(x, 0)`, também na
+    /// regra que não usa a opção. Os dois casos foram conferidos no ERP com o SELECT, que é o
+    /// único conferido.
     pub(super) fn finish(self, text: &str, inherited: &Inherited, checks: &mut Vec<Check>) {
         let native: FxHashSet<&str> = self.native.iter().map(|(o, _)| o.as_str()).collect();
         for (object, literal) in &self.commands {
             let is_native = native.contains(object.as_str());
-            if !is_native && inherited.senior_sql2 != Some(true) {
-                continue;
-            }
             let analysis = analysis(&text[*literal], &inherited.dictionaries);
             let found: Vec<(CheckKind, &Unknown)> = if is_native {
                 analysis.native.iter().map(|u| (u.kind, u)).collect()

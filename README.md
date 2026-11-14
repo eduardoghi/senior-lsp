@@ -379,7 +379,7 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN085 | aviso | `enquanto ()` com a condição vazia, que o compilador trata como verdadeira, sem `Pare`, `VaPara`, `Cancel` nem outra saída no bloco |
 | SEN086 | aviso | tabela do SQL nativo que não está no dicionário de dados, fora as do catálogo do Oracle, a `DUAL`, os nomes do `WITH` e as do `extraTables` do [`senior-lsp.json`](#arquivo-de-configuração) |
 | SEN087 | aviso | campo com a tabela ou o apelido na frente, no SQL nativo, que a tabela não tem no dicionário de dados |
-| SEN088 | aviso | o que o Senior SQL 2 recusa (SEN080 a SEN083) no SELECT de um `SQL_DefinirComando`, na regra que usa o Senior SQL 2, que compila e para na execução |
+| SEN088 | aviso | o que o Senior SQL 2 recusa (SEN080 a SEN083) no SELECT de um `SQL_DefinirComando`, que compila e para na execução. O objeto usa o Senior SQL 2 até receber `SQL_UsarSQLSenior2(x, 0)`, também na regra que não usa a opção |
 
 O SEN068 e o SEN070 saem como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
 conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da

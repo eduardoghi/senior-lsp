@@ -112,8 +112,9 @@ pub enum CheckKind {
     Sql2OrderBy,
     /// INSERT com a quantidade de valores diferente da de campos, com o Senior SQL 2.
     Sql2InsertValues,
-    /// O que o Senior SQL 2 recusa no SELECT literal de um `SQL_DefinirComando`. O comando só é
-    /// lido na execução, então compila, e a execução para.
+    /// O que o Senior SQL 2 recusa no SELECT literal de um `SQL_DefinirComando` de um objeto sem
+    /// `SQL_UsarSQLSenior2(x, 0)`. O comando só é lido na execução, então compila, e a execução
+    /// para.
     CommandSql2(Sql2Error),
     /// `SQL_Retornar*(obj, "coluna", ...)` com uma coluna que não está no SELECT. Compila, e a
     /// execução para.

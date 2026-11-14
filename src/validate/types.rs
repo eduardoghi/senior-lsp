@@ -594,8 +594,15 @@ mod tests {
                 (NativeUnknownTable, "E999XXX")
             ]
         );
-        // Com o Senior SQL 2 o comando passa por outro leitor, que esta conferência não cobre.
-        assert!(checks_com_dicionario(&regra("")).is_empty());
+        // Sem o SQL nativo o objeto fica no Senior SQL 2, que tem as conferências dele.
+        use crate::validate::Sql2Error::{UnknownField, UnknownTable};
+        assert_eq!(
+            checks_com_dicionario(&regra("")),
+            [
+                (CommandSql2(UnknownField), "E.NomEmpp"),
+                (CommandSql2(UnknownTable), "E999XXX")
+            ]
+        );
     }
 
     #[test]
@@ -655,9 +662,10 @@ mod tests {
             ),
             ("SELECT E.CodEmp, NomEmp FROM E070EMP E", Vec::new()),
         ] {
-            assert_eq!(checks(&regra(sql), Some(true)), esperado, "{sql}");
-            // Sem o Senior SQL 2 na regra, o teste não rodou.
-            assert!(checks(&regra(sql), None).is_empty(), "{sql}");
+            // O objeto usa o Senior SQL 2 mesmo na regra que não usa a opção.
+            for sql2 in [Some(true), Some(false), None] {
+                assert_eq!(checks(&regra(sql), sql2), esperado, "{sql} {sql2:?}");
+            }
         }
         // Só o SELECT foi testado.
         assert!(checks(&regra("UPDATE E070EMP SET NAOEXISTE = 1"), Some(true)).is_empty());
