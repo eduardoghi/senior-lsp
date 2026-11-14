@@ -1,11 +1,13 @@
-//! Arquivo `senior-lsp.json`, que muda o nível dos diagnósticos de uma pasta.
+//! Arquivo `senior-lsp.json`, que muda o nível dos diagnósticos de uma pasta e lista as tabelas
+//! que existem no banco fora do dicionário de dados.
 //!
 //! ```json
 //! {
 //!     "diagnostics": { "SEN048": "off", "SEN071": "hint" },
 //!     "overrides": [
 //!         { "files": "Modelos/**", "diagnostics": { "SEN048": "off" } }
-//!     ]
+//!     ],
+//!     "extraTables": ["TB_CRIADA_NO_BANCO"]
 //! }
 //! ```
 //!
@@ -60,19 +62,31 @@ impl Level {
     }
 }
 
-/// Nível de cada código para um arquivo, já com os `overrides` aplicados. O código que não está
-/// aqui fica como o servidor o emite.
+/// Nível de cada código para um arquivo, já com os `overrides` aplicados, e as tabelas do
+/// `extraTables`. O código que não está aqui fica como o servidor o emite.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct Levels(HashMap<String, Level>);
+pub(crate) struct Levels {
+    levels: HashMap<String, Level>,
+    extra_tables: Arc<HashSet<String>>,
+}
 
 impl Levels {
     #[cfg(test)]
-    pub(crate) fn from_map(map: HashMap<String, Level>) -> Levels {
-        Levels(map)
+    pub(crate) fn from_map(levels: HashMap<String, Level>) -> Levels {
+        Levels {
+            levels,
+            extra_tables: Arc::default(),
+        }
     }
 
     pub(crate) fn get(&self, code: &str) -> Option<Level> {
-        self.0.get(code).copied()
+        self.levels.get(code).copied()
+    }
+
+    /// A tabela está no `extraTables`, que lista as que existem no banco fora do dicionário, como
+    /// uma criada direto no banco. Espera o nome em maiúsculas.
+    pub(crate) fn extra_table(&self, table: &str) -> bool {
+        self.extra_tables.contains(table)
     }
 }
 
@@ -85,6 +99,7 @@ pub(crate) struct Config {
     dir: PathBuf,
     levels: HashMap<String, Level>,
     overrides: Vec<Override>,
+    extra_tables: Arc<HashSet<String>>,
 }
 
 impl Config {
@@ -100,6 +115,7 @@ impl Config {
             dir: dir.to_path_buf(),
             levels: HashMap::new(),
             overrides: Vec::new(),
+            extra_tables: Arc::default(),
         };
         for (key, value) in &root {
             match key.as_str() {
@@ -115,6 +131,7 @@ impl Config {
                         }
                     }
                 }
+                "extraTables" => config.extra_tables = Arc::new(extra_tables(value, warnings)),
                 other => warnings.push(format!("A chave \"{other}\" não é usada.")),
             }
         }
@@ -138,8 +155,31 @@ impl Config {
                 levels.extend(o.levels.iter().map(|(k, v)| (k.clone(), *v)));
             }
         }
-        Levels(levels)
+        Levels {
+            levels,
+            extra_tables: self.extra_tables.clone(),
+        }
     }
+}
+
+/// Nomes do `extraTables`, em maiúsculas. O que não é texto vira aviso e fica de fora.
+fn extra_tables(value: &Value, warnings: &mut Vec<String>) -> HashSet<String> {
+    let Value::Array(list) = value else {
+        warnings.push("\"extraTables\" precisa ser uma lista de nomes de tabela.".to_owned());
+        return HashSet::new();
+    };
+    let mut tables = HashSet::new();
+    for (i, entry) in list.iter().enumerate() {
+        match entry.as_str().map(str::trim).filter(|t| !t.is_empty()) {
+            Some(table) => {
+                tables.insert(table.to_ascii_uppercase());
+            }
+            None => warnings.push(format!(
+                "\"extraTables\"[{i}] = {entry} não é um nome de tabela e foi ignorado."
+            )),
+        }
+    }
+    tables
 }
 
 /// Mapa de código para nível. O que não vale vira aviso e fica de fora.
@@ -415,5 +455,15 @@ mod tests {
         assert_eq!(level(&config, "/repo/a", "SEN041"), Some(Level::Info));
         assert_eq!(level(&config, "/repo/a", "SEN020"), None);
         assert_eq!(level(&config, "/repo/a", "SEN048"), None);
+    }
+
+    #[test]
+    fn tabelas_extras_em_maiusculas_e_o_que_nao_e_nome_vira_aviso() {
+        let (config, warnings) = parse(r#"{ "extraTables": ["tb_a", " TB_B ", 3, ""] }"#);
+        let levels = config.unwrap().levels_for(Path::new("/repo/R/Rule.txt"));
+        assert!(levels.extra_table("TB_A") && levels.extra_table("TB_B"));
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        let (_, warnings) = parse(r#"{ "extraTables": "TB_A" }"#);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
 }

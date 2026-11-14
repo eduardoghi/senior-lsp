@@ -37,7 +37,7 @@ pub(crate) fn diagnostics(
     levels: &Levels,
     to_range: &dyn Fn(TextRange) -> Range,
 ) -> Vec<Diagnostic> {
-    let mut found = found(doc);
+    let mut found = found(doc, levels);
     found.extend(extra);
     let (mut found, notices) = directives::filter(
         &doc.text,
@@ -75,8 +75,9 @@ pub(crate) fn diagnostics(
         .collect()
 }
 
-/// Erros do lexer e do parser e avisos do validador, antes das diretivas.
-fn found(doc: &Document) -> Vec<Found> {
+/// Erros do lexer e do parser e avisos do validador, antes das diretivas. A tabela que o
+/// `senior-lsp.json` diz existir no banco não sai no SEN086.
+fn found(doc: &Document, levels: &Levels) -> Vec<Found> {
     let (text, tree) = (doc.text.as_str(), &doc.tree);
     let lex = tree
         .tokens()
@@ -90,7 +91,11 @@ fn found(doc: &Document) -> Vec<Found> {
     let errors = lex
         .chain(parse)
         .map(|(range, described)| (range, described, DiagnosticSeverity::ERROR));
-    let checks = doc.checks().iter().map(|c| {
+    let extra_table = |c: &&Check| {
+        c.kind == CheckKind::NativeUnknownTable
+            && c.label.as_deref().is_some_and(|t| levels.extra_table(t))
+    };
+    let checks = doc.checks().iter().filter(|c| !extra_table(c)).map(|c| {
         let severity = if c.kind.is_error() {
             DiagnosticSeverity::ERROR
         } else if matches!(
@@ -344,8 +349,8 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
             "SEN086",
             format!(
                 "A tabela {name} não está no dicionário de dados. O SQL nativo vai para o banco \
-                 como está, e a execução para se a tabela também não existir lá, como uma criada \
-                 direto no banco."
+                 como está, e a execução para se a tabela também não existir lá. Uma tabela \
+                 criada direto no banco vai no extraTables do senior-lsp.json."
             ),
         ),
         CheckKind::NativeUnknownField => {

@@ -76,11 +76,12 @@ pub enum CheckKind {
     CursorConstantColumn,
     /// `SQL_UsarSQLSenior2(x, 0)` sem `SQL_UsarAbrangencia(x, 0)`. Compila, e a execução para.
     NativeSqlWithScope,
-    /// Tabela que o dicionário de dados não tem no SQL nativo de um `SQL_DefinirComando`.
+    /// Tabela que o dicionário de dados não tem no SQL nativo, o de um `SQL_DefinirComando` com
+    /// `SQL_UsarSQLSenior2(x, 0)` e o do cursor e do `ExecSql` na regra sem o Senior SQL 2.
     /// Compila, e o banco recusa na execução.
     NativeUnknownTable,
     /// Campo com a tabela ou o apelido na frente que a tabela não tem no dicionário de dados, no
-    /// SQL nativo de um `SQL_DefinirComando`. Compila, e o banco recusa na execução.
+    /// SQL nativo. Compila, e o banco recusa na execução.
     NativeUnknownField,
     /// `cur.CAMPO` com um campo que não está no SELECT do cursor nem é operação dele.
     CursorFieldNotInSelect,

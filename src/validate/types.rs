@@ -671,6 +671,57 @@ mod tests {
     }
 
     #[test]
+    fn sql_nativo_do_cursor_e_do_execsql_na_regra_sem_senior_sql_2() {
+        let checks = |text: &str, sql2: Option<bool>| -> Vec<(CheckKind, std::string::String)> {
+            let tree = crate::parse(text).unwrap();
+            let symbols = crate::symbols::Symbols::build(&tree, text);
+            let mut inherited = crate::form::Inherited::default();
+            inherited.dictionaries = dicionarios();
+            inherited.senior_sql2 = sql2;
+            crate::validate::validate(
+                &tree,
+                &symbols,
+                text,
+                crate::builtins::Context::Rule,
+                &inherited,
+            )
+            .into_iter()
+            .filter(|c| !matches!(c.kind, Unused | CursorColumnUnused))
+            .map(|c| (c.kind, text[c.range].to_owned()))
+            .collect()
+        };
+        let par = |kind, text: &str| (kind, text.to_owned());
+        let regra = "definir cursor c;\n\
+                     c.SQL \"SELECT CodEmp FROM E070EMP WHERE E070EMP.Naoexiste = 1\";\n\
+                     ExecSql \"UPDATE E999XXX SET A = 1 WHERE EXISTS (SELECT 1 FROM E999XXX)\";\n\
+                     ExecSqlEx(\"DELETE FROM E070EMP E WHERE E.NomEmpp = 'x'\", n, a);";
+        let regra = format!("definir numero n; definir alfa a;\n{regra}");
+        assert_eq!(
+            checks(&regra, Some(false)),
+            [
+                par(NativeUnknownField, "E070EMP.Naoexiste"),
+                // A mesma tabela sai uma vez por comando.
+                par(NativeUnknownTable, "E999XXX"),
+                par(NativeUnknownField, "E.NomEmpp"),
+            ]
+        );
+        // Com o Senior SQL 2 valem as conferências dele, e sem a opção o modo não é conhecido.
+        assert!(
+            !checks(&regra, Some(true))
+                .iter()
+                .any(|(k, _)| matches!(k, NativeUnknownTable | NativeUnknownField))
+        );
+        assert!(checks(&regra, None).is_empty());
+
+        // A tabela que a leitura das colunas do cursor já acusou não sai de novo no FROM.
+        let cursor = "definir cursor c;\nc.SQL \"SELECT E999XXX.A FROM E999XXX\";";
+        assert_eq!(
+            checks(cursor, Some(false)),
+            [par(CursorUnknownTable, "E999XXX")]
+        );
+    }
+
+    #[test]
     fn campo_de_cursor_pelo_sql_e_pelo_dicionario() {
         let cursor = |sql: &str, uso: &str| {
             format!(
@@ -865,7 +916,11 @@ mod tests {
                 .collect()
         };
         assert!(checks(None).is_empty());
-        assert!(checks(Some(false)).is_empty());
+        // No SQL nativo a compilação não confere o FROM, e o banco recusa a tabela na execução.
+        assert_eq!(
+            checks(Some(false)),
+            [(NativeUnknownTable, "E999XXX".to_owned())]
+        );
         // O nome sem tabela não é cobrado enquanto uma tabela do FROM é desconhecida.
         assert_eq!(
             checks(Some(true)),
@@ -914,11 +969,19 @@ mod tests {
             crate::builtins::Context::Rule,
             crate::builtins::Context::Sgi,
         );
-        // No SQL nativo só o parâmetro do ExecSql é conferido, e só na regra comum.
+        // No SQL nativo a compilação só confere o parâmetro do ExecSql, e só na regra comum. A
+        // tabela que o dicionário não tem é aviso, porque o banco a recusa na execução.
         let parametro = vec![(CursorUnknownParameter, "nDepois".to_owned())];
+        let tabelas = vec![
+            (NativeUnknownTable, "E999XXX".to_owned()),
+            (NativeUnknownTable, "E999XXX".to_owned()),
+        ];
         assert_eq!(checks(None, rule), parametro);
-        assert_eq!(checks(Some(false), rule), parametro);
-        assert!(checks(Some(false), sgi).is_empty());
+        assert_eq!(
+            checks(Some(false), rule),
+            [parametro, tabelas.clone()].concat()
+        );
+        assert_eq!(checks(Some(false), sgi), tabelas);
         // Com o Senior SQL 2 o comando dos dois é lido, e o SELECT também.
         assert_eq!(
             checks(Some(true), sgi),

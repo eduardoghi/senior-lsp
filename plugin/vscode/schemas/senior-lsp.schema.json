@@ -1,7 +1,7 @@
 {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "senior-lsp.json",
-    "description": "Configuração dos diagnósticos do Senior LSP para a pasta do arquivo e as de dentro dela.",
+    "description": "Configuração do Senior LSP para a pasta do arquivo e as de dentro dela.",
     "type": "object",
     "properties": {
         "diagnostics": {
@@ -36,6 +36,13 @@
                     }
                 },
                 "additionalProperties": false
+            }
+        },
+        "extraTables": {
+            "type": "array",
+            "description": "Tabelas e visões que existem no banco fora do dicionário de dados, como uma criada direto no banco. Não saem no SEN086 do SQL nativo.",
+            "items": {
+                "type": "string"
             }
         }
     },

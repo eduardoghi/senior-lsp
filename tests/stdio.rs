@@ -409,3 +409,56 @@ fn referencias_do_campo_do_dicionario_nas_regras_da_pasta() {
         ]
     );
 }
+
+/// Tabela do `extraTables` do `senior-lsp.json`, que existe no banco fora do dicionário, não sai
+/// no SEN086 do SQL nativo. A regra é nativa pela opção da exportação, e o `ExecSql` dela vai
+/// para o banco como está.
+#[test]
+fn tabela_do_extratables_nao_sai_no_sql_nativo() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-extra-{}", std::process::id()));
+    let regra = base.join("regras/R1.LSP/Rule.txt");
+    std::fs::create_dir_all(regra.parent().unwrap()).unwrap();
+    std::fs::write(
+        base.join("regras/R1.LSP/General_Infos.json"),
+        r#"{"useSQLSenior2": false}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        base.join("senior-lsp.json"),
+        r#"{"extraTables": ["tb_criada_no_banco"]}"#,
+    )
+    .unwrap();
+    let texto = "ExecSql \"DELETE FROM TB_CRIADA_NO_BANCO\";\n\
+                 ExecSql \"DELETE FROM TB_QUE_NAO_EXISTE\";\n";
+    std::fs::write(&regra, texto).unwrap();
+    let tbs = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/dicionario-ficticio.tbs"
+    );
+    let (mut child, mut stdin, mut stdout) = start_with(json!({"tbs_producao": tbs}));
+    let uri = senior_lsp::form::uri_from_path(&regra);
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                "params": {"textDocument": {"uri": uri, "languageId": "lsp-senior",
+                                            "version": 1, "text": texto}}}),
+    );
+    let diag = recv_until(&mut stdout, |m| {
+        m["method"] == "textDocument/publishDiagnostics"
+    });
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    std::fs::remove_dir_all(&base).unwrap();
+    let found: Vec<(String, u64)> = diag["params"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            (
+                d["code"].as_str().unwrap().to_owned(),
+                d["range"]["start"]["line"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(found, [("SEN086".to_owned(), 1)]);
+}

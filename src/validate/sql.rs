@@ -1318,7 +1318,12 @@ impl<'a> Native<'a> {
             || CATALOG_PREFIXES.iter().any(|p| table.starts_with(p))
             || self.ctes.contains(&table)
             || self.rowset(&table).is_some();
-        if !known {
+        // A mesma tabela sai uma vez por comando, na primeira vez que aparece.
+        let repeated = self
+            .found
+            .iter()
+            .any(|u| u.kind == CheckKind::NativeUnknownTable && u.label.as_ref() == Some(&table));
+        if !known && !repeated {
             self.found.push(Unknown {
                 kind: CheckKind::NativeUnknownTable,
                 range: ident_range(self.sql, ident, ident),
@@ -2123,6 +2128,7 @@ pub(super) fn cursor_sql(
         });
     }
     senior_sql2(scope, &analysis, range, false, checks);
+    native_sql(scope, &analysis, range, true, checks);
     parameters(scope, first_uses, &analysis, range, checks);
 }
 
@@ -2148,6 +2154,50 @@ fn senior_sql2(
     let select_list = analysis.sql2_select.iter().filter(|_| exec);
     let found = analysis.sql2.iter().filter(|u| exec || !reported(u));
     for unknown in found.chain(select_list) {
+        checks.push(Check {
+            kind: unknown.kind,
+            range: text_size::TextRange::new(at(unknown.range.start), at(unknown.range.end)),
+            name: None,
+            label: unknown.label.clone(),
+        });
+    }
+}
+
+/// O que o banco recusaria no SQL do literal em `range`, na regra que não usa o Senior SQL 2. O
+/// comando vai para o banco como está, como o de um objeto com `SQL_UsarSQLSenior2(x, 0)`. Na
+/// regra sem a opção na exportação nada é conferido, porque o modo não é conhecido. No cursor
+/// (`cursor`) fica de fora o trecho que a leitura das colunas já acusou como erro de compilação.
+fn native_sql(
+    scope: &super::types::Scope,
+    analysis: &Analysis,
+    range: text_size::TextRange,
+    cursor: bool,
+    checks: &mut Vec<Check>,
+) {
+    if scope.inherited.senior_sql2 != Some(false) {
+        return;
+    }
+    let at = |offset: usize| range.start() + text_size::TextSize::new(offset as u32);
+    // A tabela ou o campo que a leitura das colunas do cursor já acusou, no mesmo trecho ou em
+    // outro, não sai de novo.
+    let reported = |u: &Unknown| {
+        cursor
+            && analysis.unknown.iter().any(|o| {
+                let same_name = o
+                    .label
+                    .as_deref()
+                    .zip(u.label.as_deref())
+                    .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
+                let same_kind = matches!(
+                    (o.kind, u.kind),
+                    (CheckKind::CursorUnknownTable, CheckKind::NativeUnknownTable)
+                        | (CheckKind::CursorUnknownField, CheckKind::NativeUnknownField)
+                );
+                (o.range.start < u.range.end && u.range.start < o.range.end)
+                    || (same_kind && same_name)
+            })
+    };
+    for unknown in analysis.native.iter().filter(|u| !reported(u)) {
         checks.push(Check {
             kind: unknown.kind,
             range: text_size::TextRange::new(at(unknown.range.start), at(unknown.range.end)),
@@ -2217,6 +2267,7 @@ pub(super) fn exec_sql(
     };
     let analysis = analysis(&scope.text[range], &scope.inherited.dictionaries);
     senior_sql2(scope, &analysis, range, true, checks);
+    native_sql(scope, &analysis, range, false, checks);
     if keyword == SyntaxKind::ExecSqlKw {
         parameters(scope, first_uses, &analysis, range, checks);
     }
