@@ -570,6 +570,13 @@ fn definicao_referencias_hover_e_simbolos() {
         value.contains("Funcao IntParaAlfa(Numero Origem, Alfa end Retorno);"),
         "{value}"
     );
+    // E o link da página dela na documentação da Senior.
+    assert!(
+        value.ends_with(
+            "([documentação da Senior](https://documentacao.senior.com.br/tecnologia/5.10.4/lsp/funcoes/gerais/intparaalfa.htm))"
+        ),
+        "{value}"
+    );
     editor.change(RULE, 3, text);
     editor.diagnostics();
 

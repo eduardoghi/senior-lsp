@@ -709,10 +709,11 @@ impl Context<'_> {
             Some((range, found))
         });
         let (range, value) = if let Some((range, builtin)) = builtin {
-            (
-                range,
-                format!("```lsp\n{}\n```\nFunção do ERP", builtin.decl),
-            )
+            let mut value = format!("```lsp\n{}\n```\nFunção do ERP", builtin.decl);
+            if let Some(url) = builtins::documentation(builtin.name) {
+                value.push_str(&format!(" ([documentação da Senior]({url}))"));
+            }
+            (range, value)
         } else {
             let (range, def) = self.inherited_at(offset)?;
             return Some(self.inherited_hover(range, def));

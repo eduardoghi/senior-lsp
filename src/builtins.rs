@@ -113,6 +113,28 @@ static SYSTEM_VARIABLES: LazyLock<FxHashMap<String, VarType>> = LazyLock::new(||
         .collect()
 });
 
+/// Endereço da documentação online da Senior, que antecede o caminho de cada página.
+const DOCUMENTATION: &str = "https://documentacao.senior.com.br/";
+
+/// Página de cada função na documentação da Senior, pelo nome em maiúsculas. O arquivo vem do
+/// `scripts/documentacao.py`, que lê o sitemap do manual da linguagem e o índice das funções do ERP.
+static DOCUMENTATION_PAGES: LazyLock<FxHashMap<String, &'static str>> = LazyLock::new(|| {
+    include_str!("builtins/documentacao.txt")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| {
+            let (name, path) = line.split_once(' ')?;
+            Some((name.to_uppercase(), path.trim()))
+        })
+        .collect()
+});
+
+/// Endereço da página da função na documentação da Senior, quando ela tem uma.
+pub fn documentation(name: &str) -> Option<String> {
+    let path = DOCUMENTATION_PAGES.get(&name.to_uppercase())?;
+    Some(format!("{DOCUMENTATION}{path}"))
+}
+
 /// Campos que o SGI acrescenta a toda tela, todos alfa. Eles não aparecem na exportação.
 const SGI_FIELDS: [&str; 4] = ["CODOPE", "MSGERRO", "MSGAVISO", "TELOPE"];
 
@@ -316,5 +338,24 @@ mod tests {
             ctx("file:///c/Modelos/CCCC001.GER/Cabecalho.json"),
             Context::Report
         );
+    }
+
+    #[test]
+    fn toda_pagina_da_documentacao_e_de_uma_funcao_conhecida() {
+        for (name, path) in DOCUMENTATION_PAGES.iter() {
+            assert!(TABLE.index.contains_key(name), "{name} não é função do ERP");
+            assert!(
+                path.is_ascii() && !path.contains(' ') && !path.starts_with('/'),
+                "{name}: {path}"
+            );
+        }
+        assert!(DOCUMENTATION_PAGES.len() > 700);
+        assert_eq!(
+            documentation("sql_criar").as_deref(),
+            Some(
+                "https://documentacao.senior.com.br/tecnologia/5.10.4/lsp/funcoes/sql-em-regra/sql_criar.htm"
+            )
+        );
+        assert!(documentation("NaoExiste").is_none());
     }
 }

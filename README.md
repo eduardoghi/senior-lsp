@@ -93,6 +93,10 @@ O servidor oferece:
   `acrescentar_parametro`, e a extensão liga sozinha
 - hover com a linha do `definir` e, com o dicionário de dados do ERP configurado, o tipo, a
   descrição, as chaves, os relacionamentos e a busca dos campos de tabela
+- hover das funções do ERP com a declaração que o compilador usa e o link da página da função na
+  documentação online da Senior, quando ela tem uma. O endereço de cada página fica em
+  `src/builtins/documentacao.txt`, que o `scripts/documentacao.py` refaz a partir do sitemap do
+  manual da linguagem e do índice das funções do ERP
 - dentro do SQL de um texto (`cur.SQL "..."`, `ExecSql` e `SQL_DefinirComando`), o `:variavel` vai para o
   `definir` e mostra a linha dele no hover, e `TABELA.Campo` e o nome de uma tabela mostram a
   descrição do dicionário de dados. O hover de tabela só vale em textos que começam com `SELECT`,
