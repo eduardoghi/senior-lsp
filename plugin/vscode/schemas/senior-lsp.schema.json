@@ -38,6 +38,18 @@
                 "additionalProperties": false
             }
         },
+        "format": {
+            "type": "object",
+            "description": "O que a formatação acerta.",
+            "properties": {
+                "spaces": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Acerta também o espaço entre os tokens de cada linha. Com false, só o recuo do começo das linhas muda."
+                }
+            },
+            "additionalProperties": false
+        },
         "extraTables": {
             "type": "array",
             "description": "Tabelas e visões que existem no banco fora do dicionário de dados, como uma criada direto no banco. Não saem no SEN086 do SQL nativo.",

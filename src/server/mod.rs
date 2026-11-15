@@ -675,21 +675,22 @@ impl Server<'_> {
                     serde_json::from_value(request.params)?;
                 // Nos JSON de modelo a regra fica dentro de texto escapado, e eles ainda não são
                 // formatados.
-                let edits = self
-                    .documents
-                    .get(&params.text_document.uri)
-                    .and_then(|doc| formatting::edits(doc, self.encoding, &params.options, None));
+                let uri = &params.text_document.uri;
+                let spaces = self.levels_of(uri).format_spaces();
+                let edits = self.documents.get(uri).and_then(|doc| {
+                    formatting::edits(doc, self.encoding, &params.options, None, spaces)
+                });
                 Ok(self.out.json(&edits)?)
             }
             lsp_types::request::RangeFormatting::METHOD => {
                 let params: lsp_types::DocumentRangeFormattingParams =
                     serde_json::from_value(request.params)?;
-                let edits = self
-                    .documents
-                    .get(&params.text_document.uri)
-                    .and_then(|doc| {
-                        formatting::edits(doc, self.encoding, &params.options, Some(params.range))
-                    });
+                let uri = &params.text_document.uri;
+                let spaces = self.levels_of(uri).format_spaces();
+                let edits = self.documents.get(uri).and_then(|doc| {
+                    let range = Some(params.range);
+                    formatting::edits(doc, self.encoding, &params.options, range, spaces)
+                });
                 Ok(self.out.json(&edits)?)
             }
             lsp_types::request::OnTypeFormatting::METHOD => {

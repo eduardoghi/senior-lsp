@@ -4416,3 +4416,35 @@ fn formata_ao_digitar_o_fechamento() {
     assert_eq!(edits[0]["newText"], "");
     editor.stop();
 }
+
+#[test]
+fn formatacao_so_com_o_recuo_pelo_senior_lsp_json() {
+    let text = "se(a=1) {\nx=1;\n}\n";
+    let (base, config, uri) = pasta_com_config(
+        "formato",
+        r#"{ "format": { "spaces": false } }"#,
+        "regras/R1.LSP/Rule.txt",
+        text,
+    );
+    let (mut editor, _) = Editor::start(None);
+    editor.open(&uri, 1, text);
+    editor.diagnostics();
+    let format = |editor: &mut Editor| {
+        let response = editor.request(
+            lsp_types::request::Formatting::METHOD,
+            json!({ "textDocument": { "uri": uri },
+                    "options": { "tabSize": 2, "insertSpaces": true } }),
+        );
+        let mut changes = serde_json::Map::new();
+        changes.insert(uri.clone(), response.response_result.unwrap());
+        apply_json_edits(text, &json!({ "changes": changes }), &uri)
+    };
+    // Só o recuo muda.
+    assert_eq!(format(&mut editor), "se(a=1) {\n  x=1;\n}\n");
+    // Sem a chave, o espaço dentro da linha também muda.
+    std::fs::write(&config, "{}").unwrap();
+    config_mudou(&editor, &config);
+    assert_eq!(format(&mut editor), "se (a = 1) {\n  x = 1;\n}\n");
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}

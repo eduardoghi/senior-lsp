@@ -1,5 +1,5 @@
-//! Arquivo `senior-lsp.json`, que muda o nível dos diagnósticos de uma pasta e lista as tabelas
-//! que existem no banco fora do dicionário de dados.
+//! Arquivo `senior-lsp.json`, que muda o nível dos diagnósticos de uma pasta, lista as tabelas
+//! que existem no banco fora do dicionário de dados e escolhe o que a formatação acerta.
 //!
 //! ```json
 //! {
@@ -7,7 +7,8 @@
 //!     "overrides": [
 //!         { "files": "Modelos/**", "diagnostics": { "SEN048": "off" } }
 //!     ],
-//!     "extraTables": ["TB_CRIADA_NO_BANCO"]
+//!     "extraTables": ["TB_CRIADA_NO_BANCO"],
+//!     "format": { "spaces": false }
 //! }
 //! ```
 //!
@@ -68,6 +69,8 @@ impl Level {
 pub(crate) struct Levels {
     levels: HashMap<String, Level>,
     extra_tables: Arc<HashSet<String>>,
+    /// O `format.spaces` com `false`, que deixa a formatação só com o recuo.
+    format_without_spaces: bool,
 }
 
 impl Levels {
@@ -76,6 +79,7 @@ impl Levels {
         Levels {
             levels,
             extra_tables: Arc::default(),
+            format_without_spaces: false,
         }
     }
 
@@ -87,6 +91,13 @@ impl Levels {
     /// uma criada direto no banco. Espera o nome em maiúsculas.
     pub(crate) fn extra_table(&self, table: &str) -> bool {
         self.extra_tables.contains(table)
+    }
+
+    /// A formatação também acerta o espaço dentro das linhas, que é o padrão. Com
+    /// `"format": { "spaces": false }`, ela só acerta o recuo, para quem não quer um diff grande na
+    /// primeira formatação de uma exportação versionada.
+    pub(crate) fn format_spaces(&self) -> bool {
+        !self.format_without_spaces
     }
 }
 
@@ -100,6 +111,7 @@ pub(crate) struct Config {
     levels: HashMap<String, Level>,
     overrides: Vec<Override>,
     extra_tables: Arc<HashSet<String>>,
+    format_without_spaces: bool,
 }
 
 impl Config {
@@ -116,6 +128,7 @@ impl Config {
             levels: HashMap::new(),
             overrides: Vec::new(),
             extra_tables: Arc::default(),
+            format_without_spaces: false,
         };
         for (key, value) in &root {
             match key.as_str() {
@@ -132,6 +145,7 @@ impl Config {
                     }
                 }
                 "extraTables" => config.extra_tables = Arc::new(extra_tables(value, warnings)),
+                "format" => config.format_without_spaces = !format_spaces(value, warnings),
                 other => warnings.push(format!("A chave \"{other}\" não é usada.")),
             }
         }
@@ -158,8 +172,28 @@ impl Config {
         Levels {
             levels,
             extra_tables: self.extra_tables.clone(),
+            format_without_spaces: self.format_without_spaces,
         }
     }
+}
+
+/// O `spaces` do objeto `format`, que vale `true` quando falta. O que não vale vira aviso.
+fn format_spaces(value: &Value, warnings: &mut Vec<String>) -> bool {
+    let Value::Object(format) = value else {
+        warnings.push("\"format\" precisa ser um objeto, como { \"spaces\": false }.".to_owned());
+        return true;
+    };
+    let mut spaces = true;
+    for (key, value) in format {
+        match (key.as_str(), value) {
+            ("spaces", Value::Bool(b)) => spaces = *b,
+            ("spaces", _) => {
+                warnings.push("\"format.spaces\" precisa ser true ou false.".to_owned())
+            }
+            (other, _) => warnings.push(format!("A chave \"format.{other}\" não é usada.")),
+        }
+    }
+    spaces
 }
 
 /// Nomes do `extraTables`, em maiúsculas. O que não é texto vira aviso e fica de fora.
@@ -677,5 +711,18 @@ mod tests {
         assert!(extra_table_insertion(r#"{"extraTables": "A"}"#, "TB_X").is_none());
         assert!(extra_table_insertion("{", "TB_X").is_none());
         assert!(extra_table_insertion("[]", "TB_X").is_none());
+    }
+
+    #[test]
+    fn formatacao_sem_o_espaco_dentro_da_linha() {
+        let file = Path::new("/repo/R/Rule.txt");
+        let (config, warnings) = parse(r#"{ "format": { "spaces": false } }"#);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!config.unwrap().levels_for(file).format_spaces());
+        let (config, _) = parse("{}");
+        assert!(config.unwrap().levels_for(file).format_spaces());
+        let (config, warnings) = parse(r#"{ "format": { "spaces": "nao", "outra": 1 } }"#);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(config.unwrap().levels_for(file).format_spaces());
     }
 }

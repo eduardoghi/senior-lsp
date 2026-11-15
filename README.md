@@ -193,6 +193,10 @@ Dentro da linha, só muda o espaço entre dois tokens com nada além de espaço 
 O menos de um número negativo, o `++`, o ponto de `cur.Campo`, os dois-pontos de um rótulo e o
 espaço com um comentário no meio ficam como estão.
 
+A primeira formatação de uma regra que nunca passou pelo formatador costuma mexer no espaço de
+muitas linhas, o que dá um diff grande numa exportação versionada. Com `"format": { "spaces": false }`
+no [`senior-lsp.json`](#arquivo-de-configuração), a formatação da pasta só acerta o recuo.
+
 Ao digitar, o `}` e o `fim` levam a linha para o nível dela, e a linha nova do Enter já começa no
 nível do bloco. Enquanto o bloco ainda não tem fechamento e a regra tem erro, o Enter usa o recuo
 da linha de cima, com um nível a mais quando ela termina em `{` ou `inicio`. A extensão do VS Code
@@ -494,7 +498,7 @@ O SEN072 e o SEN073 não se escondem por diretiva, mas mudam de nível no `senio
 
 ### Arquivo de configuração
 
-O `senior-lsp.json` muda o nível de cada código para uma pasta inteira e lista as tabelas que existem no banco fora do dicionário de dados. O servidor procura o arquivo subindo a partir da pasta do arquivo analisado, como o `.editorconfig`, e usa o primeiro que achar, sem juntar com os de cima.
+O `senior-lsp.json` muda o nível de cada código para uma pasta inteira, lista as tabelas que existem no banco fora do dicionário de dados e escolhe o que a formatação acerta. O servidor procura o arquivo subindo a partir da pasta do arquivo analisado, como o `.editorconfig`, e usa o primeiro que achar, sem juntar com os de cima.
 
 ```json
 {
@@ -505,13 +509,15 @@ O `senior-lsp.json` muda o nível de cada código para uma pasta inteira e lista
     "overrides": [
         { "files": "Modelos/**", "diagnostics": { "SEN048": "off" } }
     ],
-    "extraTables": ["TB_CRIADA_NO_BANCO"]
+    "extraTables": ["TB_CRIADA_NO_BANCO"],
+    "format": { "spaces": false }
 }
 ```
 
 - Os níveis são `off` (o diagnóstico some), `hint`, `info`, `warning` e `error`. Um código fora do arquivo fica como o servidor o emite.
 - Os `overrides` valem em ordem, e o último que casa com o arquivo vence, código a código. O `files` é um glob relativo à pasta do `senior-lsp.json`, em texto ou em lista. Ele não diferencia maiúsculas, o `*` não atravessa pastas, o `**` atravessa e um nome de pasta com barra no fim (`Modelos/`) vale para tudo o que há dentro dela.
 - Os erros de sintaxe não mudam de nível.
+- O `format.spaces` com `false` deixa a formatação só com o recuo, sem mexer no espaço dentro das linhas. Sem a chave, os dois mudam.
 - O `extraTables` lista tabelas e visões criadas direto no banco, que o SEN086 não cobra no SQL nativo. A correção rápida do SEN086 acrescenta a tabela ao arquivo que vale para a regra e grava no disco. Sem arquivo, cria um na pasta do workspace que tem a regra. Os nomes não diferenciam maiúsculas. A lista não vale para o Senior SQL 2 nem para o SELECT do cursor, que procuram a tabela no dicionário. Uma diretiva que só escondia o SEN086 de uma tabela da lista passa a sair como SEN073.
 - Um JSON inválido faz o servidor ignorar o arquivo e mostrar um aviso (`window/showMessage`), e a análise segue sem configuração. Chave desconhecida, código que não existe e nível inválido também viram aviso, e o resto do arquivo vale.
 - A configuração vale nos arquivos abertos e na análise da pasta inteira. Quando o editor avisa que um `senior-lsp.json` mudou (o VS Code avisa), o servidor lê de novo e publica os diagnósticos outra vez. Nos editores que não avisam, como o Kate, a leitura é refeita ao abrir qualquer arquivo.
