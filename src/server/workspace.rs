@@ -5,6 +5,7 @@
 //! diagnósticos. Fica desligado por padrão porque no Claude Code os diagnósticos entram na
 //! conversa, e milhares de arquivos encheriam o contexto.
 
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 
 use lsp_types::{Location, Position, Range, Uri};
@@ -197,13 +198,13 @@ fn analyzed(
 fn analyze_model(
     files: &[ModelFile],
     encoding: crate::line_index::ColumnEncoding,
-) -> Result<Vec<Analyzed>> {
-    let mut results = Vec::new();
+    results: &mut Vec<Analyzed>,
+) -> Result<()> {
     let Some(first) = files.first() else {
-        return Ok(results);
+        return Ok(());
     };
     let Some(first_json) = read(&first.path, false) else {
-        return Ok(results);
+        return Ok(());
     };
     let model = crate::report::model_uncached(&first.path, &first_json);
     let inherited = super::documents::model_inherited(&model);
@@ -232,21 +233,36 @@ fn analyze_model(
         }
         results.push(analyzed(&documents, uri, path, &file.levels, encoding));
     }
-    Ok(results)
+    Ok(())
 }
 
-fn analyze_work(work: &Work, encoding: crate::line_index::ColumnEncoding) -> Result<Vec<Analyzed>> {
+/// Analisa os arquivos do trabalho e junta os resultados em `results`. Num erro, ficam os dos
+/// arquivos anteriores, que a versão serial já tinha publicado.
+fn analyze_work(
+    work: &Work,
+    encoding: crate::line_index::ColumnEncoding,
+    results: &mut Vec<Analyzed>,
+) -> Result<()> {
     match work {
         Work::Rules(rules) => {
-            let mut results = Vec::new();
             for rule in rules {
                 results.extend(analyze_rule_file(rule, encoding)?);
             }
-            Ok(results)
+            Ok(())
         }
-        Work::Model(files) => analyze_model(files, encoding),
+        Work::Model(files) => analyze_model(files, encoding, results),
     }
 }
+
+/// Como um trabalho terminou antes do fim.
+enum Failure {
+    Error(Box<dyn std::error::Error + Send + Sync>),
+    /// O pânico, para ser relançado na thread principal.
+    Panic(Box<dyn std::any::Any + Send>),
+}
+
+/// O que uma thread devolve de um trabalho, pelo índice dele.
+type Finished = (usize, Vec<Analyzed>, Option<Failure>);
 
 /// Devolve ao sistema a memória livre dos heaps que o malloc do glibc criou para as threads da
 /// análise. Eles continuam com as páginas dos documentos já soltos depois que as threads terminam,
@@ -289,7 +305,8 @@ impl Server<'_> {
         let encoding = self.encoding;
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(MAX_THREADS));
         let next = std::sync::atomic::AtomicUsize::new(0);
-        // Um erro, aqui só o texto grande demais, para a análise como antes, quando era serial.
+        // Um erro ou um pânico para a análise como antes, quando era serial. Os trabalhos são
+        // pegos em ordem, então os anteriores ao que falhou já estão com alguma thread.
         let stop = std::sync::atomic::AtomicBool::new(false);
         let outcome = std::thread::scope(|scope| -> Result<()> {
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -301,8 +318,19 @@ impl Server<'_> {
                     let Some(item) = work.get(i) else {
                         return;
                     };
-                    let result = analyze_work(item, encoding).map_err(|e| e.to_string());
-                    if sender.send((i, result)).is_err() {
+                    let mut results = Vec::new();
+                    let analyze = || analyze_work(item, encoding, &mut results);
+                    let failure = match std::panic::catch_unwind(AssertUnwindSafe(analyze)) {
+                        Ok(Ok(())) => None,
+                        Ok(Err(error)) => Some(Failure::Error(error)),
+                        Err(panic) => Some(Failure::Panic(panic)),
+                    };
+                    let failed = failure.is_some();
+                    if failed {
+                        stop.store(true, Relaxed);
+                    }
+                    let finished: Finished = (i, results, failure);
+                    if sender.send(finished).is_err() || failed {
                         return;
                     }
                 }
@@ -310,8 +338,8 @@ impl Server<'_> {
             let handles: Vec<_> = (0..threads)
                 .filter_map(|_| {
                     let sender = sender.clone();
-                    // A pilha da thread principal, porque a análise desce uma chamada por nível
-                    // da árvore e do SQL.
+                    // A pilha da thread principal no Linux, porque a análise desce uma chamada
+                    // por nível da árvore e do SQL.
                     std::thread::Builder::new()
                         .stack_size(8 << 20)
                         .spawn_scoped(scope, move || worker(sender))
@@ -324,9 +352,6 @@ impl Server<'_> {
             }
             drop(sender);
             let published = self.publish_in_order(work, receiver, &mut progress);
-            if published.is_err() {
-                stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
             // O fim do `scope` não espera os destrutores das variáveis de cada thread, como o cache
             // de SQL, e o `join` espera. Sem ele, a memória deles ainda não está livre no trim.
             for handle in handles {
@@ -349,16 +374,21 @@ impl Server<'_> {
     fn publish_in_order(
         &mut self,
         work: &[Work],
-        receiver: std::sync::mpsc::Receiver<(usize, std::result::Result<Vec<Analyzed>, String>)>,
+        receiver: std::sync::mpsc::Receiver<Finished>,
         progress: &mut Option<Progress>,
     ) -> Result<()> {
         let mut waiting = std::collections::BTreeMap::new();
         let mut turn = 0;
-        for (i, result) in receiver {
-            waiting.insert(i, result);
-            while let Some(result) = waiting.remove(&turn) {
-                for analyzed in result? {
+        for (i, results, failure) in receiver {
+            waiting.insert(i, (results, failure));
+            while let Some((results, failure)) = waiting.remove(&turn) {
+                for analyzed in results {
                     self.apply(analyzed, false)?;
+                }
+                match failure {
+                    None => {}
+                    Some(Failure::Error(error)) => return Err(error),
+                    Some(Failure::Panic(panic)) => std::panic::resume_unwind(panic),
                 }
                 if let Some(p) = progress {
                     p.step(work[turn].files())?;
