@@ -99,7 +99,8 @@ fn percorrer(tree: &Tree, texto: &str) -> (String, usize, Vec<usize>) {
     (saida, nos, nos_de_erro)
 }
 
-/// Formata a indentação de todas as regras de `SENIOR_CORPUS` com 2 e com 4 espaços. Formatar de
+/// Formata o recuo e o espaço dentro das linhas de todas as regras de `SENIOR_CORPUS`, com 2 e
+/// com 4 espaços de recuo. Formatar de
 /// novo não pode mudar nada, e o formatador recusa sozinho o resultado que mudaria algum token.
 /// Mostra quantas linhas cada estilo mudaria e as regras recusadas, que têm erro de sintaxe.
 #[test]
@@ -121,18 +122,22 @@ fn indentacao_das_regras_do_corpus() {
             };
             let tree = senior_lsp::parse(&texto).unwrap();
             linhas += texto.lines().count();
-            let Some(edits) = senior_lsp::format::indentation(&texto, &tree, indent, None) else {
+            let Some(edits) = senior_lsp::format::format(&texto, &tree, indent, None) else {
                 recusadas.push(caminho.display().to_string());
                 continue;
             };
-            mudadas += edits.len();
+            let linhas_com_troca: std::collections::BTreeSet<usize> = edits
+                .iter()
+                .map(|e| texto[..usize::from(e.range.start())].matches('\n').count())
+                .collect();
+            mudadas += linhas_com_troca.len();
             let mut novo = texto.clone();
             for edit in edits.iter().rev() {
                 let range = usize::from(edit.range.start())..usize::from(edit.range.end());
                 novo.replace_range(range, &edit.new_text);
             }
             let tree = senior_lsp::parse(&novo).unwrap();
-            let de_novo = senior_lsp::format::indentation(&novo, &tree, indent, None);
+            let de_novo = senior_lsp::format::format(&novo, &tree, indent, None);
             if de_novo.as_ref().is_none_or(|e| !e.is_empty()) {
                 instaveis.push(caminho.display().to_string());
             }

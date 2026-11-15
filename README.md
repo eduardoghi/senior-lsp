@@ -168,11 +168,11 @@ do modelo.
 
 ### Formatação
 
-O "Formatar documento", o "Formatar seleção" e a formatação ao digitar acertam a indentação, e só
-ela. O tamanho do nível e
-a escolha entre espaço e tabulação vêm do editor, no pedido de formatação (no VS Code, o "Tab Size"
-e o "Insert Spaces" do arquivo). O formatador não junta nem quebra linhas, não mexe nos espaços de
-dentro da linha e não muda a chave de lugar.
+O "Formatar documento" e o "Formatar seleção" acertam o recuo do começo das linhas e o espaço
+entre os tokens de cada linha. A formatação ao digitar acerta só o recuo. O tamanho do nível e a
+escolha entre espaço e tabulação vêm do editor, no pedido de formatação (no VS Code, o "Tab Size" e
+o "Insert Spaces" do arquivo). O formatador não junta nem quebra linhas e não muda a chave de
+lugar.
 
 - O conteúdo de um bloco, com chaves ou com `inicio` e `fim`, entra um nível. A chave ou o `inicio`
   sozinho na linha fica na coluna do comando, como o fechamento.
@@ -181,6 +181,17 @@ dentro da linha e não muda a chave de lugar.
 - A linha que continua um comando começado numa linha de cima, como uma condição longa, anda junto
   com a primeira e mantém o alinhamento que a pessoa fez, sem ficar à esquerda dela.
 - O comentário sozinho na linha segue o nível do bloco em que está.
+
+Dentro da linha, só muda o espaço entre dois tokens com nada além de espaço entre eles:
+
+- um espaço em volta de `=`, `<>`, `<`, `>`, `<=`, `>=`, `+`, `-`, `*`, `/`, `e` e `ou` quando eles
+  têm dois lados, depois da vírgula e do `;` seguidos de outro token e entre `se`, `enquanto` ou
+  `para` e o `(`
+- nenhum antes da vírgula e do `;`, depois do `(`, antes do `)` e entre o nome de uma função e o `(`
+  dela, na chamada e na declaração
+
+O menos de um número negativo, o `++`, o ponto de `cur.Campo`, os dois-pontos de um rótulo e o
+espaço com um comentário no meio ficam como estão.
 
 Ao digitar, o `}` e o `fim` levam a linha para o nível dela, e a linha nova do Enter já começa no
 nível do bloco. Enquanto o bloco ainda não tem fechamento e a regra tem erro, o Enter usa o recuo

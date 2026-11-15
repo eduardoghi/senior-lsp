@@ -1,5 +1,7 @@
-//! Formatador da indentação. Muda só os espaços do começo de cada linha, pelo aninhamento dos
-//! comandos, e não junta, quebra nem mexe dentro das linhas.
+//! Formatador. Acerta o recuo do começo de cada linha, pelo aninhamento dos comandos, e o espaço
+//! entre os tokens da mesma linha, e não junta nem quebra linhas.
+//!
+//! O recuo:
 //!
 //! - O conteúdo de um bloco, com chaves ou com `inicio` e `fim`, entra um nível. A chave ou o
 //!   `inicio` sozinho na linha fica na coluna do comando, como o fechamento.
@@ -8,6 +10,16 @@
 //! - A linha que continua um comando começado numa linha de cima anda junto com ela, mantendo o
 //!   alinhamento que a pessoa fez, e nunca fica à esquerda dela.
 //! - O comentário sozinho na linha segue o nível do bloco em que está.
+//!
+//! O espaço dentro da linha, só entre dois tokens com nada além de espaço entre eles:
+//!
+//! - Um espaço em volta dos operadores de dois lados (`=`, `<>`, `<`, `>`, `<=`, `>=`, `+`, `-`,
+//!   `*`, `/`, `e` e `ou`), depois da vírgula e do `;` seguidos de outro token na linha e entre
+//!   `se`, `enquanto` ou `para` e o `(`.
+//! - Nenhum antes da vírgula e do `;`, depois do `(`, antes do `)` e entre o nome de uma função e o
+//!   `(` dela, na chamada e na declaração.
+//! - O resto, como o menos de um número negativo, o `++`, o ponto de `cur.Campo` e os dois-pontos de
+//!   um rótulo, fica como está.
 //!
 //! Não mudam a linha de dentro de um texto que continua na linha de baixo, em que os espaços fazem
 //! parte do texto, a de dentro de um comentário `/* */` de várias linhas, as linhas entre
@@ -68,16 +80,41 @@ pub fn indentation(
     indent: Indent,
     only: Option<TextRange>,
 ) -> Option<Vec<Edit>> {
+    run(text, tree, indent, only, false)
+}
+
+/// O recuo e o espaço dentro das linhas, como no [`indentation`].
+pub fn format(
+    text: &str,
+    tree: &Tree,
+    indent: Indent,
+    only: Option<TextRange>,
+) -> Option<Vec<Edit>> {
+    run(text, tree, indent, only, true)
+}
+
+fn run(
+    text: &str,
+    tree: &Tree,
+    indent: Indent,
+    only: Option<TextRange>,
+    spaces: bool,
+) -> Option<Vec<Edit>> {
     if !tree.errors().is_empty() || !tree.tokens().errors().is_empty() {
         return None;
     }
     let plan = Plan::build(tree);
     let skipped = format_off_lines(text, tree);
+    let spacing = spaces.then(|| Spacing::build(tree));
     let mut frozen = rustc_hash::FxHashSet::default();
     // Cada volta congela pelo menos uma linha nova, então o laço termina. O limite só protege de
     // um engano no cálculo.
     for _ in 0..64 {
-        let edits = plan.edits(text, tree.tokens(), indent, only, &skipped, &frozen);
+        let mut edits = plan.edits(text, tree.tokens(), indent, only, &skipped, &frozen);
+        if let Some(spacing) = &spacing {
+            edits.extend(spacing.edits(text, tree.tokens(), only, &skipped, &frozen));
+            edits.sort_by_key(|e| e.range.start());
+        }
         match check(text, &edits) {
             Outcome::Same => return Some(edits),
             Outcome::TooLong(lines) if !lines.iter().all(|l| frozen.contains(l)) => {
@@ -242,6 +279,140 @@ fn previous_line_columns(before: &str, indent: Indent) -> u32 {
     } else {
         columns
     }
+}
+
+/// O papel de cada token nas regras do espaço dentro da linha.
+struct Spacing {
+    /// Operadores de dois lados, como o `=` da atribuição e o `+` de uma conta.
+    binary: rustc_hash::FxHashSet<usize>,
+    /// O `(` da lista de argumentos de uma chamada ou dos parâmetros de uma declaração.
+    call_paren: rustc_hash::FxHashSet<usize>,
+}
+
+impl Spacing {
+    fn build(tree: &Tree) -> Spacing {
+        use SyntaxKind::*;
+        let mut spacing = Spacing {
+            binary: Default::default(),
+            call_paren: Default::default(),
+        };
+        let direct = |node: NodeId| {
+            tree.elements(node).filter_map(|e| match e {
+                Element::Token(t) => Some(t),
+                Element::Node(_) => None,
+            })
+        };
+        let first_token = |node: NodeId| {
+            tree.token_range(node)
+                .find(|&t| !tree.tokens().kind(t).is_trivia())
+        };
+        let mut stack = vec![tree.root()];
+        while let Some(node) = stack.pop() {
+            stack.extend(tree.children(node));
+            match tree.kind(node) {
+                BinaryExpr => spacing
+                    .binary
+                    .extend(direct(node).filter(|&t| !tree.tokens().kind(t).is_trivia())),
+                Assign => spacing
+                    .binary
+                    .extend(direct(node).filter(|&t| tree.tokens().kind(t) == Eq)),
+                ArgList | ParamList => {
+                    if let Some(open) = first_token(node)
+                        && tree.tokens().kind(open) == LParen
+                    {
+                        spacing.call_paren.insert(open);
+                    }
+                }
+                _ => {}
+            }
+        }
+        spacing
+    }
+
+    /// Quantos espaços vão entre os tokens `a` e `b`, ou `None` para deixar como está.
+    fn wanted(&self, tokens: &crate::Tokens, a: usize, b: usize) -> Option<usize> {
+        use SyntaxKind::*;
+        let (ka, kb) = (tokens.kind(a), tokens.kind(b));
+        if ka == LParen || matches!(kb, RParen | Semicolon | Comma) {
+            return Some(0);
+        }
+        if self.call_paren.contains(&b) {
+            return Some(0);
+        }
+        if matches!(ka, Comma | Semicolon) || self.binary.contains(&a) || self.binary.contains(&b) {
+            return Some(1);
+        }
+        if matches!(ka, SeKw | EnquantoKw | ParaKw) && kb == LParen {
+            return Some(1);
+        }
+        None
+    }
+
+    /// As trocas do espaço entre os tokens de cada linha, fora as de `skipped` e de `frozen`.
+    fn edits(
+        &self,
+        text: &str,
+        tokens: &crate::Tokens,
+        only: Option<TextRange>,
+        skipped: &rustc_hash::FxHashSet<usize>,
+        frozen: &rustc_hash::FxHashSet<usize>,
+    ) -> Vec<Edit> {
+        let mut edits = Vec::new();
+        let mut line = 0usize;
+        let mut previous: Option<usize> = None;
+        for i in 0..tokens.len() {
+            let kind = tokens.kind(i);
+            match kind {
+                SyntaxKind::Newline => {
+                    line += 1;
+                    previous = None;
+                    continue;
+                }
+                SyntaxKind::Whitespace => continue,
+                // Um comentário no meio separa os dois lados, que ficam como estão. O de várias
+                // linhas também conta as quebras.
+                SyntaxKind::AtComment | SyntaxKind::BlockComment => {
+                    line += tokens.text(i, text).matches('\n').count();
+                    previous = None;
+                    continue;
+                }
+                _ => {}
+            }
+            // Um texto que continua na linha de baixo também conta as quebras dele.
+            let breaks = tokens.text(i, text).matches('\n').count();
+            if let Some(a) = previous
+                && !skipped.contains(&line)
+                && !frozen.contains(&line)
+                && let Some(count) = self.wanted(tokens, a, i)
+            {
+                let gap = TextRange::new(tokens.range(a).end(), tokens.range(i).start());
+                let new_text = " ".repeat(count);
+                let inside =
+                    only.is_none_or(|r| r.contains_range(gap) || r.intersect(gap).is_some());
+                // Juntar dois operadores mudaria os tokens, como `- -` virando `--`.
+                let joins = count == 0 && !gap.is_empty() && glues(tokens.kind(a), kind);
+                if text[gap] != new_text && inside && !joins {
+                    edits.push(Edit {
+                        range: gap,
+                        new_text,
+                    });
+                }
+            }
+            line += breaks;
+            previous = (breaks == 0).then_some(i);
+        }
+        edits
+    }
+}
+
+/// Dois tokens que, colados, viram outro, como `-` e `-` virando `--`, ou que viram um nome só.
+fn glues(a: SyntaxKind, b: SyntaxKind) -> bool {
+    use SyntaxKind::*;
+    let word = |k: SyntaxKind| k == Ident || k == Number || k.is_keyword();
+    matches!(
+        (a, b),
+        (Minus, Minus) | (Plus, Plus) | (Lt, Gt) | (Lt, Eq) | (Gt, Eq)
+    ) || (word(a) && word(b))
 }
 
 /// Índice do token que começa em `at`, quando há um.
@@ -711,6 +882,52 @@ mod tests {
         assert_eq!(
             typed("se (n = 1)\nmeuinicio = 1;\n"),
             "se (n = 1)\nmeuinicio = 1;\n"
+        );
+    }
+
+    fn format_all(text: &str) -> String {
+        let spaces = Indent {
+            tab_size: 2,
+            spaces: true,
+        };
+        let tree = crate::parse(text).unwrap();
+        let edits = super::format(text, &tree, spaces, None).unwrap();
+        let mut out = text.to_owned();
+        for edit in edits.iter().rev() {
+            let range = usize::from(edit.range.start())..usize::from(edit.range.end());
+            out.replace_range(range, &edit.new_text);
+        }
+        let tree = crate::parse(&out).unwrap();
+        assert!(
+            super::format(&out, &tree, spaces, None).unwrap().is_empty(),
+            "{out}"
+        );
+        out
+    }
+
+    #[test]
+    fn espaco_dentro_da_linha() {
+        assert_eq!(
+            format_all("se((a=1) e(b<>2)){\nx=Soma(a,b ,c) ;\ny = - 1;\n}\n"),
+            "se ((a = 1) e (b <> 2)){\n  x = Soma(a, b, c);\n  y = - 1;\n}\n"
+        );
+        // O menos de número negativo, o `++` e o ponto ficam como estão, e um operador nunca
+        // cola no outro.
+        assert_eq!(
+            format_all("para(n=1;n<=3;n++) x=a- -b;\nc.SQL \"A\";\nEnviar( 1 );\n"),
+            "para (n = 1; n <= 3; n++) x = a - -b;\nc.SQL \"A\";\nEnviar(1);\n"
+        );
+        // A declaração e a implementação da função também perdem o espaço antes do `(`.
+        assert_eq!(
+            format_all(
+                "Definir Funcao F (Numero pA,Alfa pB);\nfuncao F (Numero pA,Alfa pB); { }\n"
+            ),
+            "Definir Funcao F(Numero pA, Alfa pB);\nfuncao F(Numero pA, Alfa pB); { }\n"
+        );
+        // Texto e comentário ficam como estão, e um comentário no meio separa os dois lados.
+        assert_eq!(
+            format_all("a=\"x=1,2\" @ y=2 @;\n"),
+            "a = \"x=1,2\" @ y=2 @;\n"
         );
     }
 }
