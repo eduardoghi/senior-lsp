@@ -248,6 +248,23 @@ fn analyze_work(work: &Work, encoding: crate::line_index::ColumnEncoding) -> Res
     }
 }
 
+/// Devolve ao sistema a memória livre dos heaps que o malloc do glibc criou para as threads da
+/// análise. Eles continuam com as páginas dos documentos já soltos depois que as threads terminam,
+/// uns 30 MB no corpus de 1.400 regras. No Windows o heap é um só e não há o que fazer.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn release_free_memory() {
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> std::ffi::c_int;
+    }
+    // SAFETY: a função do glibc só devolve páginas livres, e pode ser chamada de qualquer thread.
+    unsafe {
+        malloc_trim(0);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn release_free_memory() {}
+
 /// Regras fora de formulário SGI que vão juntas para uma thread, para o custo de passar o
 /// resultado entre as threads não pesar nas regras pequenas.
 const RULES_PER_WORK: usize = 8;
@@ -290,52 +307,65 @@ impl Server<'_> {
                     }
                 }
             };
-            let spawned = (0..threads)
-                .filter(|_| {
+            let handles: Vec<_> = (0..threads)
+                .filter_map(|_| {
                     let sender = sender.clone();
                     // A pilha da thread principal, porque a análise desce uma chamada por nível
                     // da árvore e do SQL.
                     std::thread::Builder::new()
                         .stack_size(8 << 20)
                         .spawn_scoped(scope, move || worker(sender))
-                        .is_ok()
+                        .ok()
                 })
-                .count();
+                .collect();
             // Sem thread, a análise roda inteira nesta antes de publicar.
-            if spawned == 0 {
+            if handles.is_empty() {
                 worker(sender.clone());
             }
             drop(sender);
-            // Os resultados chegam fora de ordem e esperam aqui até chegar a vez deles.
-            let mut waiting = std::collections::BTreeMap::new();
-            let mut turn = 0;
-            for (i, result) in receiver {
-                waiting.insert(i, result);
-                while let Some(result) = waiting.remove(&turn) {
-                    let analyzed = match result {
-                        Ok(analyzed) => analyzed,
-                        Err(e) => {
-                            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                            return Err(e.into());
-                        }
-                    };
-                    for analyzed in analyzed {
-                        self.apply(analyzed, false)?;
-                    }
-                    if let Some(p) = &mut progress {
-                        p.step(work[turn].files())?;
-                    }
-                    turn += 1;
-                }
+            let published = self.publish_in_order(work, receiver, &mut progress);
+            if published.is_err() {
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
             }
-            Ok(())
+            // O fim do `scope` não espera os destrutores das variáveis de cada thread, como o cache
+            // de SQL, e o `join` espera. Sem ele, a memória deles ainda não está livre no trim.
+            for handle in handles {
+                let _ = handle.join();
+            }
+            published
         });
+        release_free_memory();
         outcome?;
         if let Some(p) = progress {
             p.end()?;
         }
         // As regras foram lidas e analisadas, e as definições delas já estão no índice.
         self.index.set_loaded();
+        Ok(())
+    }
+
+    /// Guarda e publica os resultados das threads na ordem dos trabalhos. Eles chegam fora de
+    /// ordem e esperam aqui até chegar a vez deles.
+    fn publish_in_order(
+        &mut self,
+        work: &[Work],
+        receiver: std::sync::mpsc::Receiver<(usize, std::result::Result<Vec<Analyzed>, String>)>,
+        progress: &mut Option<Progress>,
+    ) -> Result<()> {
+        let mut waiting = std::collections::BTreeMap::new();
+        let mut turn = 0;
+        for (i, result) in receiver {
+            waiting.insert(i, result);
+            while let Some(result) = waiting.remove(&turn) {
+                for analyzed in result? {
+                    self.apply(analyzed, false)?;
+                }
+                if let Some(p) = progress {
+                    p.step(work[turn].files())?;
+                }
+                turn += 1;
+            }
+        }
         Ok(())
     }
 
