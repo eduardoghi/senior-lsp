@@ -204,8 +204,6 @@ pub struct Check {
     pub label: Option<std::string::String>,
 }
 
-/// `inherited` são as funções definidas em outras regras que valem para esta, como a regra da
-/// raiz de um formulário SGI.
 /// Campo do dicionário de dados em `TABELA.Campo` (um `FieldExpr`), como o conferidor de tipos vê.
 pub(crate) fn dictionary_field<'a>(
     tree: &Tree,
@@ -248,6 +246,8 @@ pub(crate) fn expression_type(
     types::assignable(tree, &scope, node)
 }
 
+/// `inherited` são as funções definidas em outras regras que valem para esta, como a regra da
+/// raiz de um formulário SGI.
 pub fn validate(
     tree: &Tree,
     symbols: &Symbols,

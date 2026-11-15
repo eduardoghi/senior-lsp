@@ -10,16 +10,24 @@ use crate::validate::{Check, CheckKind, Sql2Error};
 
 /// Distância entre dois nomes, sem diferença de caixa, contando letra trocada, a mais, a menos e
 /// duas vizinhas invertidas. `None` quando passa de `limit`.
-fn distance(a: &[u8], b: &[u8], limit: usize) -> Option<usize> {
+///
+/// `rows` são as três linhas da tabela que bastam (a atual, a anterior e a de antes dela, para a
+/// inversão), reaproveitadas de um candidato para o outro. Quando duas linhas seguidas passam do
+/// limite, a conta para, porque cada célula da linha seguinte sai delas mais um custo que não é
+/// negativo, e assim até o fim.
+fn distance(a: &[u8], b: &[u8], limit: usize, rows: &mut [Vec<usize>; 3]) -> Option<usize> {
     if a.len().abs_diff(b.len()) > limit {
         return None;
     }
     let same = |x: u8, y: u8| x.eq_ignore_ascii_case(&y);
-    // Três linhas da tabela bastam: a atual, a anterior e a de antes dela, para a inversão.
-    let mut before: Vec<usize> = Vec::new();
-    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    let [before, previous, current] = rows;
+    before.clear();
+    previous.clear();
+    previous.extend(0..=b.len());
+    let mut previous_over = previous.iter().all(|&v| v > limit);
     for i in 1..=a.len() {
-        let mut current = vec![i; b.len() + 1];
+        current.clear();
+        current.resize(b.len() + 1, i);
         for j in 1..=b.len() {
             let cost = usize::from(!same(a[i - 1], b[j - 1]));
             let mut best = (previous[j] + 1)
@@ -30,7 +38,13 @@ fn distance(a: &[u8], b: &[u8], limit: usize) -> Option<usize> {
             }
             current[j] = best;
         }
-        before = std::mem::replace(&mut previous, current);
+        let current_over = current.iter().all(|&v| v > limit);
+        if current_over && previous_over {
+            return None;
+        }
+        previous_over = current_over;
+        std::mem::swap(before, previous);
+        std::mem::swap(previous, current);
     }
     Some(previous[b.len()]).filter(|&d| d <= limit)
 }
@@ -50,8 +64,9 @@ pub(super) fn closest<'a>(
     };
     let mut best: Option<(usize, &str)> = None;
     let mut tied = false;
+    let mut rows = [Vec::new(), Vec::new(), Vec::new()];
     for candidate in candidates {
-        let Some(d) = distance(name.as_bytes(), candidate.as_bytes(), limit) else {
+        let Some(d) = distance(name.as_bytes(), candidate.as_bytes(), limit, &mut rows) else {
             continue;
         };
         match best {
@@ -191,5 +206,60 @@ mod tests {
             ),
             Some("ConverteMascara")
         );
+    }
+    // Distância entre dois nomes, sem diferença de caixa, contando letra trocada, a mais, a menos e
+    // duas vizinhas invertidas. `None` quando passa de `limit`.
+    fn distancia_antiga(a: &[u8], b: &[u8], limit: usize) -> Option<usize> {
+        if a.len().abs_diff(b.len()) > limit {
+            return None;
+        }
+        let same = |x: u8, y: u8| x.eq_ignore_ascii_case(&y);
+        // Três linhas da tabela bastam: a atual, a anterior e a de antes dela, para a inversão.
+        let mut before: Vec<usize> = Vec::new();
+        let mut previous: Vec<usize> = (0..=b.len()).collect();
+        for i in 1..=a.len() {
+            let mut current = vec![i; b.len() + 1];
+            for j in 1..=b.len() {
+                let cost = usize::from(!same(a[i - 1], b[j - 1]));
+                let mut best = (previous[j] + 1)
+                    .min(current[j - 1] + 1)
+                    .min(previous[j - 1] + cost);
+                if i > 1 && j > 1 && same(a[i - 1], b[j - 2]) && same(a[i - 2], b[j - 1]) {
+                    best = best.min(before[j - 2] + 1);
+                }
+                current[j] = best;
+            }
+            before = std::mem::replace(&mut previous, current);
+        }
+        Some(previous[b.len()]).filter(|&d| d <= limit)
+    }
+
+    #[test]
+    fn distancia_igual_a_da_tabela_inteira() {
+        // Todos os pares de nomes curtos sobre um alfabeto pequeno, para cobrir trocas, inversões
+        // e tamanhos diferentes.
+        let mut nomes = vec![String::new()];
+        for _ in 0..4 {
+            let maiores: Vec<String> = nomes
+                .iter()
+                .filter(|n| n.len() < 4)
+                .flat_map(|n| ["a", "b", "C"].map(|c| format!("{n}{c}")))
+                .collect();
+            nomes.extend(maiores);
+        }
+        nomes.sort();
+        nomes.dedup();
+        let mut rows = [Vec::new(), Vec::new(), Vec::new()];
+        for a in &nomes {
+            for b in &nomes {
+                for limit in 0..=3 {
+                    assert_eq!(
+                        distance(a.as_bytes(), b.as_bytes(), limit, &mut rows),
+                        distancia_antiga(a.as_bytes(), b.as_bytes(), limit),
+                        "{a} {b} {limit}"
+                    );
+                }
+            }
+        }
     }
 }

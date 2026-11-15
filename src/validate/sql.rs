@@ -1531,6 +1531,8 @@ impl<'a> FirstUses<'a> {
         let names = self.names.get_or_init(|| {
             let tokens = self.tree.tokens();
             let mut names = FxHashMap::default();
+            // Copiar o nome em maiúsculas num buffer reaproveitado sai mais barato que uma chave
+            // que compara ignorando a caixa, que teria de comparar letra a letra a cada consulta.
             let mut upper = String::new();
             for i in 0..tokens.len() {
                 if tokens.kind(i) != SyntaxKind::Ident {
