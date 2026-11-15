@@ -948,6 +948,7 @@ impl Server<'_> {
                     let context = self.rule_context(&doc.uri);
                     self.documents
                         .set(doc.uri.clone(), doc.text, doc.version, context)?;
+                    self.prewarm(&doc.uri);
                     self.publish(&doc.uri)?;
                 }
             }
@@ -1123,6 +1124,14 @@ impl Server<'_> {
         self.publish(&uri).map_err(|e| e.to_string())
     }
 
+    /// Analisa em paralelo o SQL da regra antes da primeira validação dela, pelo
+    /// [`crate::validate::prewarm`].
+    fn prewarm(&self, uri: &Uri) {
+        if let Some(doc) = self.documents.get(uri) {
+            crate::validate::prewarm(&doc.tree, &doc.text, &doc.inherited.dictionaries);
+        }
+    }
+
     fn publish(&self, uri: &Uri) -> Result<()> {
         match self.diagnostics_of(&self.documents, uri) {
             Some((diagnostics, version)) => {
@@ -1256,6 +1265,7 @@ impl Server<'_> {
                 let (text, version) = (doc.text.clone(), doc.version);
                 let context = self.rule_context(&uri);
                 self.documents.set(uri.clone(), text, version, context)?;
+                self.prewarm(&uri);
             } else if let Some(report) = self.documents.report(&uri) {
                 let (json, version) = (report.json.to_string(), report.version);
                 self.documents.set_report(uri.clone(), json, version)?;

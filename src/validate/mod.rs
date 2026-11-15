@@ -16,6 +16,7 @@ mod types;
 use crate::{Element, NodeId, Tree};
 pub use sql::cursor_columns;
 pub(crate) use sql::cursor_sql_literals;
+pub(crate) use sql::prewarm;
 
 /// O que o Senior SQL 2 recusa num comando, igual no cursor, no `ExecSql` e no
 /// `SQL_DefinirComando`.

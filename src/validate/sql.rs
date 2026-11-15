@@ -198,6 +198,10 @@ struct Cache {
 }
 
 impl Cache {
+    fn contains(&self, literal: &str) -> bool {
+        self.current.contains_key(literal) || self.previous.contains_key(literal)
+    }
+
     fn get(&mut self, literal: &str) -> Option<Rc<Analysis>> {
         if let Some(hit) = self.current.get(literal) {
             return Some(hit.clone());
@@ -229,11 +233,9 @@ fn same_dictionary(a: &SharedDictionary, b: &SharedDictionary) -> bool {
     }
 }
 
-/// Resultado das conferências do SQL de um literal de string (com as aspas, como está no texto da
-/// regra), calculado na primeira vez e lembrado depois. A chave é o literal, e não o SQL que sai
-/// dele, para a consulta ao cache não montar o SQL de novo.
-pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysis> {
-    let cached = CACHE.with(|cache| {
+/// O cache desta thread para `dictionaries`, esvaziado antes se ele guardava os de outros.
+fn with_cache<R>(dictionaries: &Dictionaries, f: impl FnOnce(&mut Cache) -> R) -> R {
+    CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let (production, test) = &cache.dictionaries;
         if !same_dictionary(production, &dictionaries.production)
@@ -244,11 +246,93 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
                 ..Cache::default()
             };
         }
-        cache.get(literal)
-    });
-    if let Some(hit) = cached {
+        f(&mut cache)
+    })
+}
+
+/// Resultado das conferências do SQL de um literal de string (com as aspas, como está no texto da
+/// regra), calculado na primeira vez e lembrado depois. A chave é o literal, e não o SQL que sai
+/// dele, para a consulta ao cache não montar o SQL de novo.
+pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysis> {
+    if let Some(hit) = with_cache(dictionaries, |cache| cache.get(literal)) {
         return hit;
     }
+    let analysis = Rc::new(compute(literal, dictionaries));
+    with_cache(dictionaries, |cache| {
+        cache.insert(literal.to_owned(), analysis.clone())
+    });
+    analysis
+}
+
+/// Menos SQL fora do cache do que isso é analisado na hora em que a validação pede, porque abrir
+/// as threads custaria mais que a análise.
+const PREWARM_MIN: usize = 64;
+
+/// Analisa em paralelo o SQL da regra que ainda não está no cache e guarda o resultado nele, para
+/// a validação de uma regra grande recém-aberta não ler um SQL de cada vez. Na digitação quase todo
+/// SQL já está no cache, então só vale chamar quando a regra é aberta ou o dicionário muda.
+pub(crate) fn prewarm(tree: &Tree, text: &str, dictionaries: &Dictionaries) {
+    let mut literals: Vec<&str> = Vec::new();
+    let mut stack = vec![tree.root()];
+    while let Some(node) = stack.pop() {
+        stack.extend(tree.children(node));
+        let literal = match tree.kind(node) {
+            SyntaxKind::FieldCommand => cursor_sql_literal(tree, text, node),
+            SyntaxKind::KeywordStmt => exec_sql_literal(tree, node).map(|(_, range)| range),
+            SyntaxKind::CallStmt => exec_sql_literal(tree, node)
+                .map(|(_, range)| range)
+                .or_else(|| define_command_literal(tree, text, node)),
+            _ => None,
+        };
+        literals.extend(literal.map(|range| &text[range]));
+    }
+    literals.sort_unstable();
+    literals.dedup();
+    let missing: Vec<&str> = with_cache(dictionaries, |cache| {
+        literals.retain(|literal| !cache.contains(literal));
+        literals
+    });
+    if missing.len() < PREWARM_MIN {
+        return;
+    }
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let work = || {
+        let mut done = Vec::new();
+        loop {
+            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(literal) = missing.get(i) else {
+                return done;
+            };
+            done.push((i, compute(literal, dictionaries)));
+        }
+    };
+    let results: Vec<(usize, Analysis)> = std::thread::scope(|scope| {
+        // A pilha da thread principal, porque o sqlparser desce uma chamada por nível do SQL.
+        let handles: Vec<_> = (0..threads)
+            .filter_map(|_| {
+                std::thread::Builder::new()
+                    .stack_size(8 << 20)
+                    .spawn_scoped(scope, work)
+                    .ok()
+            })
+            .collect();
+        // O que uma thread não fez a validação analisa na hora.
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .flatten()
+            .collect()
+    });
+    with_cache(dictionaries, |cache| {
+        for (i, analysis) in results {
+            cache.insert(missing[i].to_owned(), Rc::new(analysis));
+        }
+    });
+}
+
+/// As conferências do SQL de um literal, sem o cache.
+fn compute(literal: &str, dictionaries: &Dictionaries) -> Analysis {
     let sql = string_value(literal);
     let statements = Parser::parse_sql(&OracleDialect {}, &sql).ok();
     let reading = compiler_columns(&sql);
@@ -306,7 +390,7 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
         .iter_mut()
         .for_each(|u| in_literal(&mut u.range));
     native.iter_mut().for_each(|u| in_literal(&mut u.range));
-    let analysis = Rc::new(Analysis {
+    Analysis {
         constants: statements.as_deref().map(constants_of).unwrap_or_default(),
         columns: statements.and_then(|s| select_columns(&s, dictionaries)),
         unknown,
@@ -315,13 +399,7 @@ pub(super) fn analysis(literal: &str, dictionaries: &Dictionaries) -> Rc<Analysi
         sql2,
         sql2_select,
         native,
-    });
-    CACHE.with(|cache| {
-        cache
-            .borrow_mut()
-            .insert(literal.to_owned(), analysis.clone())
-    });
-    analysis
+    }
 }
 
 fn is_constant(expr: &Expr) -> bool {
@@ -2092,6 +2170,44 @@ fn string_literal(tree: &Tree, node: NodeId) -> Option<text_size::TextRange> {
     (tree.tokens().kind(token) == SyntaxKind::String).then(|| tree.tokens().range(token))
 }
 
+/// O literal de `cur.SQL "SELECT ..."`.
+fn cursor_sql_literal(tree: &Tree, text: &str, node: NodeId) -> Option<text_size::TextRange> {
+    let mut children = tree.children(node);
+    let field = children.next()?;
+    let is_sql = text[tree.text_range(field)]
+        .rsplit('.')
+        .next()
+        .is_some_and(|name| name.trim().eq_ignore_ascii_case("SQL"));
+    is_sql.then(|| string_literal(tree, children.next()?))?
+}
+
+/// O comando, `ExecSql` ou `ExecSqlEx`, e o literal do SQL dele.
+fn exec_sql_literal(tree: &Tree, node: NodeId) -> Option<(SyntaxKind, text_size::TextRange)> {
+    let keyword = tree.tokens().kind(tree.token_range(node).start);
+    let value = match (tree.kind(node), keyword) {
+        (SyntaxKind::KeywordStmt, SyntaxKind::ExecSqlKw) => tree.children(node).next(),
+        (SyntaxKind::CallStmt, SyntaxKind::ExecSqlExKw) => tree
+            .children(node)
+            .next()
+            .and_then(|call| {
+                tree.children(call)
+                    .find(|&c| tree.kind(c) == SyntaxKind::ArgList)
+            })
+            .and_then(|args| tree.children(args).next()),
+        _ => None,
+    }?;
+    Some((keyword, string_literal(tree, value)?))
+}
+
+/// O literal do SQL de `SQL_DefinirComando(obj, "SELECT ...")`.
+fn define_command_literal(tree: &Tree, text: &str, node: NodeId) -> Option<text_size::TextRange> {
+    let (callee, args) = call(tree, text, node)?;
+    if !callee.eq_ignore_ascii_case("SQL_DefinirComando") {
+        return None;
+    }
+    string_literal(tree, *args.get(1)?)
+}
+
 /// `cur.SQL "SELECT ..."` com uma coluna que o compilador recusa, como a constante e a tabela ou
 /// o campo que o dicionário de dados não tem, ou com um `:nome` que ainda não apareceu na regra.
 /// O compilador só aceita como parâmetro o nome que já foi definido ou usado antes do comando.
@@ -2103,21 +2219,7 @@ pub(super) fn cursor_sql(
     checks: &mut Vec<Check>,
 ) {
     let (text, dictionaries) = (scope.text, &scope.inherited.dictionaries);
-    let Some(field) = tree.children(node).next() else {
-        return;
-    };
-    let is_sql = text[tree.text_range(field)]
-        .rsplit('.')
-        .next()
-        .is_some_and(|name| name.trim().eq_ignore_ascii_case("SQL"));
-    if !is_sql {
-        return;
-    }
-    let Some(range) = tree
-        .children(node)
-        .nth(1)
-        .and_then(|value| string_literal(tree, value))
-    else {
+    let Some(range) = cursor_sql_literal(tree, text, node) else {
         return;
     };
     let analysis = analysis(&text[range], dictionaries);
@@ -2260,20 +2362,7 @@ pub(super) fn exec_sql(
     node: NodeId,
     checks: &mut Vec<Check>,
 ) {
-    let keyword = tree.tokens().kind(tree.token_range(node).start);
-    let value = match (tree.kind(node), keyword) {
-        (SyntaxKind::KeywordStmt, SyntaxKind::ExecSqlKw) => tree.children(node).next(),
-        (SyntaxKind::CallStmt, SyntaxKind::ExecSqlExKw) => tree
-            .children(node)
-            .next()
-            .and_then(|call| {
-                tree.children(call)
-                    .find(|&c| tree.kind(c) == SyntaxKind::ArgList)
-            })
-            .and_then(|args| tree.children(args).next()),
-        _ => return,
-    };
-    let Some(range) = value.and_then(|value| string_literal(tree, value)) else {
+    let Some((keyword, range)) = exec_sql_literal(tree, node) else {
         return;
     };
     let analysis = analysis(&scope.text[range], &scope.inherited.dictionaries);
@@ -2445,6 +2534,48 @@ mod tests {
         assert_eq!(names(analysis(&sql, &one)), ["A"]);
         assert_eq!(names(analysis(&sql, &other)), ["B"]);
         assert!(names(analysis(&sql, &Dictionaries::default())).is_empty());
+    }
+
+    #[test]
+    fn pre_aquecimento_guarda_o_sql_com_o_mesmo_resultado() {
+        let mut text = String::from("Definir Cursor cur;\nDefinir Alfa aSql;\nSQL_Criar(aSql);\n");
+        for i in 0..PREWARM_MIN {
+            text += &format!("cur.SQL \"SELECT A{i}, 1 FROM T{i}\";\n");
+            text += &format!("ExecSql \"UPDATE T{i} SET A = :x{i}\";\n");
+        }
+        text += "ExecSqlEx(\"DELETE FROM T WHERE A = 1\", nErro, aMsg);\n";
+        text += "SQL_DefinirComando(aSql, \"SELECT B, 2 FROM T\");\n";
+        let tree = crate::parse(&text).unwrap();
+        let symbols = Symbols::build(&tree, &text);
+        let inherited = super::super::Inherited::default();
+        // Cada validação numa thread nova, que começa com o cache vazio.
+        let validate = |warm: bool| {
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        if warm {
+                            prewarm(&tree, &text, &inherited.dictionaries);
+                            let cached = with_cache(&inherited.dictionaries, |c| c.current.len());
+                            assert_eq!(cached, 2 * PREWARM_MIN + 2);
+                        }
+                        super::super::validate(
+                            &tree,
+                            &symbols,
+                            &text,
+                            crate::builtins::Context::Rule,
+                            &inherited,
+                        )
+                    })
+                    .join()
+                    .unwrap()
+            })
+        };
+        let cold = validate(false);
+        assert!(
+            cold.iter()
+                .any(|c| c.kind == CheckKind::CursorConstantColumn)
+        );
+        assert_eq!(validate(true), cold);
     }
 
     /// A tabela e as colunas, com o trecho do SQL que cada uma ocupa.
