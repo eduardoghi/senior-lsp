@@ -150,10 +150,7 @@ impl Plan {
             let first = start + ws_len;
             let line_start = TextSize::new(start as u32);
             let rest = line[ws_len..].trim_end_matches('\r');
-            let wanted = only.is_none_or(|r| {
-                let l = TextRange::new(line_start, TextSize::new(end as u32));
-                r.intersect(l).is_some() || r.contains_inclusive(line_start)
-            });
+            let wanted = touches(only, TextRange::new(line_start, TextSize::new(end as u32)));
             if !rest.is_empty() && !skipped.contains(&line_index) {
                 let at = TextSize::new(first as u32);
                 let old_ws = &line[..ws_len];
@@ -210,9 +207,11 @@ pub fn on_type(
     let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
     let line = &text[start..end];
     let content = line.trim_start_matches([' ', '\t']).trim_end_matches('\r');
+    // A linha pode começar com letra acentuada, então o corte é conferido na fronteira da letra.
     let closes = |word: &str| {
-        content.len() >= word.len()
-            && content[..word.len()].eq_ignore_ascii_case(word)
+        content
+            .get(..word.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(word))
             && !content[word.len()..]
                 .chars()
                 .next()
@@ -387,8 +386,7 @@ impl Spacing {
             {
                 let gap = TextRange::new(tokens.range(a).end(), tokens.range(i).start());
                 let new_text = " ".repeat(count);
-                let inside =
-                    only.is_none_or(|r| r.contains_range(gap) || r.intersect(gap).is_some());
+                let inside = touches(only, gap);
                 // Juntar dois operadores mudaria os tokens, como `- -` virando `--`.
                 let joins = count == 0 && !gap.is_empty() && glues(tokens.kind(a), kind);
                 if text[gap] != new_text && inside && !joins {
@@ -413,6 +411,22 @@ fn glues(a: SyntaxKind, b: SyntaxKind) -> bool {
         (a, b),
         (Minus, Minus) | (Plus, Plus) | (Lt, Gt) | (Lt, Eq) | (Gt, Eq)
     ) || (word(a) && word(b))
+}
+
+/// O trecho `range` está no trecho pedido `only`, ou não há trecho pedido. Os dois precisam se
+/// sobrepor, e não só se encostar, porque a seleção de linhas inteiras termina no começo da linha
+/// de baixo, que não entra. A seleção vazia, só com o cursor, vale para o que está em volta dele.
+fn touches(only: Option<TextRange>, range: TextRange) -> bool {
+    let Some(r) = only else {
+        return true;
+    };
+    if r.is_empty() {
+        range.contains_inclusive(r.start())
+    } else if range.is_empty() {
+        r.start() <= range.start() && range.start() < r.end()
+    } else {
+        r.start() < range.end() && range.start() < r.end()
+    }
 }
 
 /// Índice do token que começa em `at`, quando há um.
@@ -929,5 +943,24 @@ mod tests {
             format_all("a=\"x=1,2\" @ y=2 @;\n"),
             "a = \"x=1,2\" @ y=2 @;\n"
         );
+    }
+
+    #[test]
+    fn selecao_que_termina_no_comeco_da_linha_de_baixo() {
+        let spaces = Indent {
+            tab_size: 2,
+            spaces: true,
+        };
+        let text = "se (a = 1) {\nx=1;\ny=2;\n}\n";
+        // A seleção da segunda linha inteira termina no começo da terceira, que fica como está.
+        let second = TextRange::new(TextSize::new(13), TextSize::new(18));
+        let tree = crate::parse(text).unwrap();
+        let edits = super::format(text, &tree, spaces, Some(second)).unwrap();
+        let mut out = text.to_owned();
+        for edit in edits.iter().rev() {
+            let range = usize::from(edit.range.start())..usize::from(edit.range.end());
+            out.replace_range(range, &edit.new_text);
+        }
+        assert_eq!(out, "se (a = 1) {\n  x = 1;\ny=2;\n}\n");
     }
 }

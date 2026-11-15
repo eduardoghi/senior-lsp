@@ -317,22 +317,35 @@ impl Context<'_> {
     /// sai a coluna do SELECT que a regra não lê (SEN076). O `*` fica, porque trocá-lo pelos
     /// campos lidos depende do dicionário estar em dia. Correções que caem no mesmo trecho, como
     /// duas colunas vizinhas que levam a mesma vírgula, ficam para a próxima vez.
-    pub(crate) fn fix_all(&self) -> Option<CodeAction> {
+    ///
+    /// Só entram os avisos que o editor mostra (`shown`), depois das diretivas e dos níveis do
+    /// `senior-lsp.json`. Um aviso escondido é uma escolha da pessoa, como um `definir` que o ERP
+    /// lê por fora, e o "corrigir tudo" ao salvar não pode desfazer essa escolha.
+    pub(crate) fn fix_all(&self, shown: &[lsp_types::Diagnostic]) -> Option<CodeAction> {
         use crate::validate::CheckKind;
         if self.embedding.is_some() {
             return None;
         }
         let text = &self.doc.text;
+        let visible = |code: &str, range: TextRange| {
+            let range = self.range(range);
+            shown.iter().any(|d| {
+                d.range == range
+                    && matches!(&d.code, Some(lsp_types::NumberOrString::String(c)) if c == code)
+            })
+        };
         let mut edits: Vec<(TextRange, String)> = self
             .doc
             .checks()
             .iter()
             .filter_map(|check| match check.kind {
-                CheckKind::LowercaseChar => {
+                CheckKind::LowercaseChar if visible("SEN064", check.range) => {
                     Some((check.range, text[check.range].to_ascii_uppercase()))
                 }
-                CheckKind::Unused => Some((self.definition_statement(check.range)?, String::new())),
-                CheckKind::CursorColumnUnused => {
+                CheckKind::Unused if visible("SEN068", check.range) => {
+                    Some((self.definition_statement(check.range)?, String::new()))
+                }
+                CheckKind::CursorColumnUnused if visible("SEN076", check.range) => {
                     Some((self.column_with_comma(check.range)?, String::new()))
                 }
                 _ => None,

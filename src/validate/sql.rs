@@ -2273,12 +2273,13 @@ pub(super) fn exec_sql(
     }
 }
 
-/// Objetos de SQL com `SQL_UsarSQLSenior2(x, 0)`, com `SQL_UsarAbrangencia(x, 0)` e o SQL literal
-/// de cada `SQL_DefinirComando`, para avisar no fim os objetos que ligam o SQL nativo sem desligar
-/// a abrangência e o que a execução recusaria no comando de cada objeto. Os nomes não diferenciam caixa, e
-/// a ordem das chamadas no arquivo não importa.
+/// Objetos de SQL criados com `SQL_Criar`, com `SQL_UsarSQLSenior2(x, 0)`, com
+/// `SQL_UsarAbrangencia(x, 0)` e o SQL literal de cada `SQL_DefinirComando`, para avisar no fim os
+/// objetos que ligam o SQL nativo sem desligar a abrangência e o que a execução recusaria no comando
+/// de cada objeto. Os nomes não diferenciam caixa, e a ordem das chamadas no arquivo não importa.
 #[derive(Default)]
 pub(super) struct NativeSql {
+    created: FxHashSet<String>,
     native: Vec<(String, text_size::TextRange)>,
     without_scope: FxHashSet<String>,
     commands: Vec<(String, text_size::TextRange)>,
@@ -2289,6 +2290,14 @@ impl NativeSql {
         let Some((callee, args)) = call(tree, text, node) else {
             return;
         };
+        if callee.eq_ignore_ascii_case("SQL_Criar")
+            && let Some(&object) = args.first()
+            && tree.kind(object) == SyntaxKind::NameRef
+        {
+            self.created
+                .insert(text[tree.text_range(object)].to_ascii_uppercase());
+            return;
+        }
         let (Some(&object), Some(&value)) = (args.first(), args.get(1)) else {
             return;
         };
@@ -2328,6 +2337,11 @@ impl NativeSql {
         let native: FxHashSet<&str> = self.native.iter().map(|(o, _)| o.as_str()).collect();
         for (object, literal) in &self.commands {
             let is_native = native.contains(object.as_str());
+            // O objeto criado em outra regra, como uma regra anterior da tela, pode ter recebido o
+            // SQL nativo lá, então o Senior SQL 2 só vale para o criado neste arquivo.
+            if !is_native && !self.created.contains(object.as_str()) {
+                continue;
+            }
             let analysis = analysis(&text[*literal], &inherited.dictionaries);
             let found: Vec<(CheckKind, &Unknown)> = if is_native {
                 analysis.native.iter().map(|u| (u.kind, u)).collect()

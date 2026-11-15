@@ -128,7 +128,8 @@ pub enum CheckKind {
     CursorColumnUnused,
     /// `*` no SELECT de um cursor de que a regra só lê parte dos campos, também na regra comum.
     CursorStarUnused,
-    /// Instruções depois de `Pare`, `Cancel` ou `VaPara` no mesmo bloco, que nunca executam.
+    /// Instruções depois de `Pare`, `Continue`, `Cancel`, `Cancelar` ou `VaPara` no mesmo bloco, que
+    /// nunca executam.
     Unreachable,
     /// `enquanto ()` sem nada no bloco que saia do laço. A condição vazia vale como verdadeira.
     EndlessLoop,
@@ -342,9 +343,6 @@ pub fn validate(
     checks
 }
 
-/// Definições sem nenhum uso. Um nome citado dentro de um texto conta como usado, porque o SQL de
-/// um cursor ou do `ExecSql` lê a variável como `:nome`, e há regras que passam o nome da
-/// variável num texto para uma função preencher.
 /// Parâmetros da `funcao` que o corpo não usa. Vale em todo tipo de regra, porque o parâmetro só
 /// existe dentro da função. O nome citado num texto conta como usado, como no [`unused`], porque o
 /// SQL lê o parâmetro como `:nome`. Os da declaração não contam, porque o corpo é o da `funcao`.
@@ -387,6 +385,9 @@ fn unused_parameters(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Ve
     }
 }
 
+/// Definições sem nenhum uso. Um nome citado dentro de um texto conta como usado, porque o SQL de
+/// um cursor ou do `ExecSql` lê a variável como `:nome`, e há regras que passam o nome da
+/// variável num texto para uma função preencher.
 fn unused(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
     let mut used = vec![false; symbols.definitions.len()];
     for target in symbols.references.iter().flat_map(|r| &r.targets) {
@@ -462,7 +463,7 @@ fn unused(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
 /// Roda a cada tecla e passa por todos os textos, que numa regra com muito SQL somam mais de 1 MB.
 /// Os nomes procurados são poucos, então quase nenhuma palavra tem o tamanho e a primeira letra de
 /// um deles, e a palavra é descartada por aí antes de ser copiada e consultada no conjunto.
-fn names_in_strings(
+pub(crate) fn names_in_strings(
     tree: &Tree,
     text: &str,
     wanted: &rustc_hash::FxHashSet<std::string::String>,
@@ -890,8 +891,8 @@ fn contains_label(tree: &Tree, node: NodeId) -> bool {
     false
 }
 
-/// Instruções depois de `Pare`, `Cancel` ou `VaPara` no mesmo bloco, até um rótulo ou o fim do
-/// bloco. O rótulo pode ser alvo de um `VaPara` e volta a tornar o código alcançável. Uma
+/// Instruções depois de `Pare`, `Continue`, `Cancel`, `Cancelar` ou `VaPara` no mesmo bloco, até um
+/// rótulo ou o fim do bloco. O rótulo pode ser alvo de um `VaPara` e volta a tornar o código alcançável. Uma
 /// instrução que guarda um rótulo por dentro também encerra o trecho, pelo mesmo motivo. O que
 /// vem antes de uma `funcao` não entra, porque o compilador trata esse caso à parte (SEN061).
 fn unreachable(tree: &Tree, node: NodeId, checks: &mut Vec<Check>) {

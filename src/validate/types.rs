@@ -667,6 +667,10 @@ mod tests {
                 assert_eq!(checks(&regra(sql), sql2), esperado, "{sql} {sql2:?}");
             }
         }
+        // O objeto criado em outra regra pode estar no SQL nativo, e não é conferido.
+        let sem_criar =
+            "definir alfa aQ;\nSQL_DefinirComando(aQ, \"SELECT NAOEXISTE FROM E070EMP\");";
+        assert!(checks(sem_criar, Some(true)).is_empty());
         // Só o SELECT foi testado.
         assert!(checks(&regra("UPDATE E070EMP SET NAOEXISTE = 1"), Some(true)).is_empty());
         // O objeto com o SQL nativo fica com a conferência do SQL nativo.

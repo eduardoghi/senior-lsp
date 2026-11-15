@@ -117,6 +117,9 @@ impl Server<'_> {
         let mut models: std::collections::BTreeMap<PathBuf, Vec<PathBuf>> = Default::default();
         for path in files {
             let Ok(uri) = crate::form::uri_from_path(&path).parse::<Uri>() else {
+                if let Some(p) = &mut progress {
+                    p.step(1)?;
+                }
                 continue;
             };
             // A regra separada fica em `regras`, um nível abaixo da pasta do modelo.
@@ -127,9 +130,12 @@ impl Server<'_> {
             } else {
                 None
             };
+            // O arquivo de modelo só conta quando o modelo dele é analisado, no laço de baixo.
             if let Some(dir) = model_dir {
                 models.entry(dir.to_path_buf()).or_default().push(path);
-            } else if is_rule(&uri) {
+                continue;
+            }
+            if is_rule(&uri) {
                 self.analyze_rule(&path, &uri, false)?;
             }
             if let Some(p) = &mut progress {

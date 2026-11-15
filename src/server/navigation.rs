@@ -801,7 +801,6 @@ impl Context<'_> {
     }
 }
 
-/// Palavras sugeridas pelo completar nomes, na grafia mais comum nas regras.
 /// Modelos de comando do completar, com o rótulo, a descrição e o texto no formato de snippet do
 /// LSP. O `\t` vira o recuo do editor. A `funcao` fica sem o `definir funcao`, porque o bloco dela
 /// vai no fim do arquivo e a declaração vai antes das chamadas.
@@ -846,6 +845,7 @@ const SNIPPETS: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Palavras sugeridas pelo completar nomes, na grafia mais comum nas regras.
 const KEYWORDS: &[&str] = &[
     "Definir",
     "Funcao",

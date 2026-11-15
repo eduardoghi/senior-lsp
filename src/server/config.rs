@@ -397,6 +397,7 @@ impl super::Server<'_> {
             .filter_map(|c| c.label.as_deref())
             .filter(|t| !levels.extra_table(t))
             .collect();
+        tables.sort_unstable();
         tables.dedup();
         tables
             .into_iter()

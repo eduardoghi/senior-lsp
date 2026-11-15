@@ -308,7 +308,8 @@ async function removeOldBinaries(dir: string, keep: string, output: vscode.LogOu
     }
     for (const name of names) {
         const file = path.join(dir, name);
-        if (!name.startsWith("senior-lsp-") || file === keep) {
+        // O `.download` pode ser o de outra janela baixando ao mesmo tempo.
+        if (!name.startsWith("senior-lsp-") || name.endsWith(".download") || file === keep) {
             continue;
         }
         try {

@@ -799,7 +799,7 @@ impl Server<'_> {
                             .chain(self.extra_table_actions(&context, params.range))
                             .chain(
                                 wants(&lsp_types::CodeActionKind::SOURCE_FIX_ALL)
-                                    .then(|| context.fix_all())
+                                    .then(|| context.fix_all(&shown))
                                     .flatten(),
                             )
                             .map(lsp_types::CodeActionOrCommand::CodeAction),

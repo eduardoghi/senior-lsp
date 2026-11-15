@@ -3,8 +3,9 @@
 //! regra e, num formulário SGI, nas regras seguintes que chamam a função.
 //!
 //! A ação só aparece quando todas as chamadas são achadas e têm um argumento por parâmetro. Tirar
-//! também exige que o corpo não use o parâmetro e que o argumento não tenha chamada dentro, que
-//! deixaria de rodar. Acrescentar precisa do tipo, do nome e do valor que as chamadas passam a
+//! também exige que o corpo não use o parâmetro, nem num texto, e que o argumento não tenha
+//! chamada dentro, que deixaria de rodar. Mover exige que nenhum dos dois argumentos tenha
+//! chamada dentro, que mudaria de ordem. Acrescentar precisa do tipo, do nome e do valor que as chamadas passam a
 //! receber, então só aparece no editor que sabe perguntar (a extensão do VS Code).
 
 use std::collections::HashMap;
@@ -351,14 +352,24 @@ impl Context<'_> {
         if !valid || lists.iter().any(|&l| tree.children(l).count() != count) {
             return None;
         }
-        // O parâmetro que sai não pode ser lido nem escrito no corpo.
+        // O parâmetro que sai não pode ser lido nem escrito no corpo, nem citado num texto, porque
+        // o SQL lê o parâmetro como `:nome`.
         if let Change::Remove(i) = change {
             for &list in &lists {
                 let param = tree.children(list).nth(*i)?;
-                let used = symbols.definitions.iter().enumerate().any(|(d, def)| {
-                    def.node == param && symbols.references.iter().any(|r| r.targets.contains(&d))
+                let mut defs = symbols
+                    .definitions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, d)| d.node == param);
+                let used = defs
+                    .clone()
+                    .any(|(d, _)| symbols.references.iter().any(|r| r.targets.contains(&d)));
+                let in_strings = defs.next().is_some_and(|(_, def)| {
+                    let wanted = std::iter::once(text[def.name].to_ascii_uppercase()).collect();
+                    !crate::validate::names_in_strings(tree, text, &wanted).is_empty()
                 });
-                if used {
+                if used || in_strings {
                     return None;
                 }
             }
@@ -430,8 +441,8 @@ impl Context<'_> {
 }
 
 /// As trocas nos argumentos da chamada cujo nome é `node`. `None` quando o nome não é chamado,
-/// quando a quantidade de argumentos não é a de parâmetros ou quando o argumento que sai tem uma
-/// chamada dentro.
+/// quando a quantidade de argumentos não é a de parâmetros ou quando o argumento que sai, ou um
+/// dos que trocam de lugar, tem uma chamada dentro.
 fn arguments_edits(
     tree: &Tree,
     text: &str,
@@ -447,6 +458,14 @@ fn arguments_edits(
         && has_call(tree, tree.children(args).nth(*i)?)
     {
         return None;
+    }
+    // Trocar de lugar um argumento com chamada muda a ordem em que as chamadas rodam e, com uma
+    // chamada da mesma função dentro, faria duas edições no mesmo trecho.
+    if let Change::Swap(a, b) = change {
+        let (first, second) = (tree.children(args).nth(*a)?, tree.children(args).nth(*b)?);
+        if has_call(tree, first) || has_call(tree, second) {
+            return None;
+        }
     }
     Some(List::of(tree, args).edits(text, change, false))
 }

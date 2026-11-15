@@ -1197,9 +1197,6 @@ mod tests {
         (w.0, end)
     }
 
-    /// Tabelas do dicionário fictício que os testes pelo stdio e o teste da extensão usam como
-    /// `.tbs`. Os nomes de tabela e de campo seguem o modelo padrão do ERP. Os campos, os tipos e
-    /// as descrições foram escritos à mão, só com o que os testes precisam.
     /// Tabela fictícia, com o nome, a descrição, a chave primária e os campos (nome, tipo como o
     /// arquivo grava e descrição).
     type TabelaFicticia = (
@@ -1209,6 +1206,9 @@ mod tests {
         &'static [(&'static str, &'static str, &'static str)],
     );
 
+    /// Tabelas do dicionário fictício que os testes pelo stdio e o teste da extensão usam como
+    /// `.tbs`. Os nomes de tabela e de campo seguem o modelo padrão do ERP. Os campos, os tipos e
+    /// as descrições foram escritos à mão, só com o que os testes precisam.
     const FICTICIO: &[TabelaFicticia] = &[
         (
             "E070EMP",

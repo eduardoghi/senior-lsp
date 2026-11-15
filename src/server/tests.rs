@@ -4091,11 +4091,19 @@ fn mover_e_tirar_parametro_da_funcao() {
     assert!(refactor_at(text, "pA", "Tirar o parâmetro pA").is_none());
     assert!(refactor_at(text, "pA", "Mover pA para a esquerda").is_none());
     assert!(refactor_at(text, "pC", "Mover pC para a direita").is_none());
-    // O argumento com uma chamada dentro não sai, porque a chamada deixaria de rodar, mas pode
-    // trocar de lugar.
+    // O argumento com uma chamada dentro não sai, porque a chamada deixaria de rodar, nem troca
+    // de lugar, porque mudaria a ordem das chamadas. O outro par continua podendo trocar.
     let with_call = text.replace("F(1, \"x\", 3)", "F(1, G(), 3)");
     assert!(refactor_at(&with_call, "pB", "Tirar o parâmetro pB").is_none());
-    assert!(refactor_at(&with_call, "pB", "Mover pB para a direita").is_some());
+    assert!(refactor_at(&with_call, "pB", "Mover pB para a direita").is_none());
+    assert!(refactor_at(&with_call, "pA", "Mover pA para a esquerda").is_none());
+    // Uma chamada da mesma função dentro do argumento não deixa trocar.
+    let nested = text.replace("F(n, a, n + 1)", "F(n, a, F(1, \"y\", 2))");
+    assert!(refactor_at(&nested, "pB", "Mover pB para a direita").is_none());
+    // O parâmetro citado num texto, como o `:pC` de um SQL, não sai.
+    let sql = "Definir Funcao H(Numero pA, Numero pC);\ndefinir cursor c;\nH(1, 2);\n\
+               funcao H(Numero pA, Numero pC); {\n  c.SQL \"SELECT A FROM T WHERE B = :pC\";\n  pA = 1;\n}\n";
+    assert!(refactor_at(sql, "pC", "Tirar o parâmetro pC").is_none());
     // Uma chamada com argumento a menos deixa a função sem as ações.
     let short = text.replace("F(1, \"x\", 3)", "F(1, \"x\")");
     assert!(refactor_at(&short, "pB", "Mover pB para a direita").is_none());
@@ -4314,6 +4322,10 @@ fn progresso_da_analise_da_pasta() {
         std::fs::create_dir_all(rule.parent().unwrap()).unwrap();
         std::fs::write(&rule, "x = 1;").unwrap();
     }
+    // O JSON de modelo conta uma vez, quando o modelo é analisado.
+    let model = base.join("Modelos/M1.GER/Base_Structure.json");
+    std::fs::create_dir_all(model.parent().unwrap()).unwrap();
+    std::fs::write(&model, "{}").unwrap();
     let folder = crate::form::uri_from_path(&base);
     let (editor, _) = Editor::start_with(
         None,
@@ -4344,11 +4356,12 @@ fn progresso_da_analise_da_pasta() {
         seen,
         [
             "window/workDoneProgress/create",
-            "begin 0 de 3",
-            "report 1 de 3",
-            "report 2 de 3",
-            "report 3 de 3",
-            "end 3 arquivos analisados"
+            "begin 0 de 4",
+            "report 1 de 4",
+            "report 2 de 4",
+            "report 3 de 4",
+            "report 4 de 4",
+            "end 4 arquivos analisados"
         ]
     );
 }
@@ -4447,4 +4460,31 @@ fn formatacao_so_com_o_recuo_pelo_senior_lsp_json() {
     assert_eq!(format(&mut editor), "se (a = 1) {\n  x = 1;\n}\n");
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn corrigir_tudo_respeita_a_diretiva() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "definir alfa aSolta;\n@ senior-lsp-disable-next-line SEN068 @\ndefinir alfa aLidaPeloErp;\nx = 1;\n";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let response = editor.request(
+        lsp_types::request::CodeActionRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+                "context": { "diagnostics": [], "only": ["source.fixAll"] } }),
+    );
+    let actions = response.response_result.unwrap();
+    let action = actions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "source.fixAll")
+        .expect("sem o corrigir tudo");
+    // Só a definição sem diretiva sai.
+    assert_eq!(
+        apply_json_edits(text, &action["edit"], RULE),
+        "@ senior-lsp-disable-next-line SEN068 @\ndefinir alfa aLidaPeloErp;\nx = 1;\n"
+    );
+    editor.stop();
 }

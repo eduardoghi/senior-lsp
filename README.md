@@ -86,7 +86,9 @@ O servidor oferece:
   Mudam as duas listas de parâmetros e os argumentos de cada chamada, nesta regra e, num formulário
   SGI, nas regras seguintes que chamam a função. Não aparecem quando alguma chamada não tem um
   argumento por parâmetro, nas regras de modelo de relatório e, para tirar, quando o corpo usa o
-  parâmetro ou o argumento tem uma chamada dentro, que deixaria de rodar
+  parâmetro, mesmo num texto como o `:nome` de um SQL, ou quando o argumento tem uma chamada
+  dentro, que deixaria de rodar. Para mover, também não aparecem quando um dos dois argumentos tem
+  uma chamada dentro, que mudaria de ordem
 - ação de código "Acrescentar parâmetro" (`refactor.rewrite`), depois do parâmetro no cursor ou, com
   o cursor no nome da função, no fim. A extensão do VS Code pergunta o tipo, o nome e o valor que as
   chamadas que já existem passam a receber, e as mesmas listas e chamadas mudam. O tipo segue a
@@ -446,7 +448,7 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN085 | aviso | `enquanto ()` com a condição vazia, que o compilador trata como verdadeira, sem `Pare`, `VaPara`, `Cancel` nem outra saída no bloco |
 | SEN086 | aviso | tabela do SQL nativo que não está no dicionário de dados, fora as do catálogo do Oracle, a `DUAL`, os nomes do `WITH` e as do `extraTables` do [`senior-lsp.json`](#arquivo-de-configuração) |
 | SEN087 | aviso | campo com a tabela ou o apelido na frente, no SQL nativo, que a tabela não tem no dicionário de dados |
-| SEN088 | aviso | o que o Senior SQL 2 recusa (SEN080 a SEN083) no SELECT de um `SQL_DefinirComando`, que compila e para na execução. O objeto usa o Senior SQL 2 até receber `SQL_UsarSQLSenior2(x, 0)`, também na regra que não usa a opção |
+| SEN088 | aviso | o que o Senior SQL 2 recusa (SEN080 a SEN083) no SELECT de um `SQL_DefinirComando`, que compila e para na execução. O objeto usa o Senior SQL 2 até receber `SQL_UsarSQLSenior2(x, 0)`, também na regra que não usa a opção. Só vale para o objeto criado com `SQL_Criar` no mesmo arquivo, porque o de outra regra da tela pode ter recebido o SQL nativo lá |
 | SEN089 | erro | `Pare` ou `Continue` fora de um `para` ou `enquanto` |
 | SEN090 | aviso | `Continue` num `para`, que volta sem rodar o incremento, e o laço não termina se nada mais muda o contador |
 | SEN091 | dica | parâmetro da `funcao` que o corpo não usa, com a ação "Tirar o parâmetro" |
