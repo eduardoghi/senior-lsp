@@ -902,7 +902,7 @@ fn params(tree: &Tree, text: &str, function: NodeId) -> Vec<Param> {
 
 /// Pasta do formulário, dois níveis abaixo de `Formulários SGI`, para um arquivo dentro dela em
 /// qualquer nível.
-fn form_dir(rule: &Path) -> Option<PathBuf> {
+pub(crate) fn form_dir(rule: &Path) -> Option<PathBuf> {
     let parts: Vec<_> = rule.components().collect();
     let i = parts.iter().position(|c| {
         c.as_os_str()

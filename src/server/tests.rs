@@ -4322,7 +4322,8 @@ fn progresso_da_analise_da_pasta() {
         std::fs::create_dir_all(rule.parent().unwrap()).unwrap();
         std::fs::write(&rule, "x = 1;").unwrap();
     }
-    // O JSON de modelo conta uma vez, quando o modelo é analisado.
+    // O JSON de modelo conta uma vez, quando o modelo é analisado. As três regras vão juntas para
+    // a mesma thread e contam de uma vez.
     let model = base.join("Modelos/M1.GER/Base_Structure.json");
     std::fs::create_dir_all(model.parent().unwrap()).unwrap();
     std::fs::write(&model, "{}").unwrap();
@@ -4357,8 +4358,6 @@ fn progresso_da_analise_da_pasta() {
         [
             "window/workDoneProgress/create",
             "begin 0 de 4",
-            "report 1 de 4",
-            "report 2 de 4",
             "report 3 de 4",
             "report 4 de 4",
             "end 4 arquivos analisados"

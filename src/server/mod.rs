@@ -1148,43 +1148,7 @@ impl Server<'_> {
         documents: &Documents,
         uri: &Uri,
     ) -> Option<(Vec<lsp_types::Diagnostic>, Option<i32>)> {
-        let levels = self.levels_of(uri);
-        if let Some(report) = documents.report(uri) {
-            let mut all = Vec::new();
-            for rule in &report.rules {
-                let to_range = |range: text_size::TextRange| {
-                    let json_range = rule.embedded.rule.range_to_json(range);
-                    let p = |offset| {
-                        let lc = report.index().line_col(&report.json, offset, self.encoding);
-                        lsp_types::Position::new(lc.line, lc.col)
-                    };
-                    lsp_types::Range::new(p(json_range.start()), p(json_range.end()))
-                };
-                all.extend(diagnostics::diagnostics(
-                    &rule.doc,
-                    Vec::new(),
-                    &levels,
-                    &to_range,
-                ));
-            }
-            return Some((all, Some(report.version)));
-        }
-        let doc = documents.get(uri)?;
-        // Os parâmetros do web service vêm do Port.json no disco, fora da validação da regra.
-        let context = navigation::Context {
-            doc,
-            uri,
-            encoding: self.encoding,
-            embedding: None,
-        };
-        let mut diagnostics = diagnostics::diagnostics(
-            doc,
-            context.webservice_diagnostics(),
-            &levels,
-            &diagnostics::lsp_range(doc, self.encoding),
-        );
-        context.add_related(&mut diagnostics);
-        Some((diagnostics, Some(doc.version)))
+        document_diagnostics(documents, uri, &self.levels_of(uri), self.encoding)
     }
 
     /// Níveis do `senior-lsp.json` que vale para o arquivo. O que o arquivo tem de errado vai ao
@@ -1309,6 +1273,52 @@ impl Server<'_> {
         };
         self.out.notify(PublishDiagnostics::METHOD, &params)
     }
+}
+
+/// Diagnósticos de um documento guardado em `documents`, que pode ser o dos abertos ou um
+/// montado só para analisar um arquivo do disco, com os níveis do `senior-lsp.json` dele.
+pub(super) fn document_diagnostics(
+    documents: &Documents,
+    uri: &Uri,
+    levels: &config::Levels,
+    encoding: ColumnEncoding,
+) -> Option<(Vec<lsp_types::Diagnostic>, Option<i32>)> {
+    if let Some(report) = documents.report(uri) {
+        let mut all = Vec::new();
+        for rule in &report.rules {
+            let to_range = |range: text_size::TextRange| {
+                let json_range = rule.embedded.rule.range_to_json(range);
+                let p = |offset| {
+                    let lc = report.index().line_col(&report.json, offset, encoding);
+                    lsp_types::Position::new(lc.line, lc.col)
+                };
+                lsp_types::Range::new(p(json_range.start()), p(json_range.end()))
+            };
+            all.extend(diagnostics::diagnostics(
+                &rule.doc,
+                Vec::new(),
+                levels,
+                &to_range,
+            ));
+        }
+        return Some((all, Some(report.version)));
+    }
+    let doc = documents.get(uri)?;
+    // Os parâmetros do web service vêm do Port.json no disco, fora da validação da regra.
+    let context = navigation::Context {
+        doc,
+        uri,
+        encoding,
+        embedding: None,
+    };
+    let mut diagnostics = diagnostics::diagnostics(
+        doc,
+        context.webservice_diagnostics(),
+        levels,
+        &diagnostics::lsp_range(doc, encoding),
+    );
+    context.add_related(&mut diagnostics);
+    Some((diagnostics, Some(doc.version)))
 }
 
 #[cfg(test)]

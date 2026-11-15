@@ -100,8 +100,165 @@ impl<'a> Progress<'a> {
 /// Pastas que nunca têm regra e só custam tempo.
 const SKIPPED: [&str; 4] = [".git", "node_modules", "target", ".vscode"];
 
+/// O que uma thread analisa de uma vez. As regras de um mesmo formulário SGI vão juntas, porque
+/// cada thread monta o formulário no próprio cache, e as de um modelo também, porque o modelo é
+/// montado uma vez para todos os arquivos dele.
+enum Work {
+    Rules(Vec<RuleFile>),
+    Model(Vec<ModelFile>),
+}
+
+impl Work {
+    /// Quantos arquivos da lista contam no progresso.
+    fn files(&self) -> usize {
+        match self {
+            Work::Rules(rules) => rules.len(),
+            Work::Model(files) => files.len(),
+        }
+    }
+}
+
+/// Regra do disco com o que vem do estado do servidor, que as threads não acessam.
+struct RuleFile {
+    path: PathBuf,
+    /// `None` quando o caminho não vira URI. O arquivo só conta no progresso.
+    uri: Option<Uri>,
+    context: crate::builtins::Context,
+    levels: super::config::Levels,
+    /// Aberto no editor, quando vale o texto de lá.
+    open: bool,
+}
+
+/// Arquivo de um modelo de relatório, JSON ou regra separada.
+struct ModelFile {
+    path: PathBuf,
+    uri: Option<Uri>,
+    levels: super::config::Levels,
+    open: bool,
+}
+
+/// O resultado de um arquivo analisado, para a thread principal guardar e publicar.
+struct Analyzed {
+    uri: Uri,
+    /// Definições para o índice de símbolos, com o caminho do arquivo.
+    symbols: Option<(PathBuf, super::workspace_symbols::File)>,
+    diagnostics: Option<Vec<lsp_types::Diagnostic>>,
+}
+
+/// Analisa uma regra do disco. `None` quando ela está aberta ou não pôde ser lida.
+fn analyze_rule_file(
+    rule: &RuleFile,
+    encoding: crate::line_index::ColumnEncoding,
+) -> Result<Option<Analyzed>> {
+    let Some(uri) = rule.uri.as_ref().filter(|_| !rule.open) else {
+        return Ok(None);
+    };
+    let Some(text) = read(&rule.path, true) else {
+        return Ok(None);
+    };
+    let mut documents = Documents::default();
+    documents.set(uri.clone(), text, 0, rule.context)?;
+    Ok(Some(analyzed(
+        &documents,
+        uri,
+        &rule.path,
+        &rule.levels,
+        encoding,
+    )))
+}
+
+/// Os diagnósticos do documento e, quando é uma regra em texto, as definições dela.
+fn analyzed(
+    documents: &Documents,
+    uri: &Uri,
+    path: &Path,
+    levels: &super::config::Levels,
+    encoding: crate::line_index::ColumnEncoding,
+) -> Analyzed {
+    let symbols = documents.get(uri).map(|doc| {
+        let file = super::workspace_symbols::File::new(
+            path,
+            &doc.text,
+            &doc.symbols,
+            &doc.index,
+            encoding,
+        );
+        (path.to_path_buf(), file)
+    });
+    Analyzed {
+        uri: uri.clone(),
+        symbols,
+        diagnostics: super::document_diagnostics(documents, uri, levels, encoding)
+            .map(|(diagnostics, _)| diagnostics),
+    }
+}
+
+/// Os JSON e as regras separadas de um modelo, com o modelo montado uma vez.
+fn analyze_model(
+    files: &[ModelFile],
+    encoding: crate::line_index::ColumnEncoding,
+) -> Result<Vec<Analyzed>> {
+    let mut results = Vec::new();
+    let Some(first) = files.first() else {
+        return Ok(results);
+    };
+    let Some(first_json) = read(&first.path, false) else {
+        return Ok(results);
+    };
+    let model = crate::report::model_uncached(&first.path, &first_json);
+    let inherited = super::documents::model_inherited(&model);
+    for file in files {
+        let Some(uri) = file.uri.as_ref().filter(|_| !file.open) else {
+            continue;
+        };
+        let path = &file.path;
+        let mut documents = Documents::default();
+        if is_report_rule(uri) {
+            let Some(text) = read(path, true) else {
+                continue;
+            };
+            let context = crate::builtins::Context::Report;
+            documents.set_with(uri.clone(), text, 0, context, inherited.clone())?;
+        } else {
+            // O modelo já leu e decodificou todos os JSON da pasta.
+            let known = model.texts.iter().find(|(p, _)| p == path);
+            let Some(json) = known
+                .map(|(_, text)| text.clone())
+                .or_else(|| read(path, false).map(Into::into))
+            else {
+                continue;
+            };
+            documents.set_report_in(uri.clone(), json, 0, &model, inherited.clone())?;
+        }
+        results.push(analyzed(&documents, uri, path, &file.levels, encoding));
+    }
+    Ok(results)
+}
+
+fn analyze_work(work: &Work, encoding: crate::line_index::ColumnEncoding) -> Result<Vec<Analyzed>> {
+    match work {
+        Work::Rules(rules) => {
+            let mut results = Vec::new();
+            for rule in rules {
+                results.extend(analyze_rule_file(rule, encoding)?);
+            }
+            Ok(results)
+        }
+        Work::Model(files) => analyze_model(files, encoding),
+    }
+}
+
+/// Regras fora de formulário SGI que vão juntas para uma thread, para o custo de passar o
+/// resultado entre as threads não pesar nas regras pequenas.
+const RULES_PER_WORK: usize = 8;
+
+/// Threads da análise da pasta. A máquina de quem usa o editor está fazendo outras coisas.
+const MAX_THREADS: usize = 4;
+
 impl Server<'_> {
-    /// Analisa todas as regras das pastas do workspace.
+    /// Analisa todas as regras das pastas do workspace. A leitura, a análise e a validação de cada
+    /// arquivo rodam em várias threads. O índice de símbolos e o envio ao editor ficam nesta, na
+    /// ordem em que os arquivos foram achados.
     pub(super) fn analyze_workspace(&mut self) -> Result<()> {
         if !self.analyze_folders {
             return Ok(());
@@ -111,43 +268,69 @@ impl Server<'_> {
             collect(folder, &mut files);
         }
         let mut progress = Progress::begin(self.out, self.progress, files.len())?;
-        // Os JSON de um modelo dependem uns dos outros. Montar o modelo uma vez por pasta evita
-        // reler a pasta inteira para cada JSON, que num repositório com milhares de modelos
-        // levava dezenas de segundos.
-        let mut models: std::collections::BTreeMap<PathBuf, Vec<PathBuf>> = Default::default();
-        for path in files {
-            let Ok(uri) = crate::form::uri_from_path(&path).parse::<Uri>() else {
-                if let Some(p) = &mut progress {
-                    p.step(1)?;
+        let work = self.plan_work(files);
+        let encoding = self.encoding;
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(MAX_THREADS));
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        // Um erro, aqui só o texto grande demais, para a análise como antes, quando era serial.
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let outcome = std::thread::scope(|scope| -> Result<()> {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let (work, next, stop) = (&work, &next, &stop);
+            let worker = move |sender: std::sync::mpsc::Sender<_>| {
+                use std::sync::atomic::Ordering::Relaxed;
+                while !stop.load(Relaxed) {
+                    let i = next.fetch_add(1, Relaxed);
+                    let Some(item) = work.get(i) else {
+                        return;
+                    };
+                    let result = analyze_work(item, encoding).map_err(|e| e.to_string());
+                    if sender.send((i, result)).is_err() {
+                        return;
+                    }
                 }
-                continue;
             };
-            // A regra separada fica em `regras`, um nível abaixo da pasta do modelo.
-            let model_dir = if is_report(&uri) {
-                path.parent()
-            } else if is_report_rule(&uri) {
-                path.parent().and_then(|p| p.parent())
-            } else {
-                None
-            };
-            // O arquivo de modelo só conta quando o modelo dele é analisado, no laço de baixo.
-            if let Some(dir) = model_dir {
-                models.entry(dir.to_path_buf()).or_default().push(path);
-                continue;
+            let spawned = (0..threads)
+                .filter(|_| {
+                    let sender = sender.clone();
+                    // A pilha da thread principal, porque a análise desce uma chamada por nível
+                    // da árvore e do SQL.
+                    std::thread::Builder::new()
+                        .stack_size(8 << 20)
+                        .spawn_scoped(scope, move || worker(sender))
+                        .is_ok()
+                })
+                .count();
+            // Sem thread, a análise roda inteira nesta antes de publicar.
+            if spawned == 0 {
+                worker(sender.clone());
             }
-            if is_rule(&uri) {
-                self.analyze_rule(&path, &uri, false)?;
+            drop(sender);
+            // Os resultados chegam fora de ordem e esperam aqui até chegar a vez deles.
+            let mut waiting = std::collections::BTreeMap::new();
+            let mut turn = 0;
+            for (i, result) in receiver {
+                waiting.insert(i, result);
+                while let Some(result) = waiting.remove(&turn) {
+                    let analyzed = match result {
+                        Ok(analyzed) => analyzed,
+                        Err(e) => {
+                            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                            return Err(e.into());
+                        }
+                    };
+                    for analyzed in analyzed {
+                        self.apply(analyzed, false)?;
+                    }
+                    if let Some(p) = &mut progress {
+                        p.step(work[turn].files())?;
+                    }
+                    turn += 1;
+                }
             }
-            if let Some(p) = &mut progress {
-                p.step(1)?;
-            }
-        }
-        for paths in models.values() {
-            self.analyze_model(paths)?;
-            if let Some(p) = &mut progress {
-                p.step(paths.len())?;
-            }
-        }
+            Ok(())
+        });
+        outcome?;
         if let Some(p) = progress {
             p.end()?;
         }
@@ -156,43 +339,78 @@ impl Server<'_> {
         Ok(())
     }
 
-    /// Os JSON e as regras separadas de um modelo, com o modelo montado uma vez.
-    fn analyze_model(&mut self, paths: &[PathBuf]) -> Result<()> {
-        let Some(first) = paths.first() else {
-            return Ok(());
-        };
-        let Some(first_json) = read(first, false) else {
-            return Ok(());
-        };
-        let model = crate::report::model_uncached(first, &first_json);
-        let inherited = super::documents::model_inherited(&model);
-        for path in paths {
-            let Ok(uri) = crate::form::uri_from_path(path).parse::<Uri>() else {
-                continue;
+    /// Divide os arquivos em trabalhos para as threads, com o contexto, os níveis e se está
+    /// aberto, que dependem do estado do servidor. Os modelos vão para o fim.
+    fn plan_work(&self, files: Vec<PathBuf>) -> Vec<Work> {
+        let mut work = Vec::new();
+        let mut rules: Vec<RuleFile> = Vec::new();
+        let mut group: Option<PathBuf> = None;
+        // Os JSON de um modelo dependem uns dos outros. Montar o modelo uma vez por pasta evita
+        // reler a pasta inteira para cada JSON, que num repositório com milhares de modelos
+        // levava dezenas de segundos.
+        let mut models: std::collections::BTreeMap<PathBuf, Vec<ModelFile>> = Default::default();
+        for path in files {
+            let uri = crate::form::uri_from_path(&path).parse::<Uri>().ok();
+            // A regra separada fica em `regras`, um nível abaixo da pasta do modelo.
+            let model_dir = match &uri {
+                Some(uri) if is_report(uri) => path.parent(),
+                Some(uri) if is_report_rule(uri) => path.parent().and_then(|p| p.parent()),
+                _ => None,
             };
-            if self.documents.report(&uri).is_some() || self.documents.get(&uri).is_some() {
+            // O arquivo de modelo só conta quando o modelo dele é analisado.
+            if let Some(dir) = model_dir {
+                let uri = uri.expect("só um URI dá a pasta do modelo");
+                let file = ModelFile {
+                    open: self.documents.report(&uri).is_some()
+                        || self.documents.get(&uri).is_some(),
+                    levels: self.levels_of(&uri),
+                    path: path.clone(),
+                    uri: Some(uri),
+                };
+                models.entry(dir.to_path_buf()).or_default().push(file);
                 continue;
             }
-            let mut documents = Documents::default();
-            if is_report_rule(&uri) {
-                let Some(text) = read(path, true) else {
-                    continue;
-                };
-                let context = crate::builtins::Context::Report;
-                documents.set_with(uri.clone(), text, 0, context, inherited.clone())?;
-                self.keep_symbols(&documents, &uri, path);
-            } else {
-                // O modelo já leu e decodificou todos os JSON da pasta.
-                let known = model.texts.iter().find(|(p, _)| p == path);
-                let Some(json) = known
-                    .map(|(_, text)| text.clone())
-                    .or_else(|| read(path, false).map(Into::into))
-                else {
-                    continue;
-                };
-                documents.set_report_in(uri.clone(), json, 0, &model, inherited.clone())?;
+            let form = crate::form::form_dir(&path);
+            let full = form.is_none() && rules.len() >= RULES_PER_WORK;
+            if !rules.is_empty() && (form != group || full) {
+                work.push(Work::Rules(std::mem::take(&mut rules)));
             }
-            self.send_disk(&documents, uri, false)?;
+            group = form;
+            // O arquivo que não é regra, ou não vira URI, só conta no progresso.
+            let rule = uri.filter(is_rule);
+            rules.push(RuleFile {
+                open: rule
+                    .as_ref()
+                    .is_some_and(|uri| self.documents.get(uri).is_some()),
+                context: rule
+                    .as_ref()
+                    .map_or(crate::builtins::Context::Rule, |uri| self.rule_context(uri)),
+                levels: rule
+                    .as_ref()
+                    .map_or_else(Default::default, |uri| self.levels_of(uri)),
+                path,
+                uri: rule,
+            });
+        }
+        if !rules.is_empty() {
+            work.push(Work::Rules(rules));
+        }
+        work.extend(models.into_values().map(Work::Model));
+        work
+    }
+
+    /// Guarda as definições do arquivo analisado no índice e publica os diagnósticos.
+    /// `publish_empty` publica também a lista vazia, para limpar o que o editor mostrava antes.
+    fn apply(&mut self, analyzed: Analyzed, publish_empty: bool) -> Result<()> {
+        if let Some((path, file)) = analyzed.symbols {
+            self.index.insert_file(path, file);
+        }
+        if let Some(diagnostics) = analyzed.diagnostics
+            && (publish_empty
+                || !diagnostics.is_empty()
+                || self.published.borrow().contains(&analyzed.uri))
+        {
+            self.send_diagnostics(analyzed.uri, diagnostics, None)?;
         }
         Ok(())
     }
@@ -200,33 +418,17 @@ impl Server<'_> {
     /// Regra lida do disco. `publish_empty` publica também a lista vazia, para limpar o que o
     /// editor mostrava antes.
     fn analyze_rule(&mut self, path: &Path, uri: &Uri, publish_empty: bool) -> Result<()> {
-        if self.documents.get(uri).is_some() {
-            return Ok(());
-        }
-        let Some(text) = read(path, true) else {
-            return Ok(());
+        let rule = RuleFile {
+            path: path.to_path_buf(),
+            uri: Some(uri.clone()),
+            context: self.rule_context(uri),
+            levels: self.levels_of(uri),
+            open: self.documents.get(uri).is_some(),
         };
-        let mut documents = Documents::default();
-        documents.set(uri.clone(), text, 0, self.rule_context(uri))?;
-        self.keep_symbols(&documents, uri, path);
-        self.send_disk(&documents, uri.clone(), publish_empty)
-    }
-
-    /// Guarda no índice de símbolos as definições da regra que acabou de ser analisada.
-    fn keep_symbols(&mut self, documents: &Documents, uri: &Uri, path: &Path) {
-        if let Some(doc) = documents.get(uri) {
-            self.index
-                .insert(path, &doc.text, &doc.symbols, &doc.index, self.encoding);
+        match analyze_rule_file(&rule, self.encoding)? {
+            Some(analyzed) => self.apply(analyzed, publish_empty),
+            None => Ok(()),
         }
-    }
-
-    fn send_disk(&self, documents: &Documents, uri: Uri, publish_empty: bool) -> Result<()> {
-        if let Some((diagnostics, _)) = self.diagnostics_of(documents, &uri)
-            && (publish_empty || !diagnostics.is_empty() || self.published.borrow().contains(&uri))
-        {
-            self.send_diagnostics(uri, diagnostics, None)?;
-        }
-        Ok(())
     }
 
     /// Analisa o arquivo como está no disco e publica, a não ser que ele esteja aberto, quando
@@ -244,7 +446,11 @@ impl Server<'_> {
             };
             let mut documents = Documents::default();
             documents.set_report(uri.clone(), json, 0)?;
-            self.send_disk(&documents, uri, true)
+            let levels = self.levels_of(&uri);
+            self.apply(
+                analyzed(&documents, &uri, path, &levels, self.encoding),
+                true,
+            )
         } else if is_rule(&uri) || is_report_rule(&uri) {
             self.analyze_rule(path, &uri, true)
         } else {

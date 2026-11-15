@@ -31,7 +31,7 @@ struct Entry {
 }
 
 /// Definições de um arquivo e o nome mostrado como contêiner delas.
-struct File {
+pub(super) struct File {
     container: Box<str>,
     entries: Vec<Entry>,
 }
@@ -58,15 +58,35 @@ impl SymbolIndex {
         index: &LineIndex,
         encoding: ColumnEncoding,
     ) {
-        let file = File {
-            container: container_name(path).into(),
-            entries: entries(text, symbols, index, encoding),
-        };
-        self.files.insert(path.to_path_buf(), file);
+        self.insert_file(
+            path.to_path_buf(),
+            File::new(path, text, symbols, index, encoding),
+        );
+    }
+
+    /// Guarda as definições já montadas do arquivo, no lugar das que havia.
+    pub(super) fn insert_file(&mut self, path: PathBuf, file: File) {
+        self.files.insert(path, file);
     }
 
     pub(super) fn remove(&mut self, path: &Path) {
         self.files.remove(path);
+    }
+}
+
+impl File {
+    /// As definições do arquivo, sem guardar no índice, para serem montadas em outra thread.
+    pub(super) fn new(
+        path: &Path,
+        text: &str,
+        symbols: &Symbols,
+        index: &LineIndex,
+        encoding: ColumnEncoding,
+    ) -> File {
+        File {
+            container: container_name(path).into(),
+            entries: entries(text, symbols, index, encoding),
+        }
     }
 }
 

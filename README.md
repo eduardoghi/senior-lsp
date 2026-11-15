@@ -219,8 +219,8 @@ workspace, os `Rule.txt` e os JSON de `Modelos`, e publica os diagnósticos de t
 abrir cada arquivo. Só vão os arquivos com algum diagnóstico. No editor que mostra progresso
 (`window.workDoneProgress`), como o VS Code, a análise aparece com a contagem de arquivos. Quando o editor avisa que um arquivo
 mudou no disco (`workspace/didChangeWatchedFiles`), ele é analisado de novo, e um arquivo fechado
-volta a mostrar os diagnósticos do disco. Numa exportação com cerca de 1.400 regras e 24 mil
-JSON de modelo, a primeira análise leva alguns segundos, quase tudo nos modelos.
+volta a mostrar os diagnósticos do disco. A análise usa até quatro threads. Numa exportação com
+cerca de 1.400 regras e 24 mil JSON de modelo, a primeira leva menos de um segundo.
 
 A opção fica desligada por padrão porque o Claude Code coloca os diagnósticos na conversa. No VS
 Code ela é a configuração `seniorLsp.analisarPasta`.
