@@ -1090,31 +1090,34 @@ impl<'a> Sql2<'a> {
                 return;
             }
             let holders = tables.by_ref().filter(|t| has(t, &name)).count();
-            let range = self.range(field, field);
-            if holders == 0 {
-                self.push(CheckKind::Sql2UnknownSymbol, range, name);
+            // A posição só é calculada quando há o que acusar, porque ela percorre a linha.
+            let kind = if holders == 0 {
+                CheckKind::Sql2UnknownSymbol
             } else if holders > 1 && self.scopes.len() == 1 {
-                self.push(CheckKind::Sql2AmbiguousField, range, name);
-            }
+                CheckKind::Sql2AmbiguousField
+            } else {
+                return;
+            };
+            let range = self.range(field, field);
+            self.push(kind, range, name);
             return;
         };
         let qualifier = table.value.to_uppercase();
-        let range = self.range(table, field);
         let owner = self.scopes.iter().rev().flatten().find(|t| match &t.alias {
             Some(alias) => *alias == qualifier,
             None => t.name == qualifier,
         });
-        match owner {
-            None => self.push(
-                CheckKind::Sql2UnknownSymbol,
-                range,
-                format!("{qualifier}.{name}"),
-            ),
-            Some(owner) if owner.fields.is_some() && !has(owner, &name) => {
-                let label = format!("{}.{name}", owner.name);
-                self.push(CheckKind::Sql2UnknownField, range, label);
-            }
-            Some(_) => {}
+        let found = match owner {
+            None => Some((CheckKind::Sql2UnknownSymbol, format!("{qualifier}.{name}"))),
+            Some(owner) if owner.fields.is_some() && !has(owner, &name) => Some((
+                CheckKind::Sql2UnknownField,
+                format!("{}.{name}", owner.name),
+            )),
+            Some(_) => None,
+        };
+        if let Some((kind, label)) = found {
+            let range = self.range(table, field);
+            self.push(kind, range, label);
         }
     }
 
@@ -2054,7 +2057,7 @@ fn cursor_field<'t>(
     is_cursor.then(|| (text[range].to_uppercase(), &text[tree.text_range(field)]))
 }
 
-/// Nome e argumentos de um comando `Funcao(...)`.
+/// Nome e argumentos de um comando `SQL_...(...)`. Outra chamada dá `None`.
 fn call<'t>(tree: &Tree, text: &'t str, node: NodeId) -> Option<(&'t str, Vec<NodeId>)> {
     let call = tree
         .children(node)
@@ -2065,10 +2068,16 @@ fn call<'t>(tree: &Tree, text: &'t str, node: NodeId) -> Option<(&'t str, Vec<No
     if tree.kind(callee) != SyntaxKind::NameRef {
         return None;
     }
-    Some((
-        &text[tree.text_range(callee)],
-        tree.children(args).collect(),
-    ))
+    // Quem usa só quer as funções de SQL, e a maioria dos comandos é outra coisa, que sai antes de
+    // juntar os argumentos.
+    let name = &text[tree.text_range(callee)];
+    if !name
+        .get(..4)
+        .is_some_and(|p| p.eq_ignore_ascii_case("SQL_"))
+    {
+        return None;
+    }
+    Some((name, tree.children(args).collect()))
 }
 
 /// Trecho do literal de string, quando o nó é só ele. Uma concatenação como `"..." + aVar` fica de

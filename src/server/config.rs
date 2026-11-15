@@ -67,7 +67,7 @@ impl Level {
 /// `extraTables`. O código que não está aqui fica como o servidor o emite.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct Levels {
-    levels: HashMap<String, Level>,
+    levels: Arc<HashMap<String, Level>>,
     extra_tables: Arc<HashSet<String>>,
     /// O `format.spaces` com `false`, que deixa a formatação só com o recuo.
     format_without_spaces: bool,
@@ -77,7 +77,7 @@ impl Levels {
     #[cfg(test)]
     pub(crate) fn from_map(levels: HashMap<String, Level>) -> Levels {
         Levels {
-            levels,
+            levels: Arc::new(levels),
             extra_tables: Arc::default(),
             format_without_spaces: false,
         }
@@ -108,7 +108,7 @@ struct Override {
 
 pub(crate) struct Config {
     dir: PathBuf,
-    levels: HashMap<String, Level>,
+    levels: Arc<HashMap<String, Level>>,
     overrides: Vec<Override>,
     extra_tables: Arc<HashSet<String>>,
     format_without_spaces: bool,
@@ -125,14 +125,16 @@ impl Config {
         };
         let mut config = Config {
             dir: dir.to_path_buf(),
-            levels: HashMap::new(),
+            levels: Arc::default(),
             overrides: Vec::new(),
             extra_tables: Arc::default(),
             format_without_spaces: false,
         };
         for (key, value) in &root {
             match key.as_str() {
-                "diagnostics" => config.levels = levels(value, "diagnostics", warnings),
+                "diagnostics" => {
+                    config.levels = Arc::new(levels(value, "diagnostics", warnings));
+                }
                 "overrides" => {
                     let Value::Array(list) = value else {
                         warnings.push("\"overrides\" precisa ser uma lista.".to_owned());
@@ -154,6 +156,7 @@ impl Config {
 
     /// Níveis que valem para o arquivo.
     pub(crate) fn levels_for(&self, file: &Path) -> Levels {
+        // Sem um override que case com o arquivo, os níveis são os do arquivo inteiro, sem cópia.
         let mut levels = self.levels.clone();
         if let Ok(relative) = file.strip_prefix(&self.dir) {
             let relative = relative
@@ -166,7 +169,7 @@ impl Config {
                 .iter()
                 .filter(|o| o.files.is_match(&relative))
             {
-                levels.extend(o.levels.iter().map(|(k, v)| (k.clone(), *v)));
+                Arc::make_mut(&mut levels).extend(o.levels.iter().map(|(k, v)| (k.clone(), *v)));
             }
         }
         Levels {

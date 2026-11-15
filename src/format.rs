@@ -50,6 +50,21 @@ impl Indent {
         }
     }
 
+    /// O recuo `whitespace` já é o que [`Indent::whitespace`] escreveria para `columns`, sem
+    /// montar o texto para comparar.
+    fn is_whitespace(self, whitespace: &str, columns: u32) -> bool {
+        let tab = self.tab_size.max(1);
+        let (tabs, spaces) = if self.spaces {
+            (0, columns as usize)
+        } else {
+            ((columns / tab) as usize, (columns % tab) as usize)
+        };
+        let bytes = whitespace.as_bytes();
+        bytes.len() == tabs + spaces
+            && bytes[..tabs].iter().all(|&b| b == b'\t')
+            && bytes[tabs..].iter().all(|&b| b == b' ')
+    }
+
     /// Coluna em que termina o recuo `whitespace`, com a tabulação do tamanho escolhido.
     fn columns(self, whitespace: &str) -> u32 {
         let tab = self.tab_size.max(1);
@@ -115,7 +130,7 @@ fn run(
             edits.extend(spacing.edits(text, tree.tokens(), only, &skipped, &frozen));
             edits.sort_by_key(|e| e.range.start());
         }
-        match check(text, &edits) {
+        match check(text, tree.tokens(), &edits) {
             Outcome::Same => return Some(edits),
             Outcome::TooLong(lines) if !lines.iter().all(|l| frozen.contains(l)) => {
                 frozen.extend(lines);
@@ -171,11 +186,10 @@ impl Plan {
                         shifts.insert(line_start, (0, old));
                     } else {
                         shifts.insert(line_start, (columns as i64 - old as i64, columns));
-                        let new_ws = indent.whitespace(columns);
-                        if new_ws != old_ws {
+                        if !indent.is_whitespace(old_ws, columns) {
                             edits.push(Edit {
                                 range: TextRange::new(line_start, TextSize::new(first as u32)),
-                                new_text: new_ws,
+                                new_text: indent.whitespace(columns),
                             });
                         }
                     }
@@ -280,20 +294,21 @@ fn previous_line_columns(before: &str, indent: Indent) -> u32 {
     }
 }
 
-/// O papel de cada token nas regras do espaço dentro da linha.
+/// O papel de cada token nas regras do espaço dentro da linha, pelo índice do token.
 struct Spacing {
-    /// Operadores de dois lados, como o `=` da atribuição e o `+` de uma conta.
-    binary: rustc_hash::FxHashSet<usize>,
-    /// O `(` da lista de argumentos de uma chamada ou dos parâmetros de uma declaração.
-    call_paren: rustc_hash::FxHashSet<usize>,
+    roles: Vec<u8>,
 }
+
+/// Operador de dois lados, como o `=` da atribuição e o `+` de uma conta.
+const BINARY: u8 = 1;
+/// O `(` da lista de argumentos de uma chamada ou dos parâmetros de uma declaração.
+const CALL_PAREN: u8 = 2;
 
 impl Spacing {
     fn build(tree: &Tree) -> Spacing {
         use SyntaxKind::*;
         let mut spacing = Spacing {
-            binary: Default::default(),
-            call_paren: Default::default(),
+            roles: vec![0; tree.tokens().len()],
         };
         let direct = |node: NodeId| {
             tree.elements(node).filter_map(|e| match e {
@@ -309,17 +324,21 @@ impl Spacing {
         while let Some(node) = stack.pop() {
             stack.extend(tree.children(node));
             match tree.kind(node) {
-                BinaryExpr => spacing
-                    .binary
-                    .extend(direct(node).filter(|&t| !tree.tokens().kind(t).is_trivia())),
-                Assign => spacing
-                    .binary
-                    .extend(direct(node).filter(|&t| tree.tokens().kind(t) == Eq)),
+                BinaryExpr => {
+                    for t in direct(node).filter(|&t| !tree.tokens().kind(t).is_trivia()) {
+                        spacing.roles[t] |= BINARY;
+                    }
+                }
+                Assign => {
+                    for t in direct(node).filter(|&t| tree.tokens().kind(t) == Eq) {
+                        spacing.roles[t] |= BINARY;
+                    }
+                }
                 ArgList | ParamList => {
                     if let Some(open) = first_token(node)
                         && tree.tokens().kind(open) == LParen
                     {
-                        spacing.call_paren.insert(open);
+                        spacing.roles[open] |= CALL_PAREN;
                     }
                 }
                 _ => {}
@@ -335,10 +354,10 @@ impl Spacing {
         if ka == LParen || matches!(kb, RParen | Semicolon | Comma) {
             return Some(0);
         }
-        if self.call_paren.contains(&b) {
+        if self.roles[b] & CALL_PAREN != 0 {
             return Some(0);
         }
-        if matches!(ka, Comma | Semicolon) || self.binary.contains(&a) || self.binary.contains(&b) {
+        if matches!(ka, Comma | Semicolon) || (self.roles[a] | self.roles[b]) & BINARY != 0 {
             return Some(1);
         }
         if matches!(ka, SeKw | EnquantoKw | ParaKw) && kb == LParen {
@@ -377,22 +396,27 @@ impl Spacing {
                 }
                 _ => {}
             }
-            // Um texto que continua na linha de baixo também conta as quebras dele.
-            let breaks = tokens.text(i, text).matches('\n').count();
+            // Um texto que continua na linha de baixo também conta as quebras dele. Fora o texto e os
+            // comentários, nenhum token tem quebra.
+            let breaks = if kind == SyntaxKind::String {
+                tokens.text(i, text).matches('\n').count()
+            } else {
+                0
+            };
             if let Some(a) = previous
+                && let Some(count) = self.wanted(tokens, a, i)
                 && !skipped.contains(&line)
                 && !frozen.contains(&line)
-                && let Some(count) = self.wanted(tokens, a, i)
             {
                 let gap = TextRange::new(tokens.range(a).end(), tokens.range(i).start());
-                let new_text = " ".repeat(count);
-                let inside = touches(only, gap);
+                let current = &text[gap];
+                let same = current.len() == count && current.bytes().all(|b| b == b' ');
                 // Juntar dois operadores mudaria os tokens, como `- -` virando `--`.
                 let joins = count == 0 && !gap.is_empty() && glues(tokens.kind(a), kind);
-                if text[gap] != new_text && inside && !joins {
+                if !same && !joins && touches(only, gap) {
                     edits.push(Edit {
                         range: gap,
-                        new_text,
+                        new_text: " ".repeat(count),
                     });
                 }
             }
@@ -505,7 +529,6 @@ impl Plan {
             if tree.kind(node) != Block {
                 plan.statements.push(tree.text_range(node));
             }
-            let tokens = significant_tokens(tree, node);
             // O primeiro token pode estar num nó filho, como o nome no começo de `x = 1;`.
             let first = tree
                 .token_range(node)
@@ -515,7 +538,6 @@ impl Plan {
                     .entry(tree.tokens().range(first).start())
                     .or_insert(level);
             }
-            let children: Vec<NodeId> = tree.children(node).collect();
             // O corpo de um `se`, `senao`, `enquanto` ou `para`. O bloco fica na coluna do comando
             // e o comando sozinho entra um nível.
             let body = |child: NodeId| {
@@ -527,6 +549,7 @@ impl Plan {
             };
             match tree.kind(node) {
                 Block => {
+                    let tokens = significant_tokens(tree, node);
                     if let Some(&close) = tokens
                         .iter()
                         .rev()
@@ -542,9 +565,10 @@ impl Plan {
                             }
                         }
                     }
-                    stack.extend(children.into_iter().map(|c| (c, level + 1)));
+                    stack.extend(tree.children(node).map(|c| (c, level + 1)));
                 }
                 If => {
+                    let children: Vec<NodeId> = tree.children(node).collect();
                     let else_branch = children
                         .iter()
                         .copied()
@@ -560,7 +584,7 @@ impl Plan {
                     }
                 }
                 ElseBranch => {
-                    if let Some(&b) = children.last() {
+                    if let Some(b) = tree.children(node).last() {
                         // O `senao se` continua na mesma coluna, como uma corrente.
                         if tree.kind(b) == If {
                             stack.push((b, level));
@@ -570,7 +594,7 @@ impl Plan {
                     }
                 }
                 While | For => {
-                    if let Some(&b) = children.last() {
+                    if let Some(b) = tree.children(node).last() {
                         if matches!(tree.kind(b), ForInit | ForStep) {
                             continue;
                         }
@@ -578,7 +602,7 @@ impl Plan {
                     }
                 }
                 FuncImpl => {
-                    for child in children {
+                    for child in tree.children(node) {
                         if !matches!(tree.kind(child), Name | ParamList) {
                             stack.push((child, level));
                         }
@@ -588,7 +612,7 @@ impl Plan {
             }
         }
         plan.statements
-            .sort_by_key(|r| (r.start(), std::cmp::Reverse(r.end())));
+            .sort_unstable_by_key(|r| (r.start(), std::cmp::Reverse(r.end())));
         plan
     }
 
@@ -667,8 +691,9 @@ enum Outcome {
     Changed,
 }
 
-/// Confere que o texto com as trocas tem os mesmos tokens, fora os espaços, que o de antes.
-fn check(text: &str, edits: &[Edit]) -> Outcome {
+/// Confere que o texto com as trocas tem os mesmos tokens, fora os espaços, que o de antes. `before`
+/// são os tokens de `text`, que a árvore já tem.
+fn check(text: &str, before: &crate::Tokens, edits: &[Edit]) -> Outcome {
     if edits.is_empty() {
         return Outcome::Same;
     }
@@ -680,16 +705,18 @@ fn check(text: &str, edits: &[Edit]) -> Outcome {
         at = usize::from(edit.range.end());
     }
     out.push_str(&text[at..]);
-    let (Ok(before), Ok(after)) = (crate::lex(text), crate::lex(&out)) else {
+    let Ok(after) = crate::lex(&out) else {
         return Outcome::Changed;
     };
-    let significant = |tokens: &crate::Tokens, src: &str| -> Vec<(SyntaxKind, String)> {
+    fn significant<'a>(
+        tokens: &'a crate::Tokens,
+        src: &'a str,
+    ) -> impl Iterator<Item = (SyntaxKind, &'a str)> + 'a {
         (0..tokens.len())
             .filter(|&i| !matches!(tokens.kind(i), SyntaxKind::Whitespace | SyntaxKind::Newline))
-            .map(|i| (tokens.kind(i), tokens.text(i, src).to_owned()))
-            .collect()
-    };
-    if significant(&before, text) != significant(&after, &out) {
+            .map(move |i| (tokens.kind(i), tokens.text(i, src)))
+    }
+    if !significant(before, text).eq(significant(&after, &out)) {
         return Outcome::Changed;
     }
     if after.errors().is_empty() {

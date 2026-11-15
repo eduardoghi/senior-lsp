@@ -233,10 +233,13 @@ fn call(tree: &Tree, scope: &Scope, context: Context, node: NodeId, checks: &mut
         return;
     }
     for (&arg, &param) in args.iter().zip(&params) {
-        let expected = scope.symbols.definitions.iter().find_map(|d| match d.kind {
-            DefKind::Parameter(Some(t)) if d.node == param => Some(t),
-            _ => None,
-        });
+        // O mesmo tipo que a definição do parâmetro guarda, lido direto do nó, sem procurar a
+        // definição na lista toda. Só o parâmetro com nome vira definição.
+        let expected = tree
+            .children(param)
+            .any(|c| tree.kind(c) == Name)
+            .then(|| crate::symbols::var_type(tree, param))
+            .flatten();
         let by_ref = tree
             .elements(param)
             .any(|e| matches!(e, crate::Element::Token(t) if tree.tokens().kind(t) == EndKw));

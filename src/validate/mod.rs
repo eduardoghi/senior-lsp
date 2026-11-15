@@ -276,6 +276,7 @@ pub fn validate(
             Assign => assignment(tree, node, &mut checks),
             CallExpr => message_text(tree, &scope, node, &mut checks),
             While => endless_loop(tree, symbols, text, inherited, node, &mut checks),
+            Break | Continue => loop_clause(tree, text, node, &mut checks),
             CallStmt => {
                 unknown_function(tree, symbols, text, context, inherited, node, &mut checks);
                 native_sql.visit(tree, text, node);
@@ -319,13 +320,24 @@ pub fn validate(
         stack[first..].reverse();
     }
     native_sql.finish(text, inherited, &mut checks);
-    loop_clauses(tree, text, &mut checks);
-    unused_parameters(tree, symbols, text, &mut checks);
+    // Os nomes sem uso direto dos parâmetros e, na regra comum, das variáveis e funções são
+    // procurados nos textos numa varredura só, que numa regra com muito SQL passa de 1 MB.
+    let used = used_definitions(symbols);
+    let parameters = unused_parameter_defs(tree, symbols, &used);
+    let mut wanted: rustc_hash::FxHashSet<std::string::String> = parameters
+        .iter()
+        .map(|&i| text[symbols.definitions[i].name].to_ascii_uppercase())
+        .collect();
+    if context == Context::Rule {
+        wanted.extend(unused_names(symbols, text, &used));
+    }
+    let in_strings = names_in_strings(tree, text, &wanted);
+    unused_parameters(symbols, text, &parameters, &in_strings, &mut checks);
     if let Some(uses) = column_uses {
         uses.finish(text, &inherited.dictionaries, &mut checks);
     }
     if context == Context::Rule {
-        unused(tree, symbols, text, &mut checks);
+        unused(tree, symbols, text, &used, &in_strings, &mut checks);
     }
     checks.extend(
         symbols
@@ -343,35 +355,43 @@ pub fn validate(
     checks
 }
 
-/// Parâmetros da `funcao` que o corpo não usa. Vale em todo tipo de regra, porque o parâmetro só
-/// existe dentro da função. O nome citado num texto conta como usado, como no [`unused`], porque o
-/// SQL lê o parâmetro como `:nome`. Os da declaração não contam, porque o corpo é o da `funcao`.
-fn unused_parameters(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
+/// Para cada definição, se algum nome do arquivo a alcança.
+fn used_definitions(symbols: &Symbols) -> Vec<bool> {
     let mut used = vec![false; symbols.definitions.len()];
     for target in symbols.references.iter().flat_map(|r| &r.targets) {
         used[*target] = true;
     }
+    used
+}
+
+/// Parâmetros da `funcao` que nenhum nome do corpo alcança, pelo índice da definição. Os da
+/// declaração não contam, porque o corpo é o da `funcao`.
+fn unused_parameter_defs(tree: &Tree, symbols: &Symbols, used: &[bool]) -> Vec<usize> {
     let in_impl = |def: &crate::symbols::Definition| {
         tree.parent(def.node)
             .and_then(|list| tree.parent(list))
             .is_some_and(|header| tree.kind(header) == FuncImpl)
     };
-    let unused: Vec<usize> = symbols
+    symbols
         .definitions
         .iter()
         .enumerate()
         .filter(|(i, d)| matches!(d.kind, DefKind::Parameter(_)) && !used[*i] && in_impl(d))
         .map(|(i, _)| i)
-        .collect();
-    if unused.is_empty() {
-        return;
-    }
-    let wanted = unused
-        .iter()
-        .map(|&i| text[symbols.definitions[i].name].to_ascii_uppercase())
-        .collect();
-    let in_strings = names_in_strings(tree, text, &wanted);
-    for i in unused {
+        .collect()
+}
+
+/// Parâmetros da `funcao` que o corpo não usa, dos de `parameters`. Vale em todo tipo de regra,
+/// porque o parâmetro só existe dentro da função. O nome citado num texto (`in_strings`) conta como
+/// usado, como no [`unused`], porque o SQL lê o parâmetro como `:nome`.
+fn unused_parameters(
+    symbols: &Symbols,
+    text: &str,
+    parameters: &[usize],
+    in_strings: &rustc_hash::FxHashSet<std::string::String>,
+    checks: &mut Vec<Check>,
+) {
+    for &i in parameters {
         let def = &symbols.definitions[i];
         let name = &text[def.name];
         if !in_strings.contains(&name.to_ascii_uppercase()) {
@@ -385,16 +405,23 @@ fn unused_parameters(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Ve
     }
 }
 
-/// Definições sem nenhum uso. Um nome citado dentro de um texto conta como usado, porque o SQL de
-/// um cursor ou do `ExecSql` lê a variável como `:nome`, e há regras que passam o nome da
-/// variável num texto para uma função preencher.
-fn unused(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
-    let mut used = vec![false; symbols.definitions.len()];
-    for target in symbols.references.iter().flat_map(|r| &r.targets) {
-        used[*target] = true;
-    }
-    // A função tem o `definir funcao` e a `funcao`, e qualquer chamada alcança as duas. O aviso
-    // sai uma vez, na `funcao` quando ela existe.
+/// Variável, cursor, lista, tabela ou web service, que o [`unused`] cobra.
+fn is_variable(def: &crate::symbols::Definition) -> bool {
+    matches!(
+        def.kind,
+        DefKind::Variable(_)
+            | DefKind::Cursor
+            | DefKind::List
+            | DefKind::Table
+            | DefKind::WebService
+    )
+}
+
+/// As funções do arquivo pelo nome em maiúsculas, cada uma com o `definir funcao` e a `funcao`.
+fn functions_by_name(
+    symbols: &Symbols,
+    text: &str,
+) -> std::collections::BTreeMap<std::string::String, Vec<usize>> {
     let mut functions: std::collections::BTreeMap<std::string::String, Vec<usize>> =
         Default::default();
     for (i, def) in symbols.definitions.iter().enumerate() {
@@ -405,30 +432,44 @@ fn unused(tree: &Tree, symbols: &Symbols, text: &str, checks: &mut Vec<Check>) {
                 .push(i);
         }
     }
-    let is_variable = |def: &crate::symbols::Definition| {
-        matches!(
-            def.kind,
-            DefKind::Variable(_)
-                | DefKind::Cursor
-                | DefKind::List
-                | DefKind::Table
-                | DefKind::WebService
-        )
-    };
-    // Só os nomes sem uso direto precisam ser procurados nos textos, e a maioria das regras não
-    // tem nenhum, então o texto das strings nem é lido.
-    let mut wanted = rustc_hash::FxHashSet::default();
-    for (i, def) in symbols.definitions.iter().enumerate() {
-        if is_variable(def) && !used[i] {
-            wanted.insert(text[def.name].to_ascii_uppercase());
-        }
-    }
-    for (upper, defs) in &functions {
-        if !defs.iter().any(|&i| used[i]) {
-            wanted.insert(upper.clone());
-        }
-    }
-    let in_sql = names_in_strings(tree, text, &wanted);
+    functions
+}
+
+/// Nomes, em maiúsculas, das variáveis e funções sem uso direto, que o [`unused`] procura nos
+/// textos. A maioria das regras não tem nenhum, e então os textos nem são lidos.
+fn unused_names(
+    symbols: &Symbols,
+    text: &str,
+    used: &[bool],
+) -> impl Iterator<Item = std::string::String> {
+    let variables: Vec<std::string::String> = symbols
+        .definitions
+        .iter()
+        .enumerate()
+        .filter(|(i, def)| is_variable(def) && !used[*i])
+        .map(|(_, def)| text[def.name].to_ascii_uppercase())
+        .collect();
+    let functions = functions_by_name(symbols, text)
+        .into_iter()
+        .filter(|(_, defs)| !defs.iter().any(|&i| used[i]))
+        .map(|(upper, _)| upper);
+    variables.into_iter().chain(functions)
+}
+
+/// Definições sem nenhum uso. Um nome citado dentro de um texto conta como usado, porque o SQL de
+/// um cursor ou do `ExecSql` lê a variável como `:nome`, e há regras que passam o nome da
+/// variável num texto para uma função preencher.
+fn unused(
+    tree: &Tree,
+    symbols: &Symbols,
+    text: &str,
+    used: &[bool],
+    in_sql: &rustc_hash::FxHashSet<std::string::String>,
+    checks: &mut Vec<Check>,
+) {
+    // A função tem o `definir funcao` e a `funcao`, e qualquer chamada alcança as duas. O aviso
+    // sai uma vez, na `funcao` quando ela existe.
+    let functions = functions_by_name(symbols, text);
     for (i, def) in symbols.definitions.iter().enumerate() {
         let name = &text[def.name];
         if is_variable(def) && !used[i] && !in_sql.contains(&name.to_ascii_uppercase()) {
@@ -765,42 +806,40 @@ fn flow_stop(tree: &Tree, node: NodeId) -> Option<&'static str> {
 /// `Pare` e `Continue` fora de um `para` ou `enquanto`, que o compilador recusa, e o `Continue`
 /// num `para`, que volta sem rodar o incremento e repete o laço sem fim quando nada mais muda o
 /// contador. Os dois conferidos no ERP. O laço vale só dentro da mesma função.
-fn loop_clauses(tree: &Tree, text: &str, checks: &mut Vec<Check>) {
-    let mut stack = vec![(tree.root(), None)];
-    while let Some((node, inner)) = stack.pop() {
-        let kind = tree.kind(node);
-        if matches!(kind, Break | Continue) {
-            match inner {
-                None => checks.push(Check {
-                    kind: CheckKind::LoopClauseOutsideLoop,
+fn loop_clause(tree: &Tree, text: &str, node: NodeId, checks: &mut Vec<Check>) {
+    let kind = tree.kind(node);
+    // O laço mais de dentro, subindo pelos pais até a função em volta.
+    let mut up = tree.parent(node);
+    let inner = loop {
+        match up.map(|n| (n, tree.kind(n))) {
+            Some((n, While | For)) => break Some(n),
+            Some((_, FuncImpl)) | None => break None,
+            Some((n, _)) => up = tree.parent(n),
+        }
+    };
+    match inner {
+        None => checks.push(Check {
+            kind: CheckKind::LoopClauseOutsideLoop,
+            range: tree.text_range(node),
+            name: None,
+            label: Some(if kind == Break { "Pare" } else { "Continue" }.to_owned()),
+        }),
+        Some(lp) if kind == Continue && tree.kind(lp) == For => {
+            let step = tree
+                .children(lp)
+                .find(|&c| tree.kind(c) == ForStep)
+                .map(|s| text[tree.text_range(s)].trim().to_owned())
+                .filter(|s| !s.is_empty());
+            if let Some(step) = step {
+                checks.push(Check {
+                    kind: CheckKind::ContinueSkipsStep,
                     range: tree.text_range(node),
                     name: None,
-                    label: Some(if kind == Break { "Pare" } else { "Continue" }.to_owned()),
-                }),
-                Some(lp) if kind == Continue && tree.kind(lp) == For => {
-                    let step = tree
-                        .children(lp)
-                        .find(|&c| tree.kind(c) == ForStep)
-                        .map(|s| text[tree.text_range(s)].trim().to_owned())
-                        .filter(|s| !s.is_empty());
-                    if let Some(step) = step {
-                        checks.push(Check {
-                            kind: CheckKind::ContinueSkipsStep,
-                            range: tree.text_range(node),
-                            name: None,
-                            label: Some(step),
-                        });
-                    }
-                }
-                Some(_) => {}
+                    label: Some(step),
+                });
             }
         }
-        let inner = match kind {
-            While | For => Some(node),
-            FuncImpl => None,
-            _ => inner,
-        };
-        stack.extend(tree.children(node).map(|c| (c, inner)));
+        Some(_) => {}
     }
 }
 

@@ -4,8 +4,6 @@
 //! sabe se `Soma` é uma função da regra, se `IntParaAlfa` é do ERP ou se `nValor` é variável ou
 //! parâmetro, e é isso que vai aqui.
 
-use rustc_hash::FxHashMap;
-
 use lsp_types::{
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensLegend,
 };
@@ -70,11 +68,6 @@ pub(crate) fn tokens(doc: &Document, encoding: ColumnEncoding) -> SemanticTokens
     let tree = &doc.tree;
     let text = &doc.text;
     let symbols = &doc.symbols;
-    let references: FxHashMap<TextRange, &[usize]> = symbols
-        .references
-        .iter()
-        .map(|r| (r.range, r.targets.as_slice()))
-        .collect();
     let mut found: Vec<(TextRange, Type, u32)> = symbols
         .definitions
         .iter()
@@ -88,7 +81,7 @@ pub(crate) fn tokens(doc: &Document, encoding: ColumnEncoding) -> SemanticTokens
             continue;
         }
         let range = tree.text_range(node);
-        if let Some(classified) = classify(doc, &references, node, range) {
+        if let Some(classified) = classify(doc, node, range) {
             found.push((range, classified.0, classified.1));
         }
     }
@@ -127,12 +120,7 @@ pub(crate) fn tokens(doc: &Document, encoding: ColumnEncoding) -> SemanticTokens
     }
 }
 
-fn classify(
-    doc: &Document,
-    references: &FxHashMap<TextRange, &[usize]>,
-    node: NodeId,
-    range: TextRange,
-) -> Option<(Type, u32)> {
+fn classify(doc: &Document, node: NodeId, range: TextRange) -> Option<(Type, u32)> {
     let tree = &doc.tree;
     let name = &doc.text[range];
     let parent = tree.parent(node);
@@ -142,8 +130,10 @@ fn classify(
     if parent_kind == Some(SyntaxKind::FieldExpr) && !first {
         return Some((Type::Property, 0));
     }
-    if let Some(targets) = references.get(&range) {
-        let def = &doc.symbols.definitions[*targets.first()?];
+    // As referências estão em ordem de texto, e a busca binária dispensa montar um mapa a cada
+    // pedido.
+    if let Some(reference) = doc.symbols.reference_at(range) {
+        let def = &doc.symbols.definitions[*reference.targets.first()?];
         return Some((of_definition(def.kind)?, 0));
     }
     if parent_kind == Some(SyntaxKind::CallExpr) && first {

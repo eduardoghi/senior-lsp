@@ -2,8 +2,6 @@
 //! andam juntas, como o laço com os `Pare` e `Continue` dele, o `se` com o `senao` e a abertura do
 //! bloco com o fechamento.
 
-use std::collections::HashSet;
-
 use lsp_types::{DocumentHighlight, DocumentHighlightKind, Position};
 use text_size::{TextRange, TextSize};
 
@@ -22,7 +20,7 @@ impl Context<'_> {
             // `definir funcao` e `funcao` são duas definições do mesmo nome, e uma referência
             // alcança as duas. Juntar os alvos das referências faz a declaração marcar a
             // implementação e o contrário.
-            let mut targets: HashSet<usize> = targets.into_iter().collect();
+            let mut targets: rustc_hash::FxHashSet<usize> = targets.into_iter().collect();
             for r in &symbols.references {
                 if r.targets.iter().any(|t| targets.contains(t)) {
                     targets.extend(&r.targets);

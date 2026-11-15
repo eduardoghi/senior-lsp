@@ -291,7 +291,7 @@ fn namespace(tree: &Tree, node: NodeId) -> Option<Namespace> {
     })
 }
 
-fn var_type(tree: &Tree, node: NodeId) -> Option<VarType> {
+pub(crate) fn var_type(tree: &Tree, node: NodeId) -> Option<VarType> {
     tree.elements(node).find_map(|e| match e {
         Element::Token(t) => match tree.tokens().kind(t) {
             AlfaKw => Some(VarType::Alfa),
