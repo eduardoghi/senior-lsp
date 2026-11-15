@@ -125,7 +125,15 @@ fn run(
     // Cada volta congela pelo menos uma linha nova, então o laço termina. O limite só protege de
     // um engano no cálculo.
     for _ in 0..64 {
-        let mut edits = plan.edits(text, tree.tokens(), indent, only, &skipped, &frozen);
+        let mut edits = plan.edits(
+            text,
+            tree.tokens(),
+            indent,
+            only,
+            &skipped,
+            &frozen,
+            all_lines(text),
+        );
         if let Some(spacing) = &spacing {
             edits.extend(spacing.edits(text, tree.tokens(), only, &skipped, &frozen));
             edits.sort_by_key(|e| e.range.start());
@@ -143,6 +151,7 @@ fn run(
 
 impl Plan {
     /// As trocas de recuo, deixando como estão as linhas de `skipped` e as de `frozen`.
+    #[allow(clippy::too_many_arguments)]
     fn edits(
         &self,
         text: &str,
@@ -151,14 +160,17 @@ impl Plan {
         only: Option<TextRange>,
         skipped: &rustc_hash::FxHashSet<usize>,
         frozen: &rustc_hash::FxHashSet<usize>,
+        lines: impl Iterator<Item = (usize, usize)>,
     ) -> Vec<Edit> {
         let mut edits = Vec::new();
         // Deslocamento e coluna nova de cada linha já calculada, pelo começo dela, para as
         // continuações.
         let mut shifts: FxHashMap<TextSize, (i64, u32)> = FxHashMap::default();
-        let mut start = 0usize;
-        let mut line_index = 0usize;
-        while start <= text.len() {
+        for (start, line_index) in lines {
+            // Depois do trecho pedido nenhuma linha muda, e as continuações só olham para cima.
+            if only.is_some_and(|r| start > usize::from(r.end())) {
+                break;
+            }
             let end = text[start..].find('\n').map_or(text.len(), |i| start + i);
             let line = &text[start..end];
             let ws_len = line.len() - line.trim_start_matches([' ', '\t']).len();
@@ -195,14 +207,17 @@ impl Plan {
                     }
                 }
             }
-            if end == text.len() {
-                break;
-            }
-            start = end + 1;
-            line_index += 1;
         }
         edits
     }
+}
+
+/// Começo e número de cada linha do texto.
+fn all_lines(text: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
+    std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+        .enumerate()
+        .map(|(index, start)| (start, index))
 }
 
 /// As trocas de recuo da linha em que o editor acabou de digitar `typed`, para a formatação ao
@@ -233,12 +248,12 @@ pub fn on_type(
     };
     let range = TextRange::new(TextSize::new(start as u32), TextSize::new(end as u32));
     match typed {
-        "}" if content.starts_with('}') => indentation(text, tree, indent, Some(range)),
-        "m" | "M" if closes("fim") => indentation(text, tree, indent, Some(range)),
-        "\n" if !content.is_empty() => indentation(text, tree, indent, Some(range)),
+        "}" if content.starts_with('}') => line_indentation(text, tree, indent, range),
+        "m" | "M" if closes("fim") => line_indentation(text, tree, indent, range),
+        "\n" if !content.is_empty() => line_indentation(text, tree, indent, range),
         "\n" => {
             let columns = if tree.errors().is_empty() && tree.tokens().errors().is_empty() {
-                let plan = Plan::build(tree);
+                let plan = Plan::build_within(tree, Some(&[TextRange::empty(offset)]));
                 let level = plan
                     .blocks
                     .iter()
@@ -264,6 +279,126 @@ pub fn on_type(
         }
         _ => None,
     }
+}
+
+/// O recuo de uma linha só, como o [`indentation`] com o trecho `line`, sem percorrer o arquivo
+/// inteiro. Uma linha que começa um comando ou fecha um bloco tem a coluna do nível dela, e uma
+/// continuação depende só da linha em que começa o comando de que faz parte, que por sua vez pode
+/// ser continuação de outro. O plano e o cálculo cobrem só essa corrente de linhas. Como só o recuo
+/// de uma linha que começa num token muda, a conferência lexa só a linha.
+fn line_indentation(text: &str, tree: &Tree, indent: Indent, line: TextRange) -> Option<Vec<Edit>> {
+    if !tree.errors().is_empty() || !tree.tokens().errors().is_empty() {
+        return None;
+    }
+    let line_start = |at: usize| text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let line_range = |start: usize| {
+        let end = text[start..].find('\n').map_or(text.len(), |i| start + i);
+        TextRange::new(TextSize::new(start as u32), TextSize::new(end as u32))
+    };
+    // Do fim para o começo. O dono de cada linha é achado como no `Plan::target`, e todo comando
+    // que contém o começo da linha encosta nela, então o plano da linha sozinha basta.
+    let mut chain = vec![usize::from(line.start())];
+    loop {
+        let here = chain[chain.len() - 1];
+        let window = line_range(here);
+        let content = &text[here..usize::from(window.end())];
+        let first = here + content.len() - content.trim_start_matches([' ', '\t']).len();
+        let (here, at) = (TextSize::new(here as u32), TextSize::new(first as u32));
+        let plan = Plan::build_within(tree, Some(&[window]));
+        let owner = plan
+            .statements
+            .iter()
+            .filter(|r| r.start() < here && r.contains(at))
+            .max_by_key(|r| r.start());
+        match owner {
+            Some(owner) => chain.push(line_start(usize::from(owner.start()))),
+            None => break,
+        }
+    }
+    chain.reverse();
+    let windows: Vec<TextRange> = chain.iter().map(|&start| line_range(start)).collect();
+    let plan = Plan::build_within(tree, Some(&windows));
+    let skipped = format_off_lines_until(text, tree, line.end());
+    // Os números só servem para as linhas desligadas e a congelada. Sem trecho desligado, a
+    // posição na corrente identifica a linha sem contar as quebras do começo do arquivo.
+    let numbers: Vec<usize> = if skipped.is_empty() {
+        (0..chain.len()).collect()
+    } else {
+        let mut number = text[..chain[0]].matches('\n').count();
+        let mut numbers = vec![number];
+        for pair in chain.windows(2) {
+            number += text[pair[0]..pair[1]].matches('\n').count();
+            numbers.push(number);
+        }
+        numbers
+    };
+    let own = numbers[numbers.len() - 1];
+    let mut frozen = rustc_hash::FxHashSet::default();
+    for _ in 0..2 {
+        let lines = chain.iter().copied().zip(numbers.iter().copied());
+        let edits = plan.edits(
+            text,
+            tree.tokens(),
+            indent,
+            Some(line),
+            &skipped,
+            &frozen,
+            lines,
+        );
+        let [edit] = edits.as_slice() else {
+            if edits.is_empty() {
+                return Some(edits);
+            }
+            return indentation(text, tree, indent, Some(line));
+        };
+        match check_line(text, tree.tokens(), edit) {
+            Outcome::Same => return Some(edits),
+            // A linha que passaria do limite do compilador fica com o recuo de antes.
+            Outcome::TooLong(_) => {
+                frozen.insert(own);
+            }
+            // Inconclusivo só pela linha, como um texto que começa antes dela.
+            Outcome::Changed => return indentation(text, tree, indent, Some(line)),
+        }
+    }
+    indentation(text, tree, indent, Some(line))
+}
+
+/// A conferência do [`check`] só na linha da troca, que é o recuo de uma linha que começa num
+/// token. O trecho lexado vai até o fim do último token que começa na linha, que pode ser um texto
+/// que continua nas linhas de baixo.
+fn check_line(text: &str, tokens: &crate::Tokens, edit: &Edit) -> Outcome {
+    let start = usize::from(edit.range.start());
+    let line_end = text[start..].find('\n').map_or(text.len(), |i| start + i);
+    // O último token que começa antes do fim da linha, por busca binária.
+    let (mut low, mut high) = (0, tokens.len());
+    while low < high {
+        let mid = (low + high) / 2;
+        if usize::from(tokens.range(mid).start()) < line_end {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    let last = low
+        .checked_sub(1)
+        .filter(|&i| usize::from(tokens.range(i).start()) >= start);
+    let mut end = last.map_or(line_end, |i| {
+        usize::from(tokens.range(i).end()).max(line_end)
+    });
+    end = text[end..].find('\n').map_or(text.len(), |i| end + i);
+    let old = &text[start..end];
+    let Ok(before) = crate::lex(old) else {
+        return Outcome::Changed;
+    };
+    if !before.errors().is_empty() {
+        return Outcome::Changed;
+    }
+    let local = Edit {
+        range: TextRange::new(TextSize::new(0), edit.range.end() - edit.range.start()),
+        new_text: edit.new_text.clone(),
+    };
+    check(old, &before, std::slice::from_ref(&local))
 }
 
 /// Coluna para a linha nova depois de `before`, pela última linha com algo escrito. Ela soma um nível
@@ -470,6 +605,27 @@ fn tokens_at(tokens: &crate::Tokens, at: TextSize) -> Option<usize> {
 /// Linhas entre `@ senior-lsp-format-off @` e `@ senior-lsp-format-on @`, as dos dois
 /// comentários inclusive. Sem o `on`, vai até o fim do arquivo.
 fn format_off_lines(text: &str, tree: &Tree) -> rustc_hash::FxHashSet<usize> {
+    format_off_lines_until(text, tree, TextSize::of(text))
+}
+
+/// Como o [`format_off_lines`], só com as linhas até `until`.
+fn format_off_lines_until(
+    text: &str,
+    tree: &Tree,
+    until: TextSize,
+) -> rustc_hash::FxHashSet<usize> {
+    // Quase nenhuma regra tem a diretiva, e procurar no texto custa bem menos que olhar cada token.
+    const DIRECTIVE: &[u8] = b"senior-lsp-format-o";
+    let until_text = &text.as_bytes()[..usize::from(until).min(text.len())];
+    let mentioned = memchr::memchr_iter(b'-', until_text).any(|i| {
+        i >= 10
+            && until_text
+                .get(i - 10..i - 10 + DIRECTIVE.len())
+                .is_some_and(|w| w.eq_ignore_ascii_case(DIRECTIVE))
+    });
+    if !mentioned {
+        return rustc_hash::FxHashSet::default();
+    }
     let tokens = tree.tokens();
     let line_of = |offset: TextSize| text[..usize::from(offset)].matches('\n').count();
     let directive = |i: usize| {
@@ -491,6 +647,9 @@ fn format_off_lines(text: &str, tree: &Tree) -> rustc_hash::FxHashSet<usize> {
     let mut lines = rustc_hash::FxHashSet::default();
     let mut off: Option<usize> = None;
     for i in 0..tokens.len() {
+        if tokens.range(i).start() > until {
+            break;
+        }
         match (directive(i), off) {
             (Some(false), None) => off = Some(line_of(tokens.range(i).start())),
             (Some(true), Some(from)) => {
@@ -501,7 +660,7 @@ fn format_off_lines(text: &str, tree: &Tree) -> rustc_hash::FxHashSet<usize> {
         }
     }
     if let Some(from) = off {
-        lines.extend(from..=text.matches('\n').count());
+        lines.extend(from..=line_of(until.min(TextSize::of(text))));
     }
     lines
 }
@@ -520,10 +679,24 @@ struct Plan {
 
 impl Plan {
     fn build(tree: &Tree) -> Plan {
+        Plan::build_within(tree, None)
+    }
+
+    /// O plano só dos nós que encostam em alguma das `windows`, ou de todos sem elas. O nível de um
+    /// nó depende só dos que estão em volta dele, que também encostam na janela, então o que o
+    /// plano diz dos pontos das janelas sai igual ao do arquivo inteiro.
+    fn build_within(tree: &Tree, windows: Option<&[TextRange]>) -> Plan {
         use SyntaxKind::*;
         let mut plan = Plan::default();
+        let inside = |node: NodeId| {
+            let range = tree.text_range(node);
+            windows.is_none_or(|ws| ws.iter().any(|w| range.intersect(*w).is_some()))
+        };
         let mut stack: Vec<(NodeId, u32)> = tree.children(tree.root()).map(|c| (c, 0)).collect();
         while let Some((node, level)) = stack.pop() {
+            if !inside(node) {
+                continue;
+            }
             // O bloco não conta como comando de que uma linha seja continuação. As linhas dele são
             // conteúdo, com o nível que ele dá.
             if tree.kind(node) != Block {
