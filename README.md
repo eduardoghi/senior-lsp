@@ -5,6 +5,20 @@ para as regras LSP do ERP Senior, como o gerenciador de artefatos exporta. Ele a
 erros que o compilador do ERP daria, sem precisar compilar a regra no ERP, e ajuda a navegar em
 regras grandes.
 
+> [!IMPORTANT]
+> **Aviso legal**
+>
+> O senior-lsp é um projeto pessoal e independente, sem vínculo, patrocínio ou endosso da Senior
+> Sistemas. Não é uma ferramenta oficial e não substitui o compilador, a documentação nem o suporte
+> do ERP. Quando o servidor e o ERP discordarem, na compilação ou na execução, vale o ERP.
+>
+> O repositório não contém nem distribui código-fonte, binários ou regras da Senior Sistemas. Os
+> nomes e marcas da Senior Sistemas pertencem a ela e aparecem aqui só para identificar o sistema
+> com que o servidor trabalha.
+>
+> O software é fornecido no estado em que se encontra, sem garantias, nos termos da
+> [licença MIT](LICENSE).
+
 O servidor oferece:
 
 - erros de sintaxe e de tipo, com o texto do compilador entre parênteses para quem já conhece a
