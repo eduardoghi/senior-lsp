@@ -190,6 +190,8 @@ pub enum CheckKind {
     ConflictingDefinition,
     /// Chamada a uma função declarada que nenhuma `funcao` implementa.
     CallWithoutImplementation,
+    /// Chamada a função que, na tela, só uma regra seguinte implementa.
+    CallImplementedLater,
     /// Chamada a uma função com exatamente 31 caracteres no nome.
     CallToLongFunctionName,
     /// Texto literal num parâmetro alfa de função da regra.
@@ -1187,6 +1189,7 @@ mod tests {
                 c.kind,
                 CheckKind::UnusedFunction
                     | CheckKind::CallWithoutImplementation
+                    | CheckKind::CallImplementedLater
                     | CheckKind::UnusedParameter
                     | CheckKind::CursorColumnUnused
                     | CheckKind::CursorStarUnused
@@ -1674,7 +1677,10 @@ mod tests {
             let tree = crate::parse(text).unwrap();
             let rules = inherited.iter().map(|name| {
                 let path = std::path::PathBuf::from("/f/rule.txt");
-                (path, format!("definir funcao {name}();"))
+                (
+                    path,
+                    format!("definir funcao {name}();\nfuncao {name}();\ninicio\nfim;"),
+                )
             });
             let inherited = Inherited::from_rules(rules);
             validate(
@@ -1702,7 +1708,8 @@ mod tests {
     fn parametros_de_funcao_herdada() {
         let rules = [(
             std::path::PathBuf::from("/f/rule.txt"),
-            "definir funcao CallWs(numero p, alfa end r);".to_owned(),
+            "definir funcao CallWs(numero p, alfa end r);\nfuncao CallWs(numero p, alfa end r);\ninicio\nfim;"
+                .to_owned(),
         )];
         let inherited = Inherited::from_rules(rules);
         let text = "definir alfa a;\nCallWs(1, a); CallWs(\"x\", a); CallWs(1); CallWs(1, \"y\");";

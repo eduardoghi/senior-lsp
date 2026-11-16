@@ -774,6 +774,14 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                  Executar a regra.\""
             ),
         ),
+        CheckKind::CallImplementedLater => (
+            "SEN102",
+            format!(
+                "A função {name} só é implementada numa regra que vem depois desta na tela. \
+                 Compila, mas esta chamada para na execução com \"Não é possível determinar a \
+                 regra atual para o interpretador.\""
+            ),
+        ),
         CheckKind::CallToLongFunctionName => (
             "SEN103",
             format!(

@@ -129,7 +129,10 @@ O SEN097 compara os rótulos pelos 30 primeiros caracteres e sem diferença de c
 função não serve de rótulo. O ERP corta o nome da função em 31 caracteres. Com 32 ou mais a chamada não
 é reconhecida e não compila (SEN099), e com exatamente 31 compila e para na execução (SEN103). O
 SEN098 compara os 31 primeiros caracteres, e deixa passar a função que a regra da raiz da tela
-declara, como o SEN102 deixa passar a que outra regra da tela implementa. O SEN100 vale para qualquer
+declara. Numa tela, o SEN102 segue a ordem das regras. A função implementada nesta regra ou numa
+anterior não dá aviso, e a que só uma regra seguinte implementa também para na execução, com "Não é
+possível determinar a regra atual para o interpretador.", porque a regra seguinte não está carregada.
+O SEN100 vale para qualquer
 função, do ERP ou da regra, e a conta numérica em argumento numérico compila. O SEN104 não vale nas
 funções do ERP, onde o texto literal é normal, e o parâmetro `end` com constante já é o SEN053.
 

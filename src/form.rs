@@ -33,6 +33,8 @@ pub struct InheritedDef {
     /// Quantas regras definem a função. Num modelo de relatório, mais de uma deixa em dúvida qual
     /// assinatura vale.
     pub rules: usize,
+    /// Alguma das regras tem a `funcao`, e não só o `definir funcao`.
+    pub implemented: bool,
     /// Entrada ou controle do relatório, cadastrado no modelo e não por `definir`.
     pub entry: Option<crate::report::EntryKind>,
     /// Regra de modelo de relatório de onde a definição veio, para levar a posição ao JSON.
@@ -55,6 +57,9 @@ pub struct Inherited {
     pub dictionaries: crate::dictionary::Dictionaries,
     /// A regra usa o Senior SQL 2, pela exportação. `None` quando a exportação não diz.
     pub senior_sql2: Option<bool>,
+    /// Funções que só têm a `funcao` em regras que vêm depois desta na tela, em maiúsculas. A
+    /// chamada a elas compila e para na execução, porque a regra seguinte não está carregada.
+    later_implemented: std::collections::HashSet<String>,
 }
 
 impl Inherited {
@@ -82,6 +87,11 @@ impl Inherited {
 
     pub fn contains(&self, name: &str) -> bool {
         self.functions.contains_key(&name.to_uppercase())
+    }
+
+    /// A função tem a `funcao` numa regra que vem depois desta na tela.
+    pub fn implemented_later(&self, name: &str) -> bool {
+        self.later_implemented.contains(&name.to_uppercase())
     }
 
     /// Nenhuma definição de outra regra, só os dicionários de dados.
@@ -175,6 +185,7 @@ impl Inherited {
                 },
                 params: Vec::new(),
                 rules: 1,
+                implemented: false,
                 entry: Some(entry.kind),
                 embedded: None,
             };
@@ -215,6 +226,7 @@ impl Inherited {
                         decl: def.decl.clone(),
                         params: Vec::new(),
                         rules: 1,
+                        implemented: false,
                         entry: None,
                         embedded: embedded.cloned(),
                     };
@@ -234,6 +246,7 @@ impl Inherited {
                             if new_rule {
                                 f.rules += 1;
                             }
+                            f.implemented |= !def.is_decl;
                             continue;
                         }
                         f
@@ -246,6 +259,7 @@ impl Inherited {
                         decl: String::new(),
                         params: Vec::new(),
                         rules: 1,
+                        implemented: false,
                         entry: None,
                         embedded: embedded.cloned(),
                     }),
@@ -256,6 +270,7 @@ impl Inherited {
                 }
                 if !def.is_decl {
                     existing.name = def.name;
+                    existing.implemented = true;
                 }
             }
         }
@@ -404,7 +419,8 @@ impl Form {
     /// Definições que valem para a regra que tem `before` regras antes dela.
     fn inherited(&mut self, before: usize) -> Arc<Inherited> {
         let mut changed = false;
-        for path in &self.order[..before] {
+        // As regras seguintes também, para saber o que só elas implementam.
+        for path in &self.order {
             let now = stamp(path);
             if self.rules.get(path).is_some_and(|(read, _)| *read == now) {
                 continue;
@@ -429,6 +445,18 @@ impl Form {
             Some((path.as_path(), defs.as_deref()?, None))
         });
         let mut inherited = Inherited::merge(rules, false);
+        let later = self
+            .order
+            .iter()
+            .skip(before + 1)
+            .filter_map(|path| self.rules.get(path)?.1.clone());
+        for defs in later {
+            for def in &defs.defs {
+                if def.kind == DefKind::Function && !def.is_decl {
+                    inherited.later_implemented.insert(def.key.clone());
+                }
+            }
+        }
         inherited.add_entries(self.fields.iter().map(|(p, j, e)| (p, j, e)));
         inherited.dictionaries = self.dictionaries.clone();
         // A opção fica no JSON da própria regra, que entra na vigia para o que foi montado
@@ -1020,6 +1048,64 @@ mod tests {
     /// Sem isso, duas mudanças no mesmo instante do relógio podem ficar com a mesma data.
     fn tick() {
         std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+
+    #[test]
+    fn funcao_implementada_so_numa_regra_seguinte_da_tela() {
+        // Conferido no ERP. A ação da interface vem antes da regra da tabela, e a chamada à função
+        // que só a tabela implementa compila e para na execução.
+        let base = std::env::temp_dir().join(format!("senior-lsp-depois-{}", std::process::id()));
+        let form = base.join("Formulários SGI/interface/F1");
+        fs::create_dir_all(form.join("actions/A1")).unwrap();
+        fs::create_dir_all(form.join("tables/T1")).unwrap();
+        fs::write(
+            form.join("rule.txt"),
+            "definir funcao fRaiz();\ndefinir funcao fTabela();\ndefinir funcao fNenhuma();\nfuncao fRaiz();\ninicio\nfim;",
+        )
+        .unwrap();
+        let action = form.join("actions/A1/rule.txt");
+        let text = "fRaiz();\nfTabela();\nfNenhuma();\n";
+        fs::write(&action, text).unwrap();
+        fs::write(
+            form.join("tables/T1/rule.txt"),
+            "funcao fTabela();\ninicio\nfim;",
+        )
+        .unwrap();
+
+        let inherited = inherited_functions(&action);
+        assert!(inherited.get("fRaiz").is_some_and(|f| f.implemented));
+        assert!(inherited.get("fTabela").is_some_and(|f| !f.implemented));
+        assert!(inherited.implemented_later("FTABELA") && !inherited.implemented_later("fRaiz"));
+
+        let tree = crate::parse(text).unwrap();
+        let found: Vec<_> = crate::validate::validate(
+            &tree,
+            &Symbols::build(&tree, text),
+            text,
+            crate::builtins::Context::Sgi,
+            &inherited,
+        )
+        .into_iter()
+        .filter(|c| {
+            matches!(
+                c.kind,
+                crate::validate::CheckKind::CallImplementedLater
+                    | crate::validate::CheckKind::CallWithoutImplementation
+            )
+        })
+        .map(|c| (c.kind, &text[c.range]))
+        .collect();
+        assert_eq!(
+            found,
+            [
+                (crate::validate::CheckKind::CallImplementedLater, "fTabela"),
+                (
+                    crate::validate::CheckKind::CallWithoutImplementation,
+                    "fNenhuma"
+                ),
+            ]
+        );
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

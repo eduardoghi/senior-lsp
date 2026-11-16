@@ -273,6 +273,10 @@ impl<'a> Declarations<'a> {
                 && !(scope.context == crate::builtins::Context::Report && function.rules > 1)
                 && !self.long_name(name, range, checks)
             {
+                // Na tela, a função declarada numa regra anterior sem `funcao` em nenhuma delas.
+                if scope.context == crate::builtins::Context::Sgi && !function.implemented {
+                    self.unimplemented_call(name, range, checks);
+                }
                 let params = function
                     .params
                     .iter()
@@ -293,16 +297,12 @@ impl<'a> Declarations<'a> {
             return;
         }
         let implemented = defs.iter().any(|d| tree.kind(d.node) == FuncImpl);
-        if !implemented
-            && !scope.inherited.contains(name)
-            && builtins::lookup(name, scope.context).is_none()
-        {
-            checks.push(Check {
-                kind: CheckKind::CallWithoutImplementation,
-                range,
-                name: None,
-                label: Some(name.to_owned()),
-            });
+        let implemented_before = scope.inherited.get(name).is_some_and(|f| {
+            // Fora da tela, a herança não diz se outra regra implementa, e vale o que valia antes.
+            f.implemented || scope.context != crate::builtins::Context::Sgi
+        });
+        if !implemented && !implemented_before && builtins::lookup(name, scope.context).is_none() {
+            self.unimplemented_call(name, range, checks);
         }
         let def = defs
             .iter()
@@ -334,6 +334,22 @@ impl<'a> Declarations<'a> {
     }
 
     /// Nome com 31 ou mais caracteres, que o ERP corta em 31. Devolve se a chamada foi acusada.
+    /// Chamada a função sem `funcao` nesta regra nem nas anteriores. Na tela, se uma regra seguinte
+    /// implementa, a chamada para com outra mensagem, porque a regra seguinte não está carregada.
+    fn unimplemented_call(&self, name: &str, range: text_size::TextRange, checks: &mut Vec<Check>) {
+        let kind = if self.scope.inherited.implemented_later(name) {
+            CheckKind::CallImplementedLater
+        } else {
+            CheckKind::CallWithoutImplementation
+        };
+        checks.push(Check {
+            kind,
+            range,
+            name: None,
+            label: Some(name.to_owned()),
+        });
+    }
+
     fn long_name(&self, name: &str, range: text_size::TextRange, checks: &mut Vec<Check>) -> bool {
         let length = name.chars().count();
         let (kind, label) = match length {
