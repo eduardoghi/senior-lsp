@@ -1,7 +1,7 @@
 {
     "name": "senior-lsp",
     "displayName": "Senior LSP",
-    "description": "Servidor de linguagem para as regras LSP do ERP Senior (regras, telas SGI, web services e modelos de relatório)",
+    "description": "Servidor de linguagem não oficial para as regras LSP do ERP Senior (regras, telas SGI, web services e modelos de relatório)",
     "version": "0.6.0",
     "publisher": "eduardoghi",
     "license": "MIT",
@@ -15,6 +15,12 @@
     "categories": [
         "Programming Languages",
         "Linters"
+    ],
+    "keywords": [
+        "senior",
+        "erp",
+        "lsp",
+        "regras"
     ],
     "main": "./out/extension.js",
     "activationEvents": [

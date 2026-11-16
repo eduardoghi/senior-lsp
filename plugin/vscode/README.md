@@ -5,6 +5,26 @@ linguagem das regras LSP do ERP Senior. Os arquivos `Rule.txt` e `rule.txt` abre
 LSP Senior, com destaque de sintaxe, e os JSON dos modelos de relatório (pasta `Modelos`) também
 passam pelo servidor.
 
+> [!IMPORTANT]
+> **Aviso legal**
+>
+> O senior-lsp é um projeto pessoal e independente, sem vínculo, patrocínio ou endosso da Senior
+> Sistemas. Não é uma ferramenta oficial e não substitui o compilador, a documentação nem o suporte
+> do ERP. Quando o servidor e o ERP discordarem, na compilação ou na execução, vale o ERP.
+>
+> O repositório não contém nem distribui código-fonte, binários ou regras da Senior Sistemas. Os
+> nomes e marcas da Senior Sistemas pertencem a ela e aparecem aqui só para identificar o sistema
+> com que o servidor trabalha.
+>
+> O software é fornecido no estado em que se encontra, sem garantias, nos termos da
+> [licença MIT](LICENSE).
+
+O servidor aponta os erros que o compilador do ERP daria, sem compilar a regra no ERP, e confere o
+SQL dos cursores e comandos contra o dicionário de dados. Também oferece ir para a definição,
+referências, renomear, refactors de parâmetros de função, completar com modelos de comando e
+formatação do recuo e do espaço dentro das linhas, inclusive ao digitar. A lista completa está no
+[README do repositório](https://github.com/eduardoghi/senior-lsp#readme).
+
 Na primeira vez, a extensão baixa o binário do servidor do release do GitHub da mesma versão,
 confere o SHA-256 e guarda no armazenamento da extensão, apagando o binário das versões
 anteriores. Há binário para Linux x86_64 e Windows x86_64. Em outro sistema, compile o servidor e

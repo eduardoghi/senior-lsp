@@ -54,6 +54,10 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    # O id-token é o da publicação no Marketplace por trusted publishing, sem token guardado.
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -74,3 +78,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
+      # A política do publisher no Marketplace aceita este repositório e este arquivo de workflow.
+      - name: Publica a extensão no Marketplace do VS Code
+        working-directory: plugin/vscode
+        run: npx vsce publish --packagePath "../../dist/senior-lsp-${GITHUB_REF_NAME#v}.vsix" --oidc
