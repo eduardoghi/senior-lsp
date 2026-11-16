@@ -320,7 +320,16 @@ linguagem deles. Os textos que começam com `SELECT`, `UPDATE`, `INSERT`, `DELET
 coloridos como SQL, pela gramática `source.sql` que o VS Code já traz. Na primeira vez, baixa o binário do release da mesma versão da extensão e confere
 o SHA-256, como o plugin do Claude Code.
 
-Para gerar e instalar o pacote:
+Instale pela busca de extensões do VS Code, procurando "Senior LSP", pela
+[página no Marketplace](https://marketplace.visualstudio.com/items?itemName=eduardoghi.senior-lsp)
+ou pelo terminal:
+
+```sh
+code --install-extension eduardoghi.senior-lsp
+```
+
+O `.vsix` de cada versão também vai no release do GitHub. Para gerar e instalar o pacote a partir
+de um clone:
 
 ```sh
 cd plugin/vscode
