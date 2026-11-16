@@ -5,7 +5,12 @@ linguagem das regras LSP do ERP Senior. Os arquivos `Rule.txt` e `rule.txt` abre
 LSP Senior, com destaque de sintaxe, e os JSON dos modelos de relatório (pasta `Modelos`) também
 passam pelo servidor.
 
-> [!IMPORTANT]
+O servidor aponta os erros que o compilador do ERP daria, sem compilar a regra no ERP, e confere o
+SQL dos cursores e comandos contra o dicionário de dados. Também oferece ir para a definição,
+referências, renomear, refactors de parâmetros de função, completar com modelos de comando e
+formatação do recuo e do espaço dentro das linhas, inclusive ao digitar. A lista completa está no
+[README do repositório](https://github.com/eduardoghi/senior-lsp#readme).
+
 > **Aviso legal**
 >
 > O senior-lsp é um projeto pessoal e independente, sem vínculo, patrocínio ou endosso da Senior
@@ -19,12 +24,6 @@ passam pelo servidor.
 > O software é fornecido no estado em que se encontra, sem garantias, nos termos da
 > [licença MIT](LICENSE).
 
-O servidor aponta os erros que o compilador do ERP daria, sem compilar a regra no ERP, e confere o
-SQL dos cursores e comandos contra o dicionário de dados. Também oferece ir para a definição,
-referências, renomear, refactors de parâmetros de função, completar com modelos de comando e
-formatação do recuo e do espaço dentro das linhas, inclusive ao digitar. A lista completa está no
-[README do repositório](https://github.com/eduardoghi/senior-lsp#readme).
-
 Na primeira vez, a extensão baixa o binário do servidor do release do GitHub da mesma versão,
 confere o SHA-256 e guarda no armazenamento da extensão, apagando o binário das versões
 anteriores. Há binário para Linux x86_64 e Windows x86_64. Em outro sistema, compile o servidor e
@@ -37,6 +36,10 @@ Configurações:
 - `seniorLsp.tipoPadrao` é o tipo da regra num arquivo fora da exportação, como um arquivo novo.
 - `seniorLsp.tbsProducao` e `seniorLsp.tbsTeste` são os dicionários de dados do ERP
   (`sapiens.tbs`), opcionais. Veja a seção Dicionário de dados no README do repositório.
+
+A extensão liga o `editor.formatOnType` para a linguagem LSP Senior, e o recuo da linha se acerta
+ao fechar um bloco com `}` ou `fim` e ao quebrar a linha. Para desligar, ponha
+`"editor.formatOnType": false` dentro de `"[lsp-senior]"` nas configurações.
 
 O arquivo `senior-lsp.json` na raiz do repositório muda ou desliga diagnósticos por código, e a
 extensão completa os códigos e os níveis dele. As diretivas `senior-lsp-disable-next-line`,
