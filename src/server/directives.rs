@@ -562,6 +562,26 @@ mod tests {
     }
 
     #[test]
+    fn o_esquema_da_extensao_tem_os_codigos_que_se_configuram() {
+        let schema = include_str!("../../plugin/vscode/schemas/senior-lsp.schema.json");
+        let mut in_schema: Vec<&str> = schema
+            .split('"')
+            .filter(|s| {
+                s.len() == 6 && s.starts_with("SEN") && s[3..].bytes().all(|b| b.is_ascii_digit())
+            })
+            .collect();
+        in_schema.sort();
+        in_schema.dedup();
+        let mut known: Vec<&str> = SUPPRESSIBLE
+            .iter()
+            .chain(&[BAD_DIRECTIVE, UNUSED_DIRECTIVE])
+            .copied()
+            .collect();
+        known.sort();
+        assert_eq!(in_schema, known);
+    }
+
+    #[test]
     fn os_codigos_conhecidos_batem_com_a_tabela_da_documentacao() {
         let readme = include_str!("../../docs/diagnosticos.md");
         let mut in_table: Vec<String> = readme

@@ -219,28 +219,28 @@
                 "SEN091": {
                     "$ref": "#/definitions/nivel"
                 },
-                "SEN92": {
+                "SEN092": {
                     "$ref": "#/definitions/nivel"
                 },
-                "SEN93": {
+                "SEN093": {
                     "$ref": "#/definitions/nivel"
                 },
-                "SEN94": {
+                "SEN094": {
                     "$ref": "#/definitions/nivel"
                 },
-                "SEN95": {
+                "SEN095": {
                     "$ref": "#/definitions/nivel"
                 },
-                "SEN96": {
+                "SEN096": {
                     "$ref": "#/definitions/nivel"
                 },
-                "SEN97": {
+                "SEN097": {
                     "$ref": "#/definitions/nivel"
                 },
-                "SEN98": {
+                "SEN098": {
                     "$ref": "#/definitions/nivel"
                 },
-                "SEN99": {
+                "SEN099": {
                     "$ref": "#/definitions/nivel"
                 },
                 "SEN100": {
