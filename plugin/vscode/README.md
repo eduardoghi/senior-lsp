@@ -9,7 +9,7 @@ O servidor aponta os erros que o compilador do ERP daria, sem compilar a regra n
 SQL dos cursores e comandos contra o dicionário de dados. Também oferece ir para a definição,
 referências, renomear, refactors de parâmetros de função, completar com modelos de comando e
 formatação do recuo e do espaço dentro das linhas, inclusive ao digitar. A lista completa está no
-[README do repositório](https://github.com/eduardoghi/senior-lsp#readme).
+[documentação do repositório](https://github.com/eduardoghi/senior-lsp/blob/main/docs/recursos.md).
 
 ![Demonstração no VS Code: erro de tipo apontado ao digitar, hover de função do ERP com link para a documentação e recuo acertado ao digitar um bloco](https://raw.githubusercontent.com/eduardoghi/senior-lsp/main/docs/demonstracao.gif)
 
@@ -37,7 +37,7 @@ Configurações:
 - `seniorLsp.analisarPasta` analisa todas as regras da pasta aberta, e não só as abertas no editor, e mostra os problemas no painel Problemas.
 - `seniorLsp.tipoPadrao` é o tipo da regra num arquivo fora da exportação, como um arquivo novo.
 - `seniorLsp.tbsProducao` e `seniorLsp.tbsTeste` são os dicionários de dados do ERP
-  (`sapiens.tbs`), opcionais. Veja a seção Dicionário de dados no README do repositório.
+  (`sapiens.tbs`), opcionais. Veja o [dicionário de dados](https://github.com/eduardoghi/senior-lsp/blob/main/docs/configuracao.md#dicionário-de-dados).
 
 A extensão liga o `editor.formatOnType` para a linguagem LSP Senior, e o recuo da linha se acerta
 ao fechar um bloco com `}` ou `fim` e ao quebrar a linha. Para desligar, ponha
@@ -46,7 +46,7 @@ ao fechar um bloco com `}` ou `fim` e ao quebrar a linha. Para desligar, ponha
 O arquivo `senior-lsp.json` na raiz do repositório muda ou desliga diagnósticos por código, e a
 extensão completa os códigos e os níveis dele. As diretivas `senior-lsp-disable-next-line`,
 `senior-lsp-disable` e `senior-lsp-enable` nos comentários escondem diagnósticos no arquivo. Veja
-a seção Esconder diagnósticos no README do repositório.
+[como esconder diagnósticos](https://github.com/eduardoghi/senior-lsp/blob/main/docs/diagnosticos.md#esconder-diagnósticos).
 
 Num arquivo fora da exportação, a barra de status mostra o tipo da regra (regra comum, tela SGI ou
 modelo de relatório) e troca ao clicar. A escolha fica guardada no workspace.

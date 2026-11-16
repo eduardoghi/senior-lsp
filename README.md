@@ -23,302 +23,29 @@ regras grandes.
 
 O servidor oferece:
 
-- erros de sintaxe e de tipo, com o texto do compilador entre parênteses para quem já conhece a
-  mensagem do ERP
-- avisos de código que compila mas faz outra coisa do que parece
-- [diretivas em comentário](#esconder-diagnósticos) e um arquivo `senior-lsp.json` que escondem diagnósticos por código ou mudam o nível deles, com a correção rápida "Ignorar SENxxx nesta linha"
-- ir para a definição e achar as referências de variáveis, funções, parâmetros e rótulos
-- achar onde um campo do dicionário de dados é usado em todas as regras da pasta aberta, a partir
-  do `TABELA.Campo` no código ou do campo dentro de um SQL. Vale o campo com a tabela na frente e,
-  nos textos de SQL, com o apelido dela ou sozinho num comando que cita a tabela, inclusive nas
-  regras dos JSON de modelo
-- ir para a implementação, do `definir funcao` ou da chamada para a `funcao`, e da `funcao` de volta
-- hierarquia de chamadas, com quem chama a função (outras funções, o corpo da regra e, numa tela
-  SGI, as outras regras) e as funções da regra que ela chama
-- ir da definição de um web service interno (`Definir interno.com.x.Servico.Porta ws;`) para o
-  `Rule.txt` da porta, na pasta `Web Services` da mesma exportação
-- no JSON de modelo com as regras separadas, o `"lines": "regras/..."` vira link para o arquivo da regra
-- os parâmetros da porta do web service, lidos do `Port.json` da exportação, no hover do nome
-  qualificado e no completar depois de `ws.`, junto com `Executar` e os parâmetros que o ERP
-  acrescenta a toda porta (`Usuario`, `Senha`, `Token`, `ModoExecucao` e `ErroExecucao`). Depois de
-  `ws.conjunto.` ou `ws.conjunto[i].` vêm as colunas do conjunto e `QtdLinhas`, `LinhaAtual`,
-  `CriarLinha` e `ExcluirLinha`
-- destacar as outras ocorrências do nome que está no cursor e as palavras que andam juntas. No
-  `enquanto`, no `para`, num `Pare` ou num `Continue` acendem o laço e os `Pare` e `Continue` dele,
-  sem os de um laço de dentro. No `se` ou no `senao` acendem os dois, e na abertura ou no
-  fechamento de um bloco, o par
-- contagem de referências em cima de cada `funcao`, que abre a lista das chamadas no VS Code. Nos
-  outros editores, o clique chama o comando `senior-lsp.mostrarReferencias`, que o editor precisa
-  tratar
-- correção rápida que cria o `definir` de um nome usado sem definição, com o tipo deduzido do uso
-  (texto atribuído, parâmetro da função do ERP que recebe o nome ou a letra inicial, como `aTexto`)
-- diagnósticos da pasta inteira, opcionais, sem abrir cada regra
-- correções rápidas que apagam a definição sem uso (SEN068), põem a comparação entre parênteses
-  (SEN041), trocam o apóstrofo por maiúscula (SEN064), acrescentam o `SQL_UsarAbrangencia(obj, 0)`
-  que falta (SEN066), tiram do SELECT do cursor a coluna que a regra não lê ou trocam o `*` pelos
-  campos lidos (SEN076), declaram a função chamada que não existe (SEN052), com o
-  `Definir Funcao` junto dos outros `definir` e a `funcao` vazia no fim do arquivo, e acrescentam ao
-  `extraTables` do `senior-lsp.json` a tabela criada direto no banco (SEN086)
-- ação "Corrigir o arquivo" (`source.fixAll`), que aplica de uma vez só as correções que não mudam o
-  que a regra faz: o apóstrofo minúsculo vira maiúsculo, sai o `definir` sem uso e sai a coluna do
-  SELECT que a regra não lê. No VS Code ela também roda ao salvar, com
-  `"editor.codeActionsOnSave": { "source.fixAll": "explicit" }`
-- "Você quis dizer?" no campo, na tabela e na função que não existem (SEN052, SEN055, SEN074,
-  SEN075, SEN081 e SEN082). A mensagem cita o nome mais parecido, e a correção rápida "Trocar por"
-  põe ele no lugar. Só sai quando há um único nome a uma letra de distância, ou a duas no nome
-  de oito letras ou mais
-- ação de código "Extrair função" (`refactor.extract`) para comandos inteiros e contíguos do mesmo
-  bloco, selecionados no editor. A chamada `NovaFuncao();` ocupa o lugar do trecho, o `Definir
-  Funcao` entra junto dos outros `definir` e a `funcao` vai para o fim do arquivo, com o corpo
-  reindentado. Como as variáveis de fora de função são globais, a função não tem parâmetros. O nome
-  começa em `NovaFuncao` e ganha um número se algo com esse nome já existe no arquivo, na tela ou no
-  ERP, e o F2 renomeia depois. A ação não aparece quando a seleção corta um comando, quando o trecho
-  tem `definir` ou `funcao`, quando um `pare` ou `continue` perde o laço, quando um `vapara` e o
-  rótulo dele ficam em lados diferentes do trecho, quando o trecho dentro de uma `funcao` usa
-  parâmetro ou variável definida nela, e nas regras dentro do JSON de modelo de relatório
-- ação de código "Embutir função" (`refactor.inline`), o inverso da anterior, com o cursor no nome
-  de uma chamada. Os comandos da função entram no lugar da chamada, e a função continua onde está.
-  Vale para a função sem parâmetros, com o corpo num bloco só, sem `definir`, rótulo nem `vapara`
-  e sem `pare` ou `continue` que passariam a valer para um laço de fora
-- ação de código "Extrair variável" (`refactor.extract`) para a conta ou o texto selecionado. O
-  `Definir` da variável nova entra junto dos outros, com o tipo da expressão, e a atribuição na
-  linha de cima do comando. O nome começa em `nNovaVariavel` ou `aNovaVariavel`. A ação não
-  aparece quando o tipo de alguma parte da expressão não é conhecido, para comparação e `e` ou
-  `ou`, que não podem ir sozinhos numa atribuição, na condição de um `enquanto` ou `para`, que é
-  refeita a cada volta, e no comando sem bloco de um `se` ou de um laço
-- ação de código "Inverter o se" (`refactor.rewrite`), com o cursor na palavra `se` ou na condição
-  de um `se` com `senao`. A linguagem não tem negação, então cada comparação vira a contrária, o
-  `e` vira `ou` e o contrário, com os parênteses que isso pede, `cur.Achou` vira `cur.NaoAchou`, e
-  os dois lados trocam de lugar. Não aparece quando a condição tem uma parte sem contrária, como
-  uma variável sozinha, nem quando o lado do `senao` é outro `se` ou um laço
-- ações de código "Envolver com Se" e "Envolver com Enquanto" (`refactor.rewrite`) para comandos
-  inteiros e contíguos do mesmo bloco. Eles vão para dentro de um bloco, com a condição vazia para
-  preencher. A do `se` vazia é erro de compilação, e a do `enquanto` o compilador aceita
-- ações de código "Trocar chaves por Inicio e Fim" e "Trocar Inicio e Fim por chaves"
-  (`refactor.rewrite`), com o cursor na abertura ou no fechamento do bloco
-- [formatação da indentação](#formatação) do documento e do trecho selecionado
-- ações de código "Tirar o parâmetro" e "Mover para a esquerda" ou "para a direita"
-  (`refactor.rewrite`), com o cursor no nome de um parâmetro no `Definir Funcao` ou na `funcao`.
-  Mudam as duas listas de parâmetros e os argumentos de cada chamada, nesta regra e, num formulário
-  SGI, nas regras seguintes que chamam a função. Não aparecem quando alguma chamada não tem um
-  argumento por parâmetro, nas regras de modelo de relatório e, para tirar, quando o corpo usa o
-  parâmetro, mesmo num texto como o `:nome` de um SQL, ou quando o argumento tem uma chamada
-  dentro, que deixaria de rodar. Para mover, também não aparecem quando um dos dois argumentos tem
-  uma chamada dentro, que mudaria de ordem
-- ação de código "Acrescentar parâmetro" (`refactor.rewrite`), depois do parâmetro no cursor ou, com
-  o cursor no nome da função, no fim. A extensão do VS Code pergunta o tipo, o nome e o valor que as
-  chamadas que já existem passam a receber, e as mesmas listas e chamadas mudam. O tipo segue a
-  caixa dos outros parâmetros. Como precisa perguntar, só aparece no editor que liga a opção
-  `acrescentar_parametro`, e a extensão liga sozinha
-- hover com a linha do `definir` e, com o dicionário de dados do ERP configurado, o tipo, a
-  descrição, as chaves, os relacionamentos e a busca dos campos de tabela
-- hover das funções do ERP com a declaração que o compilador usa e o link da página da função na
-  documentação online da Senior, quando ela tem uma. O endereço de cada página fica em
-  `src/builtins/documentacao.txt`, que o `scripts/documentacao.py` refaz a partir do sitemap do
-  manual da linguagem e do índice das funções do ERP
-- dentro do SQL de um texto (`cur.SQL "..."`, `ExecSql` e `SQL_DefinirComando`), o `:variavel` vai para o
-  `definir` e mostra a linha dele no hover, e `TABELA.Campo` e o nome de uma tabela mostram a
-  descrição do dicionário de dados. O hover de tabela só vale em textos que começam com `SELECT`,
-  `UPDATE`, `INSERT`, `DELETE` ou `WITH`. O apelido declarado no `FROM`, no `JOIN` ou no `UPDATE`
-  do mesmo texto (`FROM e070emp e`, `JOIN e075pro AS p`) mostra o campo da tabela dele e, sobre o
-  próprio apelido, a descrição da tabela. Ir para a definição do apelido leva à declaração. Uma
-  subconsulta enxerga os apelidos de fora e pode declarar os seus
-- ir de `cur.COLUNA` para a coluna na lista do `SELECT` do `cur.SQL`, pelo nome do campo ou pelo
-  apelido (`AS`). Com `SELECT *` ou uma expressão sem apelido, não há para onde ir
-- as funções que o ERP já traz, como `IntParaAlfa`, com a declaração no hover e a conferência dos
-  parâmetros na chamada
-- ajuda de assinatura, com a declaração da função e o parâmetro atual enquanto se digita a chamada
-- o nome do parâmetro antes de cada argumento da chamada, como `IntParaAlfa(Origem: n, end
-  Retorno: aTxt)`, sem mudar o texto, menos nas funções de um parâmetro e no argumento com o mesmo
-  nome do parâmetro
-- seleção expandida, que aumenta a seleção do nome para a expressão, o comando, o bloco e a função
-- recolher cada `funcao`, os blocos, os comentários `/* */` e a sequência de `definir` do começo
-- destaque semântico, que colore cada nome pelo que ele é: função do ERP ou da regra, variável,
-  parâmetro, campo depois do ponto, tabela e web service
-- a lista de variáveis e funções do arquivo
-- busca de símbolos nas regras da pasta aberta (Ctrl+T no VS Code), com as funções (`funcao` e
-  `definir funcao`), os `definir` e os rótulos de todos os `Rule.txt` e das regras de relatório
-  separadas do JSON, cada um com o nome da regra (`<NOME>.LSP/Rule.txt` aparece como `NOME`). A
-  consulta casa sem diferenciar maiúsculas, pelo começo, por um trecho ou pelas letras em ordem, e
-  vêm no máximo 500 símbolos, os que começam com a consulta primeiro. Funciona com a opção
-  `analisar_pasta` desligada, lendo as regras na primeira busca, e depois só acompanha os eventos de
-  arquivo do editor. Um arquivo aberto vale pelo texto do editor. As regras que ficam dentro dos JSON
-  de modelo não entram
-- completar nomes num editor, com as variáveis e funções do arquivo, as do ERP e as palavras da
-  linguagem
-- modelos de comando no completar, nos editores que aceitam snippets: o laço de cursor do SQL ao
-  `FecharCursor`, `se` com `senao`, `enquanto`, `para`, `definir funcao`, o bloco da `funcao` e o
-  `ExecSqlEx` com a conferência do erro
-- completar depois do ponto, com as operações e as colunas do SELECT do cursor, as operações e os
-  campos criados com `AdicionarCampo` na lista, os campos de uma `definir tabela` e, com o
-  dicionário de dados, os campos da tabela do ERP
-- completar dentro do texto de um SQL (`cur.SQL "..."`, `ExecSql "..."` e qualquer texto que comece
-  com `SELECT`, `UPDATE`, `INSERT` ou `DELETE`), com o dicionário de dados. Depois de `TABELA.` ou
-  do apelido saem os campos, depois de `FROM`, `JOIN`, `UPDATE` e `INSERT INTO` as tabelas e as
-  visões, no resto do comando os campos das tabelas que ele cita, e depois de `:` as variáveis
-  que já apareceram na regra. No VS Code a lista abre
-  sozinha depois do ponto. Nos outros lugares do texto ela abre com Ctrl+Espaço, a não ser que
-  `editor.quickSuggestions` esteja ligado para `strings`
-- renomear num editor, trocando só o símbolo certo, nos outros arquivos do formulário SGI inclusive
+- os erros de sintaxe e de tipo que o compilador do ERP daria, com o texto da mensagem dele, e
+  avisos de código que compila mas faz outra coisa do que parece. Cada diagnóstico tem um
+  [código fixo](docs/diagnosticos.md), que dá para esconder ou mudar de nível
+- a conferência do SQL dos cursores, do `ExecSql` e do `SQL_DefinirComando` contra o dicionário de
+  dados do ERP
+- ir para a definição, achar as referências e renomear variáveis, funções, parâmetros e rótulos,
+  também entre as regras de uma tela SGI e de um modelo de relatório
+- achar onde um campo do dicionário é usado em todas as regras da pasta
+- a hierarquia de chamadas e a contagem de referências de cada função
+- refactors (extrair e embutir função, extrair variável, inverter o `se`, envolver com `se` ou
+  `enquanto`, tirar, mover e acrescentar parâmetro) e correções rápidas, com a ação "Corrigir o
+  arquivo" para as que não mudam o que a regra faz
+- hover com a declaração, o campo do dicionário e, nas funções do ERP, o link da documentação da
+  Senior, e completar de nomes, campos e tabelas, inclusive dentro do SQL
+- formatação do recuo e do espaço dentro das linhas, também ao digitar
+- as regras da exportação do gerenciador de artefatos (regras, telas SGI, web services e modelos de
+  relatório) e a análise da pasta inteira de uma vez
 
-A exportação guarda o código de cada regra num arquivo `Rule.txt` ou `rule.txt`, menos nos modelos
-de relatório, em que as regras ficam dentro dos JSON de cada modelo. A pasta diz onde a regra roda,
-e isso muda as funções do ERP que ela pode chamar:
+A lista completa está em [docs/recursos.md](docs/recursos.md).
 
-| Pasta | Arquivo | Regra |
-|---|---|---|
-| `Regras` | `Rule.txt` | regra comum, como a de identificador, com as funções comuns do ERP |
-| `Formulários SGI` | `rule.txt` | regra de tela SGI, que ganha as funções de tela, os campos da tela e as funções e variáveis definidas nas regras que vêm antes dela |
-| `Web Services` | `Rule.txt` | regra de web service, com as mesmas funções da regra comum |
-| `Modelos` | os `.json` de cada modelo | regra de relatório, que ganha as funções de relatório, as entradas e os controles do modelo e as funções e variáveis definidas nas outras regras dele |
+## Instalar
 
-O código de uma regra de relatório também pode ficar fora do JSON, num arquivo `Modelos/<modelo>/regras/<json>.<evento>.txt`, com o `lines` da regra no JSON apontando para ele (`"lines": "regras/..."`). Esse formato serve para versionar os relatórios com o código das regras em texto. O servidor trata esse arquivo como regra de relatório, com as entradas e os controles do modelo e as funções e variáveis das outras regras dele, estejam elas em arquivo separado ou dentro de um JSON.
-
-O servidor reconhece as pastas `Formulários SGI` e `Modelos`. Qualquer outro arquivo de regra conta
-como regra comum, então renomear a pasta `Regras` não muda nada. Os outros tipos de
-artefato não exportam regra. Num modelo de relatório, as referências e o renomear atravessam todas
-as regras e todos os JSON do modelo. Antes das regras, o ERP define as entradas, como `ECodFil`, com o
-tipo do cadastro, e as descrições como alfa. A alfa de um caractere vira número com o código do
-caractere. Os totais valem como números, e as fórmulas também, porque o compilador cria como número
-o nome sem `definir`. Memorando e código de barras imprimem a variável de mesmo nome que a regra
-define. O nome das entradas e desses controles não se renomeia pela regra, porque vem do cadastro
-do modelo.
-
-### Formatação
-
-O "Formatar documento" e o "Formatar seleção" acertam o recuo do começo das linhas e o espaço
-entre os tokens de cada linha. A formatação ao digitar acerta só o recuo. O tamanho do nível e a
-escolha entre espaço e tabulação vêm do editor, no pedido de formatação (no VS Code, o "Tab Size" e
-o "Insert Spaces" do arquivo). O formatador não junta nem quebra linhas e não muda a chave de
-lugar.
-
-- O conteúdo de um bloco, com chaves ou com `inicio` e `fim`, entra um nível. A chave ou o `inicio`
-  sozinho na linha fica na coluna do comando, como o fechamento.
-- O `senao` fica na coluna do seu `se`, o `senao se` continua na mesma coluna, e o comando sem bloco
-  na linha de baixo de um `se`, `senao`, `enquanto` ou `para` entra um nível.
-- A linha que continua um comando começado numa linha de cima, como uma condição longa, anda junto
-  com a primeira e mantém o alinhamento que a pessoa fez, sem ficar à esquerda dela.
-- O comentário sozinho na linha segue o nível do bloco em que está.
-
-Dentro da linha, só muda o espaço entre dois tokens com nada além de espaço entre eles:
-
-- um espaço em volta de `=`, `<>`, `<`, `>`, `<=`, `>=`, `+`, `-`, `*`, `/`, `e` e `ou` quando eles
-  têm dois lados, depois da vírgula e do `;` seguidos de outro token e entre `se`, `enquanto` ou
-  `para` e o `(`
-- nenhum antes da vírgula e do `;`, depois do `(`, antes do `)` e entre o nome de uma função e o `(`
-  dela, na chamada e na declaração
-
-O menos de um número negativo, o `++`, o ponto de `cur.Campo`, os dois-pontos de um rótulo e o
-espaço com um comentário no meio ficam como estão.
-
-A primeira formatação de uma regra que nunca passou pelo formatador costuma mexer no espaço de
-muitas linhas, o que dá um diff grande numa exportação versionada. Com `"format": { "spaces": false }`
-no [`senior-lsp.json`](#arquivo-de-configuração), a formatação da pasta só acerta o recuo.
-
-Ao digitar, o `}` e o `fim` levam a linha para o nível dela, e a linha nova do Enter já começa no
-nível do bloco. Enquanto o bloco ainda não tem fechamento e a regra tem erro, o Enter usa o recuo
-da linha de cima, com um nível a mais quando ela termina em `{` ou `inicio`. A extensão do VS Code
-liga o `editor.formatOnType` para a linguagem, e as regras de indentação dela fazem o "Reindentar
-linhas" seguir o `inicio` e o `fim`.
-
-Ficam como estão a linha de dentro de um texto que continua na linha de baixo, em que os espaços
-fazem parte do texto, o miolo de um comentário `/* */` de várias linhas, a linha que passaria do
-limite do compilador (`linha para o compilador é muito grande`) com o recuo maior e o trecho entre
-`@ senior-lsp-format-off @` e `@ senior-lsp-format-on @`. A regra com erro de sintaxe não é
-formatada, e o resultado só é devolvido quando os tokens, fora os espaços, continuam os mesmos. Nas
-regras dentro do JSON de modelo de relatório a formatação ainda não vale.
-
-### Pasta inteira
-
-Com a opção `analisar_pasta` ligada, o servidor procura ao iniciar todas as regras das pastas do
-workspace, os `Rule.txt` e os JSON de `Modelos`, e publica os diagnósticos de todas, sem precisar
-abrir cada arquivo. Só vão os arquivos com algum diagnóstico. No editor que mostra progresso
-(`window.workDoneProgress`), como o VS Code, a análise aparece com a contagem de arquivos. Quando o editor avisa que um arquivo
-mudou no disco (`workspace/didChangeWatchedFiles`), ele é analisado de novo, e um arquivo fechado
-volta a mostrar os diagnósticos do disco. A análise usa até quatro threads. Numa exportação com
-cerca de 1.400 regras e 24 mil JSON de modelo, a primeira leva menos de um segundo.
-
-A opção fica desligada por padrão porque o Claude Code coloca os diagnósticos na conversa. No VS
-Code ela é a configuração `seniorLsp.analisarPasta`.
-
-### Arquivos fora da exportação
-
-Um arquivo com outro nome, como um texto novo ainda sem salvar, é analisado quando o editor manda
-a linguagem `lsp-senior`. O VS Code e o Kate mandam quando o arquivo está na linguagem LSP Senior,
-escolhida à mão ou pelo nome. O plugin do Claude Code associa o servidor pela extensão `.txt`, então
-lá só o nome `Rule.txt` vale.
-
-Fora da pasta `Formulários SGI`, o tipo da regra pode ser trocado por arquivo. O `Rule.txt` começa
-como regra comum e os outros arquivos começam com o tipo da opção `tipo_padrao`
-(`comum`, `tela` ou `relatorio`), passada nas opções de inicialização. As ações de código do
-arquivo trocam o tipo em qualquer editor, pelo comando `senior-lsp.tipoRegra`, que recebe o URI e o
-tipo. O editor pergunta o tipo atual pelo pedido `senior-lsp/tipoRegra`, com o URI, e recebe o tipo
-e se ele vem da pasta (`fixo`).
-
-Num arquivo solto, a regra de tela ganha as funções de tela, mas não os campos da interface, que
-vêm do `definition.json` da exportação. A de relatório ganha as funções de relatório, sem as
-entradas e os controles do modelo. Os nomes que faltam valem como número, como qualquer nome sem
-`definir`.
-
-Numa tela SGI, o ERP compila todas as regras da interface juntas. Primeiro vem a regra da
-interface, depois as ações da interface e, para cada tabela, a regra dela seguida das ações dela. O que uma regra define vale
-nas seguintes. Tabelas e ações da interface vão em ordem alfabética, como a importação do
-gerenciador grava, e as ações de cada tabela na ordem do `definition.json` dela. Os campos da tela
-valem em todas as regras. Campo da interface fica com o nome do cadastro, campo de tabela com a
-tabela na frente (`E160CTR_CodEmp`) e também com `_old` no fim, e `CodOpe`, `MsgErro`, `MsgAviso`
-e `TelOpe` existem em toda tela.
-
-Os nomes seguem as regras do compilador. Eles não diferenciam caixa, e um `definir` vale no
-arquivo inteiro, inclusive antes dele e dentro de funções. O compilador cria como número o nome
-sem `definir`, depois de procurar nas variáveis do sistema, como `DatSis` e `NomUsu`, que valem em
-toda regra com o tipo delas. Na tela SGI e no relatório o servidor também trata o nome desconhecido
-como número. Na regra de identificador ele fica sem verificação de tipo, porque cada identificador
-traz variáveis próprias que o servidor não conhece.
-
-## Compilar
-
-Precisa de Rust 1.99 ou mais novo.
-
-```sh
-cargo build --release
-```
-
-O executável fica em `target/release/senior-lsp` e conversa pelo stdin e stdout, como qualquer
-servidor LSP.
-
-## Instalar no Claude Code
-
-```sh
-claude plugin marketplace add eduardoghi/senior-lsp
-claude plugin install senior-lsp@senior-lsp
-```
-
-Numa sessão aberta, `/reload-plugins --force` carrega o plugin. Na primeira vez que o servidor
-inicia, o plugin baixa o binário da versão instalada do release do GitHub, confere o SHA-256 e
-guarda na pasta de dados do plugin. Há binário pronto para Linux x86_64 e para Windows x86_64,
-que o plugin baixa quando o Claude Code roda o script pelo Git Bash. Em outro sistema, instale a
-partir de um clone.
-
-### A partir de um clone
-
-Com o binário compilado, o plugin usa o `target/release` do clone em vez de baixar:
-
-```sh
-cargo build --release
-claude plugin marketplace add "$PWD"
-claude plugin install senior-lsp@senior-lsp
-```
-
-O Claude Code lê o plugin direto desta pasta, então depois de um `cargo build --release` basta
-recarregar.
-
-## Usar no VS Code
-
-A extensão fica em `plugin/vscode`. Ela abre os `Rule.txt` e `rule.txt` na linguagem LSP Senior,
-com destaque de sintaxe, e manda também os JSON da pasta `Modelos` para o servidor, sem mudar a
-linguagem deles. Os textos que começam com `SELECT`, `UPDATE`, `INSERT`, `DELETE` ou `WITH` são
-coloridos como SQL, pela gramática `source.sql` que o VS Code já traz. Na primeira vez, baixa o binário do release da mesma versão da extensão e confere
-o SHA-256, como o plugin do Claude Code.
+### VS Code
 
 Instale pela busca de extensões do VS Code, procurando "Senior LSP", pela
 [página no Marketplace](https://marketplace.visualstudio.com/items?itemName=eduardoghi.senior-lsp)
@@ -328,319 +55,41 @@ ou pelo terminal:
 code --install-extension eduardoghi.senior-lsp
 ```
 
-O `.vsix` de cada versão também vai no release do GitHub. Para gerar e instalar o pacote a partir
-de um clone:
+Na primeira vez, a extensão baixa o binário do servidor do release do GitHub. As configurações
+estão em [docs/editores.md](docs/editores.md#vs-code).
+
+### Claude Code
 
 ```sh
-cd plugin/vscode
-npm ci
-npm run compile
-npm run package
-code --install-extension senior-lsp-*.vsix
+claude plugin marketplace add eduardoghi/senior-lsp
+claude plugin install senior-lsp@senior-lsp
 ```
 
-As configurações são `seniorLsp.server.path`, para usar outro executável, `seniorLsp.tipoPadrao`,
-com o tipo dos [arquivos fora da exportação](#arquivos-fora-da-exportação), e `seniorLsp.tbsProducao`
-e `seniorLsp.tbsTeste`, com os dicionários descritos em [Dicionário de dados](#dicionário-de-dados).
-Mudar o caminho do executável reinicia o servidor. As outras valem na hora, sem reiniciar. A
-extensão manda as opções no `settings` do `workspace/didChangeConfiguration`, com as mesmas chaves
-das opções de inicialização (`tbs_producao`, `tbs_teste`, `tipo_padrao` e `analisar_pasta`), e
-qualquer editor pode mandar o mesmo aviso. Só as chaves que vêm no aviso mudam. A extensão também
-manda `acrescentar_parametro` ligada, porque sabe perguntar o que a ação "Acrescentar parâmetro"
-precisa. Um editor que liga a opção tem que atender o comando `senior-lsp.acrescentarParametro` da
-ação e mandar as respostas no pedido `senior-lsp/acrescentarParametro`, que devolve as edições.
+Numa sessão aberta, `/reload-plugins --force` carrega o plugin. Com ele, o Claude recebe os
+diagnósticos da regra enquanto edita.
 
-Num arquivo fora da exportação, a barra de status mostra o tipo da regra e troca ao clicar, como o
-comando "Senior LSP: Escolher o tipo da regra". A extensão guarda a escolha de cada arquivo no
-workspace. Um arquivo novo analisado precisa estar na linguagem LSP Senior, que se escolhe no
-canto da barra de status.
+### Outros editores
 
-Para desenvolver, abra `plugin/vscode` no VS Code e rode com F5. Rodando de dentro do clone, a
-extensão usa o `target/release` em vez de baixar.
-
-Os testes da extensão baixam o VS Code e rodam nele conferências de diagnósticos, correções
-rápidas, completar e configuração, com o dicionário fictício de `tests/fixtures` e o servidor do
-`cargo build` do clone. Em `plugin/vscode`, rode `npm test`, ou `xvfb-run -a npm test` no Linux
-sem tela. O CI roda os dois testes, o do servidor e o da extensão.
-
-## Usar no Kate
-
-O cliente LSP do Kate escolhe o servidor pelo modo de destaque do documento, e não pela extensão.
-A definição de sintaxe em `plugin/kate/lsp-senior.xml` cria o modo "LSP Senior" para os arquivos
-`Rule.txt` e `rule.txt` e para as regras de relatório separadas (`*.SOnPrint.txt` e os outros eventos) e colore as palavras reservadas, os comentários e os textos. Os textos que começam com `SELECT`,
-`UPDATE`, `INSERT`, `DELETE` ou `WITH` seguem as regras da sintaxe SQL que o Kate já traz. Copie para a
-pasta de sintaxes do usuário:
-
-```sh
-mkdir -p ~/.local/share/org.kde.syntax-highlighting/syntax
-cp plugin/kate/lsp-senior.xml ~/.local/share/org.kde.syntax-highlighting/syntax/
-```
-
-No Windows, a pasta é `%USERPROFILE%\AppData\Local\org.kde.syntax-highlighting\syntax`.
-
-Depois, em Configurações → Configurar o Kate → Cliente LSP → Configurações do servidor do
-usuário, acrescente o servidor:
-
-```json
-{
-    "servers": {
-        "lsp-senior": {
-            "command": ["/caminho/do/senior-lsp"],
-            "url": "https://github.com/eduardoghi/senior-lsp",
-            "highlightingModeRegex": "^LSP Senior$",
-            "initializationOptions": {
-                "tbs_producao": "/caminho/do/sapiens.tbs",
-                "tbs_teste": "/caminho/do/sapiens-teste.tbs"
-            }
-        }
-    }
-}
-```
-
-O `command` aceita só o nome (`senior-lsp`) quando o executável está no `PATH`. As duas opções de
-`initializationOptions` são os dicionários descritos em [Dicionário de dados](#dicionário-de-dados)
-e podem ficar de fora, assim como `tipo_padrao`. Os JSON dos modelos de relatório não passam pelo
-servidor no Kate, porque ligar o servidor no modo JSON faria ele abrir todos os arquivos JSON.
-
-Qualquer arquivo no modo LSP Senior vai para o servidor. Num arquivo novo, escolha Ferramentas →
-Modo → Fontes → LSP Senior. O tipo da regra troca pelas ações de código do cliente LSP. As
-mensagens do servidor aparecem na aba Saída do cliente LSP.
-
-## Diagnósticos
-
-Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outro lugar envolvido (a `funcao` a que o comando pertence e o parâmetro na função dele), que o editor mostra junto da mensagem.
-
-| Código | Tipo | Caso |
-|---|---|---|
-| SEN001 | erro | caractere inválido |
-| SEN002 | erro | string sem as aspas de fechamento |
-| SEN003 | erro | comentário `@` sem o `@` de fechamento na mesma linha |
-| SEN004 | erro | comentário `/*` sem o `*/` |
-| SEN005 | erro | nome com mais de 100 caracteres |
-| SEN006 | erro | apóstrofo sem o de fechamento |
-| SEN007 | erro | número que o compilador não aceita |
-| SEN008 | erro | linha maior do que o compilador aceita |
-| SEN020 | erro | falta um token, como `;` ou `)` |
-| SEN021 | erro | falta um valor |
-| SEN022 | erro | mais de uma comparação na mesma expressão |
-| SEN023 | erro | algo que não começa um comando, como um `;` solto |
-| SEN024 | erro | fim de bloco sem início |
-| SEN025 | erro | aninhamento grande demais |
-| SEN026 | erro | falta o tipo num `definir` ou parâmetro |
-| SEN027 | erro | tipo do `Mensagem` que não é `Erro`, `Refaz` nem `Retorna` |
-| SEN028 | erro | texto do `Mensagem` que não é string nem variável |
-| SEN040 | erro | `-` com mais de um token depois de `*`, `/` ou `e` |
-| SEN041 | erro | comparação sem parênteses no lado direito da atribuição |
-| SEN042 | erro | variável numérica ou data no texto do `Mensagem` |
-| SEN043 | erro | número ou parênteses em atribuição alfa |
-| SEN044 | erro | operador que não é `+` em atribuição alfa |
-| SEN045 | erro | alfa em conta numérica ou comparado com número |
-| SEN046 | erro | duas strings comparadas |
-| SEN047 | erro | alfa em parâmetro numérico |
-| SEN048 | erro | parâmetros a mais na chamada |
-| SEN049 | erro | parâmetros a menos na chamada |
-| SEN050 | erro | número em parâmetro alfa |
-| SEN051 | erro | `+` entre alfas dentro de uma comparação |
-| SEN052 | erro | chamada a uma função que não existe no ERP nem no arquivo |
-| SEN053 | erro | constante num parâmetro `end` |
-| SEN054 | erro | constante entre as colunas do SELECT de um cursor |
-| SEN055 | erro | campo do cursor que não está no SELECT dele |
-| SEN060 | aviso | `e` ou `ou` seguido de `-`, que não grava o valor da atribuição |
-| SEN061 | aviso | comando depois do bloco de uma função, que ainda faz parte dela |
-| SEN062 | aviso | `funcao` com um bloco de outra função ainda aberto |
-| SEN063 | aviso | parâmetro usado fora da sua função, que lê lixo |
-| SEN064 | aviso | apóstrofo com letra minúscula, que o compilador lê em maiúscula |
-| SEN065 | aviso | campo de tabela que só existe no dicionário de teste |
-| SEN066 | aviso | SQL nativo sem `SQL_UsarAbrangencia(x, 0)`, que para na execução |
-| SEN067 | aviso | coluna do `SQL_Retornar*` que não está no SELECT, que para na execução |
-| SEN068 | dica | variável, cursor, lista, tabela ou web service definido e nunca usado, só na regra comum |
-| SEN069 | aviso | membro de web service que não é parâmetro da porta no `Port.json` da exportação, nem um dos implícitos (`Usuario`, `Senha`, `Token`, `ModoExecucao`, `ErroExecucao`) |
-| SEN070 | dica | função definida e nunca chamada, só na regra comum |
-| SEN071 | aviso | instruções depois de `Pare`, `Continue`, `Cancel`, `Cancelar` ou `VaPara` no mesmo bloco, que nunca executam |
-| SEN072 | aviso | diretiva `senior-lsp-*` mal escrita, como sem código, com código que não existe ou de erro de sintaxe, e `senior-lsp-enable` sem `senior-lsp-disable` antes |
-| SEN073 | aviso | diretiva que não escondeu nenhum diagnóstico do código citado |
-| SEN074 | erro | coluna do SELECT de um cursor com uma tabela que não está no dicionário de dados, como um apelido de tabela ou uma função |
-| SEN075 | erro | coluna do SELECT de um cursor com um campo que a tabela não tem no dicionário de dados |
-| SEN076 | dica | coluna do SELECT de um cursor que a regra não lê, ou `*` de que ela só lê parte dos campos, só na regra comum |
-| SEN077 | erro | coluna do SELECT de um cursor com apelido ou `DISTINCT` e sem a tabela na frente |
-| SEN078 | erro | o mesmo nome de campo vindo de duas tabelas no SELECT de um cursor |
-| SEN079 | erro | `:variavel` no SQL de um cursor ou de um `ExecSql` que ainda não foi definida nem usada na regra, só na regra comum |
-| SEN080 | erro | JOIN no SQL de um cursor, na regra que usa o Senior SQL 2 |
-| SEN081 | erro | tabela do SQL de um cursor, de um `ExecSql` ou de um `ExecSqlEx` que não está no dicionário de dados, na regra que usa o Senior SQL 2 |
-| SEN082 | erro | nome do WHERE, do valor do SET, dos valores do INSERT ou das colunas do SELECT do `ExecSql` que não é campo das tabelas do comando, ou que mais de uma delas tem, e campo do SET, do INSERT ou do GROUP BY que a tabela não tem, na regra que usa o Senior SQL 2 |
-| SEN083 | erro | campo do ORDER BY de um cursor ou de um SELECT no `ExecSql` que não está no SELECT, na regra que usa o Senior SQL 2 |
-| SEN084 | erro | INSERT com a quantidade de valores diferente da de campos, na regra que usa o Senior SQL 2 |
-| SEN085 | aviso | `enquanto ()` com a condição vazia, que o compilador trata como verdadeira, sem `Pare`, `VaPara`, `Cancel` nem outra saída no bloco |
-| SEN086 | aviso | tabela do SQL nativo que não está no dicionário de dados, fora as do catálogo do Oracle, a `DUAL`, os nomes do `WITH` e as do `extraTables` do [`senior-lsp.json`](#arquivo-de-configuração) |
-| SEN087 | aviso | campo com a tabela ou o apelido na frente, no SQL nativo, que a tabela não tem no dicionário de dados |
-| SEN088 | aviso | o que o Senior SQL 2 recusa (SEN080 a SEN083) no SELECT de um `SQL_DefinirComando`, que compila e para na execução. O objeto usa o Senior SQL 2 até receber `SQL_UsarSQLSenior2(x, 0)`, também na regra que não usa a opção. Só vale para o objeto criado com `SQL_Criar` no mesmo arquivo, porque o de outra regra da tela pode ter recebido o SQL nativo lá |
-| SEN089 | erro | `Pare` ou `Continue` fora de um `para` ou `enquanto` |
-| SEN090 | aviso | `Continue` num `para`, que volta sem rodar o incremento, e o laço não termina se nada mais muda o contador |
-| SEN091 | dica | parâmetro da `funcao` que o corpo não usa, com a ação "Tirar o parâmetro" |
-
-O SEN068 e o SEN070 saem como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
-conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da
-variável num texto para uma função preencher. Na tela e no relatório o aviso não sai, porque as
-regras seguintes podem usar o nome.
-
-O SEN076 esmaece no texto do SQL a coluna que a regra não lê pelo cursor (`cur.CAMPO`). O campo que
-aparece no ORDER BY conta como lido, porque com o Senior SQL 2 o ORDER BY só aceita o que está no
-SELECT. Quando a regra não lê nenhuma coluna, como no cursor que só serve ao `Achou`, a primeira
-fica sem aviso, porque o SELECT precisa de pelo menos uma. O `*` é avisado quando a regra lê menos
-campos do que a tabela tem, o que precisa do dicionário de dados. Na tela e no relatório o aviso
-não sai, pelo mesmo motivo do SEN068.
-
-O SQL nativo vai para o banco como está, e a tabela ou o campo que não existe só para na execução. Ele é o do `SQL_DefinirComando` com `SQL_UsarSQLSenior2(x, 0)` e, na regra que não usa o Senior SQL 2, o do cursor e do `ExecSql`. Na regra sem a opção na exportação o modo não é conhecido, e o SEN086 e o SEN087 não saem no cursor nem no `ExecSql`. No cursor fica de fora o que o SEN074 e o SEN075 já acusaram.
-
-O SEN071 cobre da primeira instrução depois do comando até a última do bloco, e o editor esmaece
-o trecho. Um rótulo (`nome:`) no meio do bloco volta a tornar o código alcançável, porque um
-`VaPara` pode chegar nele. Um `Pare`, `Continue`, `Cancel`, `Cancelar` ou `VaPara` dentro de um `se` só afeta o resto
-do bloco do `se`.
-
-## Esconder diagnósticos
-
-Um comentário com uma diretiva esconde os diagnósticos dos códigos citados. Vale nos formatos `@ ... @` e `/* ... */`, em qualquer tipo de regra, inclusive nas que ficam dentro dos JSON dos modelos de relatório e nos arquivos `regras/*.txt`. A diretiva é a primeira palavra do comentário.
-
-```text
-@ senior-lsp-disable-next-line SEN071 @
-Mensagem(Retorna, aMsg);
-
-@ senior-lsp-disable SEN048, SEN061 @
-...
-@ senior-lsp-enable SEN048, SEN061 @
-```
-
-- `senior-lsp-disable-next-line` esconde os diagnósticos que começam na próxima linha com código, sem contar as linhas vazias e as que só têm comentário. Um diagnóstico que ocupa várias linhas é escondido quando começa nela.
-- `senior-lsp-disable` esconde os diagnósticos que começam depois do comentário, até o `senior-lsp-enable` do mesmo código. Sem `enable`, vale até o fim do arquivo. Numa regra dentro do JSON de um modelo, o fim é o da regra.
-- Os códigos são obrigatórios, separados por vírgula ou espaço, e podem estar em maiúscula ou minúscula. Cada código tem o seu `enable`, então `enable SEN048` não religa o `SEN061` de um `disable SEN048, SEN061`.
-- O comentário `@ ... @` tem que fechar na mesma linha. O `/* ... */` pode ocupar várias linhas, e os códigos podem quebrar de linha dentro dele.
-- Os erros de sintaxe, do SEN001 ao SEN028, não se escondem.
-
-Uma diretiva que não serve para nada vira aviso no próprio comentário.
-
-- SEN072 quando a diretiva não tem código, tem um código que não existe ou que não se pode esconder (erro de sintaxe, SEN072 e SEN073), tem um nome desconhecido (`senior-lsp-` seguido de outra palavra) ou quando um `enable` não tem o `disable` do código antes.
-- SEN073 quando a diretiva não escondeu nenhum diagnóstico do código citado, como o `@ts-expect-error` do TypeScript e o `#[expect]` do Rust. Numa lista com vários códigos, só os que não esconderam nada são marcados. Um `disable` de um código que já estava desligado por outro `disable` também sai como SEN073. Quando o código está em `off` no `senior-lsp.json`, a diretiva continua valendo como usada, porque o diagnóstico existia antes da configuração.
-
-O SEN072 e o SEN073 não se escondem por diretiva, mas mudam de nível no `senior-lsp.json`.
-
-### Arquivo de configuração
-
-O `senior-lsp.json` muda o nível de cada código para uma pasta inteira, lista as tabelas que existem no banco fora do dicionário de dados e escolhe o que a formatação acerta. O servidor procura o arquivo subindo a partir da pasta do arquivo analisado, como o `.editorconfig`, e usa o primeiro que achar, sem juntar com os de cima.
-
-```json
-{
-    "diagnostics": {
-        "SEN048": "off",
-        "SEN071": "hint"
-    },
-    "overrides": [
-        { "files": "Modelos/**", "diagnostics": { "SEN048": "off" } }
-    ],
-    "extraTables": ["TB_CRIADA_NO_BANCO"],
-    "format": { "spaces": false }
-}
-```
-
-- Os níveis são `off` (o diagnóstico some), `hint`, `info`, `warning` e `error`. Um código fora do arquivo fica como o servidor o emite.
-- Os `overrides` valem em ordem, e o último que casa com o arquivo vence, código a código. O `files` é um glob relativo à pasta do `senior-lsp.json`, em texto ou em lista. Ele não diferencia maiúsculas, o `*` não atravessa pastas, o `**` atravessa e um nome de pasta com barra no fim (`Modelos/`) vale para tudo o que há dentro dela.
-- Os erros de sintaxe não mudam de nível.
-- O `format.spaces` com `false` deixa a formatação só com o recuo, sem mexer no espaço dentro das linhas. Sem a chave, os dois mudam.
-- O `extraTables` lista tabelas e visões criadas direto no banco, que o SEN086 não cobra no SQL nativo. A correção rápida do SEN086 acrescenta a tabela ao arquivo que vale para a regra e grava no disco. Sem arquivo, cria um na pasta do workspace que tem a regra. Os nomes não diferenciam maiúsculas. A lista não vale para o Senior SQL 2 nem para o SELECT do cursor, que procuram a tabela no dicionário. Uma diretiva que só escondia o SEN086 de uma tabela da lista passa a sair como SEN073.
-- Um JSON inválido faz o servidor ignorar o arquivo e mostrar um aviso (`window/showMessage`), e a análise segue sem configuração. Chave desconhecida, código que não existe e nível inválido também viram aviso, e o resto do arquivo vale.
-- A configuração vale nos arquivos abertos e na análise da pasta inteira. Quando o editor avisa que um `senior-lsp.json` mudou (o VS Code avisa), o servidor lê de novo e publica os diagnósticos outra vez. Nos editores que não avisam, como o Kate, a leitura é refeita ao abrir qualquer arquivo.
-
-No VS Code, a extensão traz o esquema do arquivo, então o editor completa os códigos e os níveis.
-
-### Ignorar pela correção rápida
-
-Em cada diagnóstico que se pode esconder, a ação de código "Ignorar SENxxx nesta linha" põe um `@ senior-lsp-disable-next-line SENxxx @` na linha de cima, com a indentação da linha do diagnóstico. Se a linha de cima já é um `senior-lsp-disable-next-line` dessa linha, o código entra no fim da lista dele. A ação não aparece dentro das regras de um JSON de modelo, onde o texto da regra é uma string escapada do JSON.
+O servidor conversa pelo stdin e stdout, como qualquer servidor LSP. Os
+[releases](https://github.com/eduardoghi/senior-lsp/releases) trazem o binário para Linux x86_64 e
+Windows x86_64. Em outro sistema, [compile a partir do código](docs/editores.md#compilar). A
+configuração do Kate e as opções que qualquer editor pode mandar estão em
+[docs/editores.md](docs/editores.md).
 
 ## Dicionário de dados
 
-O ERP guarda as tabelas do banco, com o tipo e a descrição de cada campo, no arquivo `.tbs` (como
-o `sapiens.tbs` da pasta do ERP). Com ele configurado, o servidor confere o tipo de `TABELA.Campo`
-nas regras e dá tipo ao campo de busca da tela SGI, pela tabela de destino da ligação. O campo alfa
-de um caractere fica sem tipo, porque o compilador aceita ele como texto e como número.
+Com o `.tbs` do ERP (como o `sapiens.tbs`), o servidor confere o tipo dos campos e o SQL contra as
+tabelas. No VS Code, o caminho vai em `seniorLsp.tbsProducao`. No Claude Code, o plugin pergunta
+na instalação. Os detalhes, como o `.tbs` da base de teste, estão em
+[docs/configuracao.md](docs/configuracao.md#dicionário-de-dados).
 
-O SELECT de um cursor (`cur.SQL "..."`) também é conferido com o dicionário, do jeito que o
-compilador confere ao compilar a regra. Ele lê o que vem antes do primeiro ponto de cada coluna
-como tabela ou visão, e por isso recusa apelido de tabela e função (SEN074). A coluna sem tabela é
-procurada na primeira tabela do FROM (SEN075).
+## Documentação
 
-O compilador confere mais quando a regra usa o Senior SQL 2. Ele não aceita JOIN (SEN080), cobra
-que as tabelas do FROM existam (SEN081), procura nelas cada nome do WHERE (SEN082) e só aceita no
-ORDER BY o que está no SELECT (SEN083). No `ExecSql "..."` e no `ExecSqlEx("...", ...)` com o
-comando escrito na regra, ele cobra a tabela, os campos do SET e do INSERT, os nomes do WHERE e
-dos valores e a quantidade de valores do INSERT (SEN084), e lê o SELECT como o do cursor. No SQL
-nativo nada disso é conferido na compilação. O
-servidor sabe o modo da regra pela opção `useSQLSenior2` do JSON que a exportação grava ao lado do
-texto dela (`General_Infos.json` na regra, `Rule.json` no web service e `definition.json` na tela
-SGI), e a do modelo de relatório pela opção `sql_senior2` do `Base_Structure.json` dele. Sem
-esse arquivo, como numa regra solta, essas conferências não saem.
-
-São dois caminhos, ambos opcionais, o `.tbs` de produção e o da base de teste. O tipo vem do de
-produção. Com os dois, o servidor avisa (SEN065) quando a regra usa um campo que só existe no de
-teste, que compila na base de teste e não em produção. No Claude Code, os caminhos são opções do
-plugin, perguntadas na instalação e alteradas depois pelo `/config` ou pelo
-`/plugin configure senior-lsp@<marketplace>`. Em outros editores, vão em `tbs_producao` e
-`tbs_teste` nas opções de inicialização do servidor, ou nas variáveis `SENIOR_LSP_TBS_PRODUCAO` e
-`SENIOR_LSP_TBS_TESTE`. Cada arquivo é lido na primeira consulta, e a data dele é conferida a cada 5
-minutos fora da digitação, para ler de novo o que mudou. Depois de uma atualização do ERP ou de uma
-customização no CBDS, o comando `senior-lsp.recarregarDicionario` lê os dois na hora. No VS Code ele
-é o "Senior LSP: Recarregar o dicionário de dados" da paleta de comandos.
-
-O executável também imprime as tabelas e os campos em texto, uma linha por tabela e uma por
-campo, separadas por tabulação:
-
-```sh
-senior-lsp tbs sapiens.tbs > tabelas.txt
-```
-
-```text
-E070EMP	Cadastros - Empresas
-E070EMP.CodEmp	numero 4	Código da empresa
-E070EMP.NomEmp	alfa 100	Nome da empresa
-E070EMP.EstLef	alfa 1 LSimNao	Indicativo se lança os movimentos de estoque no plano financeiro
-```
-
-Campo de enumeração sai com o tipo dos valores e o nome da enumeração. Com `--pasta`, o dicionário
-inteiro vai para arquivos de texto numa pasta vazia ou que ainda não existe, para versionar:
-
-```sh
-senior-lsp tbs sapiens.tbs --pasta dicionario
-```
-
-| Arquivo | Uma linha por |
-| --- | --- |
-| `tabelas.txt` | tabela e campo, como no exemplo acima |
-| `enumeracoes.txt` | enumeração (tipo dos valores) e valor (descrição) |
-| `indices.txt` | chave primária, colunas únicas e índice, com o tipo e os campos |
-| `relacionamentos.txt` | relacionamento, com a tabela e os campos de origem e de destino |
-| `check-constraints.txt` | check constraint, com a condição |
-| `ligacoes.txt` | campo com busca, com a tabela ou view, os campos e o campo mostrado |
-| `views.txt` | view e campo da view |
-
-O código fica em `triggers/TABELA.TRIGGER.banco.sql`, `stored-procedures/NOME.banco.sql` e
-`views/NOME.sql`. Os nomes seguem os do CBDS. O banco vem da versão do código no dicionário, como `senior` para a genérica e
-`oracle` para a do Oracle. A primeira coluna dos arquivos `.txt` identifica o item.
-
-Com dois arquivos `.tbs`, o executável lista as diferenças do primeiro para o segundo, agrupadas por
-arquivo. A linha começa com `-` para o que só existe no primeiro, `+` para o que só existe no segundo
-e `~` para o item que mudou, com o valor de antes e o de depois. Do código sai só o caminho do arquivo
-que mudou:
-
-```sh
-senior-lsp tbs producao.tbs teste.tbs
-```
-
-```text
-tabelas.txt
-~ E070EMP.CodEmp	numero 4	Código da empresa -> numero 5	Código da empresa
-+ USU_TNOVA	Nova
-
-código
-+ stored-procedures/CLEARREPLICATION.oracle.sql
-```
+- [Recursos](docs/recursos.md)
+- [Regras da exportação](docs/regras.md)
+- [Diagnósticos](docs/diagnosticos.md)
+- [Configuração](docs/configuracao.md)
+- [Editores](docs/editores.md)
 
 ## Licença
 

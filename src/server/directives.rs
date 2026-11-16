@@ -560,8 +560,8 @@ mod tests {
     }
 
     #[test]
-    fn os_codigos_conhecidos_batem_com_a_tabela_do_readme() {
-        let readme = include_str!("../../README.md");
+    fn os_codigos_conhecidos_batem_com_a_tabela_da_documentacao() {
+        let readme = include_str!("../../docs/diagnosticos.md");
         let mut in_table: Vec<String> = readme
             .lines()
             .filter_map(|l| l.strip_prefix("| SEN"))
