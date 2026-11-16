@@ -2,7 +2,7 @@
     "name": "senior-lsp",
     "displayName": "Senior LSP",
     "description": "Servidor de linguagem não oficial para as regras LSP do ERP Senior (regras, telas SGI, web services e modelos de relatório)",
-    "version": "0.6.1",
+    "version": "0.6.2",
     "publisher": "eduardoghi",
     "icon": "icon.png",
     "license": "MIT",
