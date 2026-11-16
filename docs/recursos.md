@@ -129,6 +129,10 @@ O servidor oferece:
 - modelos de comando no completar, nos editores que aceitam snippets, com o laço de cursor do SQL
   ao `FecharCursor`, `se` com `senao`, `enquanto`, `para`, `definir funcao`, o bloco da `funcao` e o
   `ExecSqlEx` com a conferência do erro
+- modelos pós-fixados, também nos editores que aceitam snippets. Depois de uma expressão e um ponto,
+  como `n.se` ou `cur.Achou.enquanto`, o completar oferece `se`, `enquanto`, `para` (de 1 até a
+  expressão) e `mensagem`, que envolvem a expressão no comando. Depois do nome de um cursor, lista,
+  tabela ou web service o ponto continua sendo o acesso ao membro
 - completar depois do ponto, com as operações e as colunas do SELECT do cursor, as operações e os
   campos criados com `AdicionarCampo` na lista, os campos de uma `definir tabela` e, com o
   dicionário de dados, os campos da tabela do ERP

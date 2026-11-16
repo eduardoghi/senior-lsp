@@ -528,6 +528,7 @@ impl Server<'_> {
                     let mut items = c.completion(at.position);
                     if self.snippets {
                         items.extend(c.snippets(at.position));
+                        items.extend(c.postfix(at.position));
                     }
                     self.out.json(&lsp_types::CompletionResponse::Array(items))
                 })

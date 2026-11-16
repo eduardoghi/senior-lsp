@@ -4487,3 +4487,46 @@ fn corrigir_tudo_respeita_a_diretiva() {
     );
     editor.stop();
 }
+
+#[test]
+fn modelos_pos_fixados_envolvem_a_expressao() {
+    let completar = |text: &str, line: u32, character: u32| {
+        let (mut editor, _) = Editor::start_with(None, json!({ "snippetSupport": true }));
+        editor.open(RULE, 1, text);
+        let response = editor.request(
+            lsp_types::request::Completion::METHOD,
+            json!({ "textDocument": { "uri": RULE }, "position": { "line": line, "character": character } }),
+        );
+        let items: Vec<lsp_types::CompletionItem> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        items
+            .into_iter()
+            .filter(|i| i.filter_text.as_deref().is_some_and(|f| f.contains('.')))
+            .collect::<Vec<_>>()
+    };
+    let edit = |item: &lsp_types::CompletionItem| match &item.text_edit {
+        Some(lsp_types::CompletionTextEdit::Edit(e)) => (e.range, e.new_text.clone()),
+        _ => panic!("sem troca"),
+    };
+
+    // Campo do cursor seguido de `.se`, que troca do começo da expressão até o cursor.
+    let text = "definir cursor cur;\ncur.SQL \"SELECT A FROM T\";\ncur.Achou.se\n";
+    let found = completar(text, 2, 12);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let (range, new_text) = edit(&found[0]);
+    assert_eq!(
+        (range.start.character, range.end.character),
+        (0, 12),
+        "{range:?}"
+    );
+    assert_eq!(new_text, "se (cur.Achou) {\n\t$0\n}");
+
+    // Variável numérica, todos os modelos que começam com o que foi digitado.
+    let text = "definir numero n;\nn.\n";
+    let labels: Vec<_> = completar(text, 1, 2).into_iter().map(|i| i.label).collect();
+    assert_eq!(labels, ["se", "enquanto", "para", "mensagem"]);
+
+    // Depois do nome do cursor o ponto é membro, e dentro de texto não há modelo.
+    assert!(completar("definir cursor cur;\ncur.se\n", 1, 6).is_empty());
+    assert!(completar("definir alfa a;\na = \"x.se\";\n", 1, 9).is_empty());
+}

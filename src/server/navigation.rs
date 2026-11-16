@@ -660,6 +660,72 @@ impl Context<'_> {
             .collect()
     }
 
+    /// Modelos pós-fixados, como `n.se`, que envolvem a expressão antes do ponto num comando. Não
+    /// saem depois de cursor, lista, tabela ou web service, onde o ponto é acesso a membro.
+    pub(crate) fn postfix(&self, position: Position) -> Vec<CompletionItem> {
+        if self.embedding.is_some() {
+            return Vec::new();
+        }
+        let offset = self.offset(position);
+        let text = &self.doc.text;
+        if inside_literal_or_comment(&self.doc.tree, offset) {
+            return Vec::new();
+        }
+        let before = &text[..usize::from(offset)];
+        let word = before.len()
+            - before
+                .bytes()
+                .rev()
+                .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                .count();
+        let prefix = &before[word..];
+        let Some(head) = before[..word].strip_suffix('.') else {
+            return Vec::new();
+        };
+        let Some(start) = expression_start(head) else {
+            return Vec::new();
+        };
+        let expression = &head[start..];
+        // Nome sozinho de objeto: o ponto é o membro dele, e o completar de membros cuida.
+        let is_object = !expression.contains(['.', '(', '[']) && {
+            self.doc.symbols.definitions.iter().any(|d| {
+                text[d.name].eq_ignore_ascii_case(expression)
+                    && matches!(
+                        d.kind,
+                        DefKind::Cursor | DefKind::List | DefKind::Table | DefKind::WebService
+                    )
+            }) || self.doc.inherited.dictionaries.table(expression).is_some()
+        };
+        if is_object {
+            return Vec::new();
+        }
+        let escaped = expression
+            .replace('\\', "\\\\")
+            .replace('$', "\\$")
+            .replace('}', "\\}");
+        let range = self.range(TextRange::new(TextSize::new(start as u32), offset));
+        POSTFIX
+            .iter()
+            .filter(|(label, _, _)| {
+                label.len() >= prefix.len() && label[..prefix.len()].eq_ignore_ascii_case(prefix)
+            })
+            .map(|(label, detail, body)| CompletionItem {
+                label: (*label).to_owned(),
+                kind: Some(CompletionItemKind::SNIPPET),
+                detail: Some((*detail).to_owned()),
+                // O editor filtra pelo texto do começo da troca até o cursor.
+                filter_text: Some(format!("{expression}.{label}")),
+                text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                    range,
+                    new_text: body.replace("EXPR", &escaped),
+                })),
+                insert_text_format: Some(lsp_types::InsertTextFormat::SNIPPET),
+                sort_text: Some(format!("0{label}")),
+                ..CompletionItem::default()
+            })
+            .collect()
+    }
+
     /// Hover de uma chamada a função do ERP, como `IntParaAlfa`, ou de uma função ou variável de
     /// outra regra do formulário SGI.
     /// Campo de tabela do dicionário de dados, com o tipo e a descrição.
@@ -804,6 +870,26 @@ impl Context<'_> {
 /// Modelos de comando do completar, com o rótulo, a descrição e o texto no formato de snippet do
 /// LSP. O `\t` vira o recuo do editor. A `funcao` fica sem o `definir funcao`, porque o bloco dela
 /// vai no fim do arquivo e a declaração vai antes das chamadas.
+/// Modelos depois de `expressão.`, com `EXPR` no lugar da expressão.
+const POSTFIX: &[(&str, &str, &str)] = &[
+    ("se", "envolve a expressão num se", "se (EXPR) {\n\t$0\n}"),
+    (
+        "enquanto",
+        "envolve a expressão num enquanto",
+        "enquanto (EXPR) {\n\t$0\n}",
+    ),
+    (
+        "para",
+        "para de 1 até a expressão",
+        "para (${1:n} = 1; ${1:n} <= EXPR; ${1:n}++) {\n\t$0\n}",
+    ),
+    (
+        "mensagem",
+        "mostra o texto numa mensagem",
+        "Mensagem(${1:Retorna}, EXPR);$0",
+    ),
+];
+
 const SNIPPETS: &[(&str, &str, &str)] = &[
     (
         "cursor",
@@ -873,6 +959,35 @@ const KEYWORDS: &[&str] = &[
 ];
 
 /// Diz se `offset` cai no meio de uma string, de um apóstrofo ou de um comentário.
+/// Começo da expressão que termina no fim de `head`: nomes ligados por ponto, com chamadas e
+/// índices entre parênteses e colchetes. `None` quando não há expressão ali.
+fn expression_start(head: &str) -> Option<usize> {
+    let bytes = head.as_bytes();
+    let mut i = bytes.len();
+    let mut depth = 0usize;
+    while i > 0 {
+        let b = bytes[i - 1];
+        match b {
+            b')' | b']' => depth += 1,
+            b'(' | b'[' if depth > 0 => depth -= 1,
+            b'(' | b'[' => break,
+            _ if depth > 0 => {}
+            b'.' | b'_' => {}
+            _ if b.is_ascii_alphanumeric() => {}
+            _ => break,
+        }
+        i -= 1;
+    }
+    if depth > 0 || i == bytes.len() {
+        return None;
+    }
+    // A expressão começa num nome ou num parêntese, e não termina em ponto.
+    let first = bytes[i];
+    (first.is_ascii_alphabetic() || first == b'_' || first == b'(')
+        .then_some(i)
+        .filter(|_| !head.ends_with('.'))
+}
+
 fn inside_literal_or_comment(tree: &crate::Tree, offset: TextSize) -> bool {
     let tokens = tree.tokens();
     let (mut lo, mut hi) = (0, tokens.len());
