@@ -11,6 +11,8 @@ referências, renomear, refactors de parâmetros de função, completar com mode
 formatação do recuo e do espaço dentro das linhas, inclusive ao digitar. A lista completa está no
 [README do repositório](https://github.com/eduardoghi/senior-lsp#readme).
 
+![Demonstração no VS Code: erro de tipo apontado ao digitar, hover de função do ERP com link para a documentação e recuo acertado ao digitar um bloco](https://raw.githubusercontent.com/eduardoghi/senior-lsp/main/docs/demonstracao.gif)
+
 > **Aviso legal**
 >
 > O senior-lsp é um projeto pessoal e independente, sem vínculo, patrocínio ou endosso da Senior

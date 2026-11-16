@@ -5,6 +5,8 @@ para as regras LSP do ERP Senior, como o gerenciador de artefatos exporta. Ele a
 erros que o compilador do ERP daria, sem precisar compilar a regra no ERP, e ajuda a navegar em
 regras grandes.
 
+![Demonstração no VS Code: erro de tipo apontado ao digitar, hover de função do ERP com link para a documentação e recuo acertado ao digitar um bloco](docs/demonstracao.gif)
+
 > [!IMPORTANT]
 > **Aviso legal**
 >
