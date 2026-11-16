@@ -636,12 +636,15 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                 (_, "0") => format!("{owner} tem tamanho 0, então todo índice literal é recusado"),
                 _ => format!("{owner} vai de 1 a {limit}"),
             };
+            // O menos de `t[-1]` não chega ao índice, e o ERP recusa por outro motivo.
+            let erp = if index.starts_with('-') {
+                "Erro de sintaxe, tipos incompatíveis: NUMERO e ALFA".to_owned()
+            } else {
+                format!("Erro indexando fora dos limites: {index}")
+            };
             (
                 "SEN094",
-                format!(
-                    "O índice {index} está fora dos limites. {range} (Erro indexando fora dos \
-                     limites: {index})."
-                ),
+                format!("O índice {index} está fora dos limites. {range} ({erp})."),
             )
         }
         CheckKind::CursorCommandArgument => (
@@ -664,6 +667,12 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
             "SEN095",
             "UsaTraducao só existe no Senior SQL 2, e esta regra usa o SQL nativo (Só é permitido \
              usar a função \"USATRADUCAO\" na linguagem SQL Senior 2)."
+                .to_owned(),
+        ),
+        CheckKind::CursorMemberAssigned if name.eq_ignore_ascii_case("SQL") => (
+            "SEN095",
+            "O SQL do cursor se escreve sem =, como em cur.SQL \"SELECT ...\" (Erro na variável \
+             de registro, falta \"comando SQL\")."
                 .to_owned(),
         ),
         CheckKind::CursorMemberAssigned => (
@@ -706,7 +715,7 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
             let (list, field) = name.split_once('|').unwrap_or((name, ""));
             (
                 "SEN096",
-                format!("A lista já tem o campo {field} ({list}.{field} já existe)."),
+                format!("A lista já tem o campo {field} ({list}{field} já existe)."),
             )
         }
         CheckKind::ListKeyWithoutFields => (

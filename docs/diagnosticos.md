@@ -107,7 +107,9 @@ O SQL nativo vai para o banco como está, e a tabela ou o campo que não existe 
 
 As conferências de tabela, cursor e lista usam a definição que a regra tem. Com o nome vindo de outra
 regra da tela, só valem as que não dependem das colunas, do tamanho ou dos campos. A lista de outra regra
-não diz os campos, então o SEN096 não acusa o membro dela, e a tabela de outra regra só entra no
+não diz os campos, então o SEN096 não acusa o membro dela. O membro desconhecido também só é conferido na
+regra comum, porque num modelo de relatório ou numa tela outra regra pode criar o campo com
+`AdicionarCampo`. A tabela de outra regra só entra no
 `t.coluna` sem índice (SEN093) e no índice alfa (SEN105). O SEN093 e o SEN094 conferem só o índice
 escrito como número, porque o ERP não confere variável nem expressão na compilação. A coluna `Alfa
 Nome[20]` não pede segundo índice, porque o `[n]` do alfa é o tamanho do texto.
