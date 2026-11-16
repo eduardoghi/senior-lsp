@@ -218,6 +218,69 @@
                 },
                 "SEN091": {
                     "$ref": "#/definitions/nivel"
+                },
+                "SEN92": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN93": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN94": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN95": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN96": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN97": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN98": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN99": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN100": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN101": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN102": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN103": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN104": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN105": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN106": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN107": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN108": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN109": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN110": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN111": {
+                    "$ref": "#/definitions/nivel"
+                },
+                "SEN112": {
+                    "$ref": "#/definitions/nivel"
                 }
             },
             "additionalProperties": false

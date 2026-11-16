@@ -197,13 +197,26 @@ fn call(tree: &Tree, scope: &Scope, context: Context, node: NodeId, checks: &mut
         }
         return;
     };
+    // Com `definir funcao` repetido só vale o primeiro (SEN107), e as outras declarações não
+    // entram na conferência.
     let defs = || {
+        let mut first_decl_seen = false;
         reference
             .targets
             .iter()
             .map(|&t| &scope.symbols.definitions[t])
+            .filter(move |d| {
+                let decl = tree.kind(d.node) == FuncDecl;
+                let skip = decl && first_decl_seen;
+                first_decl_seen |= decl;
+                !skip
+            })
     };
-    if !defs().all(|d| d.kind == DefKind::Function) {
+    if !reference
+        .targets
+        .iter()
+        .all(|&t| scope.symbols.definitions[t].kind == DefKind::Function)
+    {
         return;
     }
     // Com `definir funcao` e `funcao` em número diferente de parâmetros, não se sabe contra qual
@@ -396,6 +409,18 @@ pub(super) fn assignable(tree: &Tree, scope: &Scope, node: NodeId) -> Option<Var
         Part::Num => Some(VarType::Numero),
         Part::Char => None,
     }
+}
+
+/// A expressão é uma string ou um nome de tipo alfa, que não vale como índice de tabela.
+pub(super) fn is_alfa_leaf(tree: &Tree, scope: &Scope, node: NodeId) -> bool {
+    leaf_type(tree, scope, node) == Ty::Alfa
+}
+
+/// A expressão é uma soma que o compilador lê como concatenação de alfa.
+pub(super) fn is_alfa_concatenation(tree: &Tree, scope: &Scope, node: NodeId) -> bool {
+    tree.kind(node) == BinaryExpr
+        && operator_token(tree, node).is_some_and(|op| tree.tokens().kind(op) == Plus)
+        && assignable(tree, scope, node) == Some(VarType::Alfa)
 }
 
 /// Tipo de uma string, número ou nome, sem olhar expressões.

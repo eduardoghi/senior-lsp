@@ -108,6 +108,11 @@ fn found(doc: &Document, levels: &Levels) -> Vec<Found> {
                 | CheckKind::UnusedParameter
                 | CheckKind::CursorColumnUnused
                 | CheckKind::CursorStarUnused
+                | CheckKind::RepeatedParameter
+                | CheckKind::RepeatedColumn
+                | CheckKind::RepeatedLabel
+                | CheckKind::LabelsSameStart
+                | CheckKind::TableSizeOverflow
         ) {
             DiagnosticSeverity::HINT
         } else {
@@ -574,6 +579,271 @@ fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, Stri
                  mudar o contador, o laço não termina."
             ),
         ),
+        CheckKind::TableWithoutSize => (
+            "SEN092",
+            format!(
+                "A tabela {name} precisa do tamanho entre colchetes depois do nome, como em \
+                 Definir Tabela {name}[10] (Definição inválida: faltou \"]\")."
+            ),
+        ),
+        CheckKind::TableWithoutColumns => (
+            "SEN092",
+            format!(
+                "A tabela {name} não tem nenhuma coluna entre as chaves (Definição inválida: tipo \
+                 de variável inválido: FIM)."
+            ),
+        ),
+        CheckKind::TableWithoutIndex => {
+            let (table, column) = name.split_once('|').unwrap_or((name, ""));
+            (
+                "SEN093",
+                format!(
+                    "A coluna {column} precisa do índice da linha, como em {table}[1].{column} \
+                     (Erro na variável indexada, falta \"[\")."
+                ),
+            )
+        }
+        CheckKind::TableColumnWithoutIndex => {
+            let (table, column) = name.split_once('|').unwrap_or((name, ""));
+            (
+                "SEN093",
+                format!(
+                    "A coluna {column} da tabela {table} tem tamanho na definição, e precisa do \
+                     segundo índice, como em {table}[1].{column}[1] (Erro na variável indexada, \
+                     falta \"[\")."
+                ),
+            )
+        }
+        CheckKind::TableUnknownColumn => {
+            let (table, column) = name.split_once('|').unwrap_or((name, ""));
+            (
+                "SEN093",
+                format!(
+                    "A tabela {table} não tem a coluna {column} (Erro de sintaxe, variável da \
+                     tabela não está definida)."
+                ),
+            )
+        }
+        CheckKind::IndexOutOfRange => {
+            let mut parts = name.splitn(4, '|');
+            let mut part = || parts.next().unwrap_or("");
+            let (index, what, owner, limit) = (part(), part(), part(), part());
+            let range = match (what, limit) {
+                ("coluna", _) => format!(
+                    "O segundo índice de {owner} vai de 1 até o número de linhas da tabela, que \
+                     é {limit}"
+                ),
+                (_, "0") => format!("{owner} tem tamanho 0, então todo índice literal é recusado"),
+                _ => format!("{owner} vai de 1 a {limit}"),
+            };
+            (
+                "SEN094",
+                format!(
+                    "O índice {index} está fora dos limites. {range} (Erro indexando fora dos \
+                     limites: {index})."
+                ),
+            )
+        }
+        CheckKind::CursorCommandArgument => (
+            "SEN095",
+            format!("O {name} do cursor não recebe valor (Erro na pontuação, falta \")\")."),
+        ),
+        CheckKind::CursorFlagCalled => (
+            "SEN095",
+            format!(
+                "{name} é uma propriedade do cursor e não leva parênteses. O compilador recusa \
+                 com \"( não é permitido aqui\"."
+            ),
+        ),
+        CheckKind::CursorScopeWithoutArgument => (
+            "SEN095",
+            "UsaAbrangencia precisa do valor, como em UsaAbrangencia(0) (parâmetro esperado)."
+                .to_owned(),
+        ),
+        CheckKind::CursorTranslationWithoutSql2 => (
+            "SEN095",
+            "UsaTraducao só existe no Senior SQL 2, e esta regra usa o SQL nativo (Só é permitido \
+             usar a função \"USATRADUCAO\" na linguagem SQL Senior 2)."
+                .to_owned(),
+        ),
+        CheckKind::CursorMemberAssigned => (
+            "SEN095",
+            format!(
+                "O cursor só se lê, então {name} não recebe valor (não é possível atribuir \
+                 valores a campos de cursores)."
+            ),
+        ),
+        CheckKind::ListNotMember => {
+            let (list, member) = name.split_once('|').unwrap_or((name, ""));
+            (
+                "SEN096",
+                format!(
+                    "{member} não é método, função nem propriedade da lista, e nenhum \
+                     AdicionarCampo cria um campo com esse nome em {list} (falta comando ou \
+                     campo)."
+                ),
+            )
+        }
+        CheckKind::ListFunctionWithoutParentheses => (
+            "SEN096",
+            format!("{name} é função da lista e precisa dos parênteses (falta \"(\")."),
+        ),
+        CheckKind::ListPropertyWithParentheses => (
+            "SEN096",
+            format!("{name} é propriedade da lista e não leva parênteses (falta \";\")."),
+        ),
+        CheckKind::ListFieldWithoutName => (
+            "SEN096",
+            "O AdicionarCampo precisa do nome do campo em texto (falta nome do campo).".to_owned(),
+        ),
+        CheckKind::ListSizeOnNonAlfa => (
+            "SEN096",
+            "O tamanho só vale para campo alfa (tamanho do campo somente pode ser definido para \
+             campos alfanuméricos)."
+                .to_owned(),
+        ),
+        CheckKind::ListRepeatedField => {
+            let (list, field) = name.split_once('|').unwrap_or((name, ""));
+            (
+                "SEN096",
+                format!("A lista já tem o campo {field} ({list}.{field} já existe)."),
+            )
+        }
+        CheckKind::ListKeyWithoutFields => (
+            "SEN096",
+            "A Chave precisa do texto com os campos (faltam campos).".to_owned(),
+        ),
+        CheckKind::UnknownLabel => (
+            "SEN097",
+            format!(
+                "Não há rótulo {name} neste arquivo. Rótulo e função ficam em tabelas separadas, \
+                 então o nome de uma função também não serve (Falta declaração do \
+                 \"Label/Função\" = \"{}\").",
+                name.to_uppercase()
+            ),
+        ),
+        CheckKind::UndeclaredFunction => (
+            "SEN098",
+            format!(
+                "A funcao {name} precisa de um Definir Funcao com o mesmo nome antes dela no \
+                 arquivo (Função não declarada anteriormente)."
+            ),
+        ),
+        CheckKind::FunctionNameTooLong => {
+            let (function, length) = name.split_once('|').unwrap_or((name, ""));
+            (
+                "SEN099",
+                format!(
+                    "O nome {function} tem {length} caracteres, e o compilador corta em 31 e não \
+                     reconhece a chamada (Erro na pontuação, falta \"=\")."
+                ),
+            )
+        }
+        CheckKind::AlfaConcatenationInArgument => (
+            "SEN100",
+            "O argumento de função não aceita concatenação de alfa. Monte o texto numa variável \
+             antes da chamada (Variáveis alfanuméricas ou operadores não compatíveis)."
+                .to_owned(),
+        ),
+        CheckKind::ConflictingDefinition => {
+            let (variable, before) = name.split_once('|').unwrap_or((name, ""));
+            (
+                "SEN101",
+                format!(
+                    "{variable} já foi definida como {before}, e o mesmo nome com outro tipo não \
+                     compila (Definição inválida: variável \"{}\" já está definida como \
+                     {before}).",
+                    variable.to_uppercase()
+                ),
+            )
+        }
+        CheckKind::CallWithoutImplementation => (
+            "SEN102",
+            format!(
+                "A função {name} está declarada e nenhuma funcao a implementa neste arquivo. \
+                 Compila, mas esta chamada para na execução com \"Instrução inválida ao \
+                 Executar a regra.\""
+            ),
+        ),
+        CheckKind::CallToLongFunctionName => (
+            "SEN103",
+            format!(
+                "O nome {name} tem 31 caracteres. Compila, mas o ERP não resolve a chamada, e a \
+                 execução para com \"Instrução inválida ao Executar a regra.\""
+            ),
+        ),
+        CheckKind::LiteralInAlfaParameter => (
+            "SEN104",
+            format!(
+                "Texto literal no parâmetro {name}, que é alfa, de uma função da regra. Compila, \
+                 mas a execução para com \"Instrução inválida ao Executar a regra.\" Passe uma \
+                 variável."
+            ),
+        ),
+        CheckKind::AlfaTableIndex => (
+            "SEN105",
+            format!(
+                "Índice alfa em {name}. O ERP lê o índice como 0, mesmo com o texto \"1\", e a \
+                 execução para com \"Indexando fora dos limites (0)\"."
+            ),
+        ),
+        CheckKind::ColumnIndexBeyondSize => {
+            let mut parts = name.splitn(3, '|');
+            let mut part = || parts.next().unwrap_or("");
+            let (index, column, size) = (part(), part(), part());
+            (
+                "SEN106",
+                format!(
+                    "A coluna {column} tem tamanho {size}, e o índice {index} passa dele. Compila \
+                     e não dá erro, mas grava na linha seguinte da tabela."
+                ),
+            )
+        }
+        CheckKind::RepeatedDeclaration => (
+            "SEN107",
+            format!(
+                "Definir Funcao {name} repetido com outra assinatura. Só a primeira declaração \
+                 vale, e esta é ignorada. As chamadas são conferidas contra a primeira."
+            ),
+        ),
+        CheckKind::RepeatedParameter => (
+            "SEN108",
+            format!(
+                "O parâmetro {name} aparece mais de uma vez na função. O corpo só enxerga o \
+                 último argumento."
+            ),
+        ),
+        CheckKind::RepeatedColumn => (
+            "SEN109",
+            format!(
+                "A coluna {name} já existe na tabela. O nome acessa só a primeira, e o tipo \
+                 também é o da primeira."
+            ),
+        ),
+        CheckKind::RepeatedLabel => (
+            "SEN110",
+            format!("O rótulo {name} já existe neste arquivo, e o VaPara vai para o último."),
+        ),
+        CheckKind::LabelsSameStart => {
+            let (label, other) = name.split_once('|').unwrap_or((name, ""));
+            (
+                "SEN111",
+                format!(
+                    "Os rótulos {label} e {other} têm os mesmos 30 primeiros caracteres, e o ERP \
+                     trata os dois como o mesmo rótulo."
+                ),
+            )
+        }
+        CheckKind::TableSizeOverflow => {
+            let (size, real) = name.split_once('|').unwrap_or((name, ""));
+            (
+                "SEN112",
+                format!(
+                    "O tamanho {size} passa de 65535, e o ERP o guarda em 16 bits. A tabela fica \
+                     com {real} linhas."
+                ),
+            )
+        }
         CheckKind::UnusedParameter => (
             "SEN091",
             format!("O parâmetro {name} não é usado no corpo da função."),
@@ -827,6 +1097,108 @@ mod tests {
             ]
         );
         assert!(d[0].message.contains("função f."));
+    }
+
+    #[test]
+    fn nivel_e_mensagem_das_conferencias_de_tabela_cursor_lista_e_funcao() {
+        const ERROR: DiagnosticSeverity = DiagnosticSeverity::ERROR;
+        const WARNING: DiagnosticSeverity = DiagnosticSeverity::WARNING;
+        const HINT: DiagnosticSeverity = DiagnosticSeverity::HINT;
+        let tabela = "Definir Tabela t[3] = { Numero a; Numero v[2]; };\nDefinir Numero n;\n";
+        let funcao = "Definir Funcao f(Alfa p);\n";
+        let impl_ = "\nFuncao f(Alfa p);\nInicio\nn = 1;\nFim;";
+        // Um trecho por código, com o código e o nível esperados. Os trechos de função põem a
+        // `funcao` no fim, que o corpo dela vai até o fim do arquivo.
+        let casos: Vec<(std::string::String, &str, DiagnosticSeverity)> = vec![
+            ("Definir Tabela t = { Numero a; };".into(), "SEN092", ERROR),
+            ("Definir Tabela t[3] = { };".into(), "SEN092", ERROR),
+            (format!("{tabela}n = t.a;"), "SEN093", ERROR),
+            (format!("{tabela}n = t[1].v;"), "SEN093", ERROR),
+            (format!("{tabela}n = t[1].zz;"), "SEN093", ERROR),
+            (format!("{tabela}n = t[4].a;"), "SEN094", ERROR),
+            ("Definir Cursor c;\nc.AbrirCursor(1);".into(), "SEN095", ERROR),
+            ("Definir Lista l;\nl.Foo();".into(), "SEN096", ERROR),
+            ("se (1 = 1) { VaPara sai; }".into(), "SEN097", ERROR),
+            ("Funcao f();\nInicio\nFim;".into(), "SEN098", ERROR),
+            (
+                "Definir Funcao fAbcdefghijklmnopqrstuvwxyz12345();\nfAbcdefghijklmnopqrstuvwxyz12345();"
+                    .into(),
+                "SEN099",
+                ERROR,
+            ),
+            (
+                format!("Definir Alfa a;\n{funcao}f(\"x\" + a);{impl_}"),
+                "SEN100",
+                ERROR,
+            ),
+            ("Definir Numero n;\nDefinir Alfa n;\nn = 1;".into(), "SEN101", ERROR),
+            ("Definir Funcao f();\nf();".into(), "SEN102", WARNING),
+            (
+                "Definir Funcao fAbcdefghijklmnopqrstuvwxyz1234();\nfAbcdefghijklmnopqrstuvwxyz1234();"
+                    .into(),
+                "SEN103",
+                WARNING,
+            ),
+            (format!("{funcao}f(\"a\");{impl_}"), "SEN104", WARNING),
+            (
+                format!("{tabela}Definir Alfa aTxt;\nn = t[aTxt].a;"),
+                "SEN105",
+                WARNING,
+            ),
+            (format!("{tabela}t[1].v[3] = 5;"), "SEN106", WARNING),
+            (
+                "Definir Funcao f(Numero a);\nDefinir Funcao f(Numero a, Numero b);".into(),
+                "SEN107",
+                WARNING,
+            ),
+            (
+                "Definir Funcao f(Numero a, Numero a);\nf(1, 2);\nFuncao f(Numero a, Numero a);\nInicio\na = 1;\nFim;"
+                    .into(),
+                "SEN108",
+                HINT,
+            ),
+            ("Definir Tabela t[2] = { Numero a; Numero a; };".into(), "SEN109", HINT),
+            ("x = 1;\nr:\nx = 2;\nr:\nx = 3;".into(), "SEN110", HINT),
+        ];
+        for (text, code, severity) in casos {
+            let d: Vec<_> = run(&text, ColumnEncoding::Utf16)
+                .into_iter()
+                .filter(|d| d.code == Some(NumberOrString::String(code.to_owned())))
+                .collect();
+            assert!(!d.is_empty(), "{code} em {text}");
+            assert_eq!(d[0].severity, Some(severity), "{code} em {text}");
+            assert_eq!(d[0].tags, None, "{code} em {text}");
+        }
+        let hints = |text: &str, code: &str| {
+            run(text, ColumnEncoding::Utf16)
+                .into_iter()
+                .filter(|d| d.code == Some(NumberOrString::String(code.to_owned())))
+                .map(|d| (d.severity.unwrap(), d.message))
+                .collect::<Vec<_>>()
+        };
+        let rotulos = "x = 1;\nrotuloComTrintaCaracteresAbcdeA:\nx = 2;\nrotuloComTrintaCaracteresAbcdeB:\nx = 3;";
+        assert_eq!(hints(rotulos, "SEN111")[0].0, HINT);
+        let grande = hints("Definir Tabela t[70000] = { Numero a; };", "SEN112");
+        assert_eq!(grande[0].0, HINT);
+        assert_eq!(
+            grande[0].1,
+            "O tamanho 70000 passa de 65535, e o ERP o guarda em 16 bits. A tabela fica com 4464 \
+             linhas."
+        );
+        assert_eq!(
+            hints(&format!("{tabela}n = t[0].a;"), "SEN094")[0].1,
+            "O índice 0 está fora dos limites. t vai de 1 a 3 (Erro indexando fora dos limites: 0)."
+        );
+        assert_eq!(
+            hints(&format!("{tabela}t[1].v[4] = 1;"), "SEN094")[0].1,
+            "O índice 4 está fora dos limites. O segundo índice de t.v vai de 1 até o número de \
+             linhas da tabela, que é 3 (Erro indexando fora dos limites: 4)."
+        );
+        assert_eq!(
+            hints("Definir Numero n;\nDefinir Alfa N;", "SEN101")[0].1,
+            "N já foi definida como número, e o mesmo nome com outro tipo não compila (Definição \
+             inválida: variável \"N\" já está definida como número)."
+        );
     }
 
     #[test]

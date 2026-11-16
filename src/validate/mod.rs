@@ -11,6 +11,8 @@ use crate::builtins::{self, Context};
 use crate::form::Inherited;
 use crate::symbols::{DefKind, Symbols, VarType};
 
+mod declarations;
+mod objects;
 mod sql;
 mod types;
 use crate::{Element, NodeId, Tree};
@@ -140,6 +142,74 @@ pub enum CheckKind {
     ContinueSkipsStep,
     /// Parâmetro da `funcao` que o corpo não lê nem escreve.
     UnusedParameter,
+    /// `Definir Tabela t = { ... }`, sem o tamanho entre colchetes depois do nome.
+    TableWithoutSize,
+    /// `Definir Tabela t[n] = { }`, sem nenhuma coluna.
+    TableWithoutColumns,
+    /// `t.coluna`, sem o índice da linha.
+    TableWithoutIndex,
+    /// `t[1].v` com `v` uma coluna numérica com tamanho, sem o segundo índice.
+    TableColumnWithoutIndex,
+    /// `t[1].zz` com uma coluna que a tabela não tem.
+    TableUnknownColumn,
+    /// Índice literal fora da faixa de uma tabela, de uma variável numérica ou de uma coluna.
+    IndexOutOfRange,
+    /// `AbrirCursor`, `FecharCursor` ou `Proximo` do cursor com argumento.
+    CursorCommandArgument,
+    /// `Achou()` ou `NaoAchou()`, que são propriedades do cursor.
+    CursorFlagCalled,
+    /// `UsaAbrangencia()` sem o valor.
+    CursorScopeWithoutArgument,
+    /// `UsaTraducao` do cursor numa regra que usa o SQL nativo.
+    CursorTranslationWithoutSql2,
+    /// Atribuição a um campo do cursor.
+    CursorMemberAssigned,
+    /// Membro da lista que não é método, função, propriedade nem campo criado com `AdicionarCampo`.
+    ListNotMember,
+    /// Função da lista, como `Primeiro`, sem os parênteses.
+    ListFunctionWithoutParentheses,
+    /// Propriedade da lista, como `NumReg`, com parênteses.
+    ListPropertyWithParentheses,
+    /// `AdicionarCampo` sem o nome do campo em texto.
+    ListFieldWithoutName,
+    /// `AdicionarCampo` com tamanho num campo que não é alfa.
+    ListSizeOnNonAlfa,
+    /// `AdicionarCampo` com o nome de um campo que a lista já tem.
+    ListRepeatedField,
+    /// `Chave` da lista sem o texto com os campos.
+    ListKeyWithoutFields,
+    /// `VaPara` para um nome que não é rótulo do arquivo.
+    UnknownLabel,
+    /// `funcao` sem um `Definir Funcao` do mesmo nome antes dela.
+    UndeclaredFunction,
+    /// Chamada a uma função com 32 caracteres ou mais no nome, que o ERP corta em 31.
+    FunctionNameTooLong,
+    /// Concatenação de alfa num argumento de função.
+    AlfaConcatenationInArgument,
+    /// `Definir` do mesmo nome com outro tipo.
+    ConflictingDefinition,
+    /// Chamada a uma função declarada que nenhuma `funcao` implementa.
+    CallWithoutImplementation,
+    /// Chamada a uma função com exatamente 31 caracteres no nome.
+    CallToLongFunctionName,
+    /// Texto literal num parâmetro alfa de função da regra.
+    LiteralInAlfaParameter,
+    /// Índice alfa numa tabela.
+    AlfaTableIndex,
+    /// Segundo índice literal que passa do tamanho da coluna sem passar do número de linhas.
+    ColumnIndexBeyondSize,
+    /// `Definir Funcao` repetido com outra assinatura.
+    RepeatedDeclaration,
+    /// Parâmetro repetido na mesma função.
+    RepeatedParameter,
+    /// Coluna repetida na mesma tabela.
+    RepeatedColumn,
+    /// Rótulo repetido.
+    RepeatedLabel,
+    /// Dois rótulos com os mesmos 30 primeiros caracteres.
+    LabelsSameStart,
+    /// Tamanho de tabela acima de 65535.
+    TableSizeOverflow,
 }
 
 impl CheckKind {
@@ -191,6 +261,29 @@ impl CheckKind {
                 | CheckKind::Sql2OrderBy
                 | CheckKind::Sql2InsertValues
                 | CheckKind::LoopClauseOutsideLoop
+                | CheckKind::TableWithoutSize
+                | CheckKind::TableWithoutColumns
+                | CheckKind::TableWithoutIndex
+                | CheckKind::TableColumnWithoutIndex
+                | CheckKind::TableUnknownColumn
+                | CheckKind::IndexOutOfRange
+                | CheckKind::CursorCommandArgument
+                | CheckKind::CursorFlagCalled
+                | CheckKind::CursorScopeWithoutArgument
+                | CheckKind::CursorTranslationWithoutSql2
+                | CheckKind::CursorMemberAssigned
+                | CheckKind::ListNotMember
+                | CheckKind::ListFunctionWithoutParentheses
+                | CheckKind::ListPropertyWithParentheses
+                | CheckKind::ListFieldWithoutName
+                | CheckKind::ListSizeOnNonAlfa
+                | CheckKind::ListRepeatedField
+                | CheckKind::ListKeyWithoutFields
+                | CheckKind::UnknownLabel
+                | CheckKind::UndeclaredFunction
+                | CheckKind::FunctionNameTooLong
+                | CheckKind::AlfaConcatenationInArgument
+                | CheckKind::ConflictingDefinition
         )
     }
 }
@@ -266,6 +359,8 @@ pub fn validate(
         sql: &sources,
     };
     let first_uses = sql::FirstUses::new(tree, text);
+    let objects = objects::Objects::build(&scope, tree, &mut checks);
+    let declarations = declarations::Declarations::build(&scope, tree, &mut checks);
     let mut native_sql = sql::NativeSql::default();
     // Só na regra comum, porque na tela e no relatório as regras seguintes podem ler o cursor.
     let mut column_uses = (context == Context::Rule).then(sql::ColumnUses::default);
@@ -274,8 +369,18 @@ pub fn validate(
         types::check(tree, &scope, context, node, &mut checks);
         match tree.kind(node) {
             BinaryExpr => binary(tree, node, &mut checks),
-            Assign => assignment(tree, node, &mut checks),
-            CallExpr => message_text(tree, &scope, node, &mut checks),
+            Assign => {
+                assignment(tree, node, &mut checks);
+                objects.assign(node, &mut checks);
+            }
+            CallExpr => {
+                message_text(tree, &scope, node, &mut checks);
+                objects.call(node, &mut checks);
+                declarations.call(node, &mut checks);
+            }
+            IndexExpr => objects.index_expr(node, &mut checks),
+            TableDef => objects.table_def(node, &mut checks),
+            Goto => declarations.goto(node, &mut checks),
             While => endless_loop(tree, symbols, text, inherited, node, &mut checks),
             Break | Continue => loop_clause(tree, text, node, &mut checks),
             CallStmt => {
@@ -293,6 +398,7 @@ pub fn validate(
             }
             Literal => lowercase_char(tree, text, node, &mut checks),
             FieldExpr => {
+                objects.field_expr(node, &mut checks);
                 let read = sources.check_cursor_field(tree, symbols, text, node, &mut checks);
                 if let (Some(uses), Some((cursor, field))) = (&mut column_uses, read) {
                     uses.read(cursor, field);
@@ -1073,12 +1179,14 @@ mod tests {
             &Inherited::default(),
         )
         .into_iter()
-        // A função de exemplo de muitos testes não é chamada nem usa os parâmetros, e os cursores
-        // de exemplo não têm os campos lidos. Os testes dessas dicas usam `checks_all`.
+        // A função de exemplo de muitos testes não é chamada nem usa os parâmetros, e não tem a
+        // `funcao` quando só a chamada importa. Os cursores de exemplo não têm os campos lidos.
+        // Os testes dessas conferências usam `checks_all`.
         .filter(|c| {
             !matches!(
                 c.kind,
                 CheckKind::UnusedFunction
+                    | CheckKind::CallWithoutImplementation
                     | CheckKind::UnusedParameter
                     | CheckKind::CursorColumnUnused
                     | CheckKind::CursorStarUnused
@@ -1088,7 +1196,7 @@ mod tests {
         .collect()
     }
 
-    fn checks_all(text: &str) -> Vec<(CheckKind, &str)> {
+    pub(super) fn checks_all(text: &str) -> Vec<(CheckKind, &str)> {
         let tree = crate::parse(text).unwrap();
         validate(
             &tree,

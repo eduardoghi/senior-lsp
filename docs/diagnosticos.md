@@ -69,6 +69,27 @@ Cada diagnóstico tem um código fixo. O SEN061 e o SEN063 trazem também o outr
 | SEN089 | erro | `Pare` ou `Continue` fora de um `para` ou `enquanto` |
 | SEN090 | aviso | `Continue` num `para`, que volta sem rodar o incremento, e o laço não termina se nada mais muda o contador |
 | SEN091 | dica | parâmetro da `funcao` que o corpo não usa, com a ação "Tirar o parâmetro" |
+| SEN092 | erro | `Definir Tabela` sem o `[tamanho]` depois do nome ou sem nenhuma coluna entre as chaves |
+| SEN093 | erro | coluna de tabela sem o índice da linha (`t.Codigo`), coluna numérica com tamanho sem o segundo índice (`t[1].v` com `Numero v[2]`) ou coluna que a tabela não tem |
+| SEN094 | erro | índice literal fora da faixa de uma tabela, de uma variável numérica ou de uma coluna |
+| SEN095 | erro | uso inválido de comando do cursor, como `AbrirCursor(1)`, `Achou()`, `UsaAbrangencia()`, `UsaTraducao` no SQL nativo ou atribuição a um campo do cursor |
+| SEN096 | erro | uso inválido de lista, como membro que não existe, função sem `()`, propriedade com `()` e `AdicionarCampo` ou `Chave` mal escritos |
+| SEN097 | erro | `VaPara` para um nome que não é rótulo do arquivo |
+| SEN098 | erro | `funcao` sem um `Definir Funcao` do mesmo nome antes dela |
+| SEN099 | erro | chamada a uma função com 32 caracteres ou mais no nome |
+| SEN100 | erro | concatenação de alfa num argumento de função |
+| SEN101 | erro | `Definir` do mesmo nome com outro tipo |
+| SEN102 | aviso | chamada a uma função declarada que nenhuma `funcao` implementa, que para na execução |
+| SEN103 | aviso | chamada a uma função com exatamente 31 caracteres no nome, que o ERP não resolve |
+| SEN104 | aviso | texto literal num parâmetro alfa de função da regra, que para na execução |
+| SEN105 | aviso | índice alfa numa tabela, que vale 0 e para na execução |
+| SEN106 | aviso | segundo índice literal que passa do tamanho da coluna, que grava na linha seguinte da tabela |
+| SEN107 | aviso | `Definir Funcao` repetido com outra assinatura, que o ERP ignora |
+| SEN108 | dica | parâmetro repetido na mesma função, de que o corpo só enxerga o último |
+| SEN109 | dica | coluna repetida na `Definir Tabela`, de que o nome acessa só a primeira |
+| SEN110 | dica | rótulo repetido, de que o `VaPara` vai para o último |
+| SEN111 | dica | dois rótulos com os mesmos 30 primeiros caracteres, que o ERP trata como um só |
+| SEN112 | dica | tamanho de tabela acima de 65535, que o ERP guarda em 16 bits |
 
 O SEN068 e o SEN070 saem como dica, que o editor mostra esmaecendo o nome. Um nome citado dentro de um texto
 conta como usado, porque o SQL lê a variável como `:nome` e algumas regras passam o nome da
@@ -83,6 +104,35 @@ campos do que a tabela tem, o que precisa do dicionário de dados. Na tela e no 
 não sai, pelo mesmo motivo do SEN068.
 
 O SQL nativo vai para o banco como está, e a tabela ou o campo que não existe só para na execução. Ele é o do `SQL_DefinirComando` com `SQL_UsarSQLSenior2(x, 0)` e, na regra que não usa o Senior SQL 2, o do cursor e do `ExecSql`. Na regra sem a opção na exportação o modo não é conhecido, e o SEN086 e o SEN087 não saem no cursor nem no `ExecSql`. No cursor fica de fora o que o SEN074 e o SEN075 já acusaram.
+
+As conferências de tabela, cursor e lista usam a definição que a regra tem. Com o nome vindo de outra
+regra da tela, só valem as que não dependem das colunas, do tamanho ou dos campos. A lista de outra regra
+não diz os campos, então o SEN096 não acusa o membro dela, e a tabela de outra regra só entra no
+`t.coluna` sem índice (SEN093) e no índice alfa (SEN105). O SEN093 e o SEN094 conferem só o índice
+escrito como número, porque o ERP não confere variável nem expressão na compilação. A coluna `Alfa
+Nome[20]` não pede segundo índice, porque o `[n]` do alfa é o tamanho do texto.
+
+O segundo índice de `t[i].v[k]` é conferido contra o número de linhas da tabela, e não contra o
+tamanho da coluna. Com `t[3]` e `Numero v[2]`, o `v[3]` compila e grava na linha seguinte (SEN106),
+e o `v[4]` não compila (SEN094). O tamanho da tabela é guardado em 16 bits, então `[65536]` vira 0 e
+`[70000]` vira 4464 (SEN112), e o SEN094 usa o tamanho já cortado.
+
+O SEN095 só acusa `UsaTraducao` quando a exportação diz que a regra usa o SQL nativo. Sem a
+informação do modo, a regra fica sem aviso.
+
+A coluna da tabela sem nome (`Numero ;`) e a função de lista sem parênteses como comando
+(`lst.Primeiro;`) são erros de sintaxe que o parser já acusa, e por isso não têm código próprio aqui.
+
+O SEN097 compara os rótulos pelos 30 primeiros caracteres e sem diferença de caixa, e o nome de uma
+função não serve de rótulo. O ERP corta o nome da função em 31 caracteres. Com 32 ou mais a chamada não
+é reconhecida e não compila (SEN099), e com exatamente 31 compila e para na execução (SEN103). O
+SEN098 compara os 31 primeiros caracteres, e deixa passar a função que a regra da raiz da tela
+declara, como o SEN102 deixa passar a que outra regra da tela implementa. O SEN100 vale para qualquer
+função, do ERP ou da regra, e a conta numérica em argumento numérico compila. O SEN104 não vale nas
+funções do ERP, onde o texto literal é normal, e o parâmetro `end` com constante já é o SEN053.
+
+O SEN107 sai na segunda declaração. As chamadas são conferidas contra a primeira, que é a que vale
+(SEN048 e SEN049). O `Definir Funcao` repetido igual compila e não sai.
 
 O SEN071 cobre da primeira instrução depois do comando até a última do bloco, e o editor esmaece
 o trecho. Um rótulo (`nome:`) no meio do bloco volta a tornar o código alcançável, porque um

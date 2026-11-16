@@ -35,14 +35,17 @@ use crate::tbs::Field;
 use crate::{NodeId, SyntaxKind, Tree};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-/// Operações do cursor, que não são colunas. São as únicas que aparecem nas regras.
-const CURSOR_OPERATIONS: [&str; 6] = [
+/// Operações do cursor, que não são colunas. As seis primeiras são as que aparecem nas regras, e as
+/// duas últimas o ERP aceita (a `UsaTraducao` só com o Senior SQL 2, o que o SEN095 confere).
+const CURSOR_OPERATIONS: [&str; 8] = [
     "SQL",
     "ABRIRCURSOR",
     "FECHARCURSOR",
     "PROXIMO",
     "ACHOU",
     "NAOACHOU",
+    "USAABRANGENCIA",
+    "USATRADUCAO",
 ];
 
 /// Percorre um literal de string, com aspas, como o compilador o monta, e entrega cada caractere
