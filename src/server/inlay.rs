@@ -1,5 +1,6 @@
 //! Nome do parâmetro antes de cada argumento da chamada, como `IntParaAlfa(Origem: n, end
-//! Retorno: aTxt)`, sem mudar o texto do arquivo.
+//! Retorno: aTxt)`, e o tipo depois do primeiro uso de um nome sem `definir`, sem mudar o texto
+//! do arquivo.
 
 use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Range};
 
@@ -75,6 +76,24 @@ impl Context<'_> {
                 });
             }
         }
+        for name in implicit_names(self.doc) {
+            let position = self.range(name).end;
+            if position < range.start || position > range.end {
+                continue;
+            }
+            hints.push(InlayHint {
+                position,
+                label: InlayHintLabel::String(": numero".to_owned()),
+                kind: Some(InlayHintKind::TYPE),
+                text_edits: None,
+                tooltip: Some(lsp_types::InlayHintTooltip::String(
+                    "Sem definir. O compilador cria o nome como número.".to_owned(),
+                )),
+                padding_left: None,
+                padding_right: None,
+                data: None,
+            });
+        }
         hints.sort_by_key(|h| (h.position.line, h.position.character));
         hints
     }
@@ -88,4 +107,55 @@ fn param(text: &str) -> (&str, bool) {
         .split_whitespace()
         .any(|w| w.eq_ignore_ascii_case("end"));
     (name, by_ref)
+}
+
+/// Primeiro uso de cada nome que não tem `definir` no arquivo nem vem de outra regra, do ERP ou
+/// do dicionário, e que o compilador cria como número.
+pub(crate) fn implicit_names(doc: &super::documents::Document) -> Vec<text_size::TextRange> {
+    let tree = &doc.tree;
+    let text = &doc.text;
+    let mut seen = std::collections::HashSet::new();
+    let mut found = Vec::new();
+    let mut stack = vec![tree.root()];
+    while let Some(node) = stack.pop() {
+        // Filhos em ordem de texto, para o primeiro uso sair antes dos outros.
+        let children: Vec<_> = tree.children(node).collect();
+        stack.extend(children.into_iter().rev());
+        if tree.kind(node) != SyntaxKind::NameRef {
+            continue;
+        }
+        let range = tree.text_range(node);
+        let name = &text[range];
+        let parent = tree.parent(node);
+        let parent_kind = parent.map(|p| tree.kind(p));
+        let first = parent.is_some_and(|p| tree.children(p).next() == Some(node));
+        let member_or_call = match parent_kind {
+            Some(SyntaxKind::FieldExpr) => {
+                !first || doc.inherited.dictionaries.table(name).is_some()
+            }
+            Some(SyntaxKind::CallExpr) => first,
+            Some(SyntaxKind::Goto | SyntaxKind::Label) => true,
+            _ => false,
+        };
+        if member_or_call
+            // Tipo no `AdicionarCampo`, modo no `Abrir` e tipo do `Mensagem`, que são palavras
+            // do ERP e não variáveis.
+            || SyntaxKind::keyword(name).is_some()
+            || ["RETORNA", "ERRO", "REFAZ"]
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(name))
+            || doc.symbols.reference_at(range).is_some()
+            || crate::builtins::system_variable(name, doc.context).is_some()
+            || crate::builtins::lookup(name, doc.context).is_some()
+            || doc.inherited.variable(name).is_some()
+            || doc.inherited.is_entry(name)
+            || doc.inherited.contains(name)
+        {
+            continue;
+        }
+        if seen.insert(name.to_uppercase()) {
+            found.push(range);
+        }
+    }
+    found
 }

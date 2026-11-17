@@ -4530,3 +4530,32 @@ fn modelos_pos_fixados_envolvem_a_expressao() {
     assert!(completar("definir cursor cur;\ncur.se\n", 1, 6).is_empty());
     assert!(completar("definir alfa a;\na = \"x.se\";\n", 1, 9).is_empty());
 }
+
+#[test]
+fn dica_de_tipo_no_primeiro_uso_do_nome_sem_definir() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "definir alfa aTxt; definir cursor cur;\n\
+                nTotal = 0;\n\
+                nTotal = nTotal + 1;\n\
+                Mensagem(Retorna, aTxt);\n\
+                DesMontaData(DatSis, nDia, nMes, nAno);\n\
+                cur.SQL \"SELECT A FROM T\"; cur.AbrirCursor();\n\
+                VaPara Fim;\n\
+                Fim:\n";
+    editor.open(RULE, 1, text);
+    let response = editor.request(
+        lsp_types::request::InlayHintRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "range": { "start": { "line": 0, "character": 0 },
+                           "end": { "line": 99, "character": 0 } } }),
+    );
+    let hints: Vec<lsp_types::InlayHint> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    let found: Vec<String> = hints
+        .iter()
+        .filter(|h| h.kind == Some(lsp_types::InlayHintKind::TYPE))
+        .map(|h| format!("{}:{}", h.position.line, h.position.character))
+        .collect();
+    // Só o primeiro nTotal. Retorna, DatSis, o cursor, o membro e o rótulo ficam sem dica.
+    assert_eq!(found, ["1:6", "4:25", "4:31", "4:37"]);
+}
