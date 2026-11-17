@@ -4559,3 +4559,63 @@ fn dica_de_tipo_no_primeiro_uso_do_nome_sem_definir() {
     // Só o primeiro nTotal. Retorna, DatSis, o cursor, o membro e o rótulo ficam sem dica.
     assert_eq!(found, ["1:6", "4:25", "4:31", "4:37"]);
 }
+
+#[test]
+fn definir_todos_os_nomes_sem_definir() {
+    let (mut editor, _) = Editor::start(None);
+    let text =
+        "definir alfa aTxt;\nnTotal = 0;\naNome = \"x\";\nMensagem(Retorna, aTxt);\nnTotal = 1;\n";
+    editor.open(RULE, 1, text);
+    let fixed = apply_fix(&mut editor, text, 1, 1, "Definir os 2 nomes sem definir");
+    assert_eq!(
+        fixed,
+        "definir alfa aTxt;\ndefinir numero nTotal;\ndefinir alfa aNome;\nnTotal = 0;\naNome = \"x\";\n\
+         Mensagem(Retorna, aTxt);\nnTotal = 1;\n"
+    );
+    // A palavra do ERP não tem correção de definir.
+    let response = editor.request(
+        lsp_types::request::CodeActionRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "range": { "start": { "line": 3, "character": 11 },
+                           "end": { "line": 3, "character": 11 } },
+                "context": { "diagnostics": [] } }),
+    );
+    let titles = response.response_result.unwrap().to_string();
+    assert!(
+        !titles.contains("Retorna;") && !titles.contains("nomes sem definir"),
+        "{titles}"
+    );
+}
+
+#[test]
+fn edicao_ligada_entre_declaracao_e_implementacao() {
+    let (mut editor, _) = Editor::start(None);
+    assert!(editor.capabilities["linkedEditingRangeProvider"] == json!(true));
+    assert!(
+        editor.capabilities["codeActionProvider"]["codeActionKinds"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("source.fixAll"))
+    );
+    let text = "Definir Funcao Soma();\nSoma();\nFuncao Soma();\ninicio\nfim;\n";
+    editor.open(RULE, 1, text);
+    let ranges = |editor: &mut Editor, line: u32, character: u32| {
+        let response = editor.request(
+            lsp_types::request::LinkedEditingRange::METHOD,
+            json!({ "textDocument": { "uri": RULE }, "position": { "line": line, "character": character } }),
+        );
+        let result: Option<lsp_types::LinkedEditingRanges> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        result.map(|r| {
+            r.ranges
+                .iter()
+                .map(|r| (r.start.line, r.start.character, r.end.character))
+                .collect::<Vec<_>>()
+        })
+    };
+    let both = Some(vec![(0, 15, 19), (2, 7, 11)]);
+    assert_eq!(ranges(&mut editor, 0, 16), both);
+    assert_eq!(ranges(&mut editor, 2, 11), both);
+    // Na chamada não liga, quem muda as chamadas é o renomear.
+    assert_eq!(ranges(&mut editor, 1, 1), None);
+}

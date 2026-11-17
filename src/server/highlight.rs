@@ -9,6 +9,39 @@ use super::navigation::{Context, name_at};
 use crate::{Element, NodeId, SyntaxKind, Tree};
 
 impl Context<'_> {
+    /// Nome no `Definir Funcao` e na `funcao` da mesma função, que o editor muda junto enquanto
+    /// se digita num deles. As chamadas ficam para o renomear. `None` fora desses nomes.
+    pub(crate) fn linked_editing(
+        &self,
+        position: Position,
+    ) -> Option<lsp_types::LinkedEditingRanges> {
+        let offset = self.offset(position);
+        let symbols = &self.doc.symbols;
+        let start: Vec<usize> = symbols.at(offset)?;
+        let mut targets: rustc_hash::FxHashSet<usize> = start.into_iter().collect();
+        for r in &symbols.references {
+            if r.targets.iter().any(|t| targets.contains(t)) {
+                targets.extend(&r.targets);
+            }
+        }
+        let mut names: Vec<TextRange> = targets
+            .iter()
+            .map(|&t| &symbols.definitions[t])
+            .filter(|d| d.kind == crate::symbols::DefKind::Function)
+            .map(|d| d.name)
+            .collect();
+        names.sort_by_key(|r| r.start());
+        names.dedup();
+        // O cursor tem que estar num dos nomes ligados, não numa chamada.
+        if names.len() < 2 || !names.iter().any(|r| r.contains_inclusive(offset)) {
+            return None;
+        }
+        Some(lsp_types::LinkedEditingRanges {
+            ranges: names.into_iter().map(|r| self.range(r)).collect(),
+            word_pattern: None,
+        })
+    }
+
     /// Definições e usos do nome no cursor. A definição vem marcada como escrita e os usos como
     /// leitura. Um nome que o arquivo não define, como uma função do ERP, marca as outras
     /// ocorrências do mesmo nome no mesmo papel, chamada ou valor.

@@ -170,7 +170,24 @@ fn serve(connection: &Connection, out: Output) -> Result<()> {
                 retrigger_characters: None,
                 work_done_progress_options: Default::default(),
             }),
-            code_action_provider: Some(lsp_types::CodeActionProviderCapability::Simple(true)),
+            code_action_provider: Some(lsp_types::CodeActionProviderCapability::Options(
+                lsp_types::CodeActionOptions {
+                    // O editor monta os menus de correção e refatorar e roda o fixAll ao salvar
+                    // (`editor.codeActionsOnSave`) só com os tipos anunciados.
+                    code_action_kinds: Some(vec![
+                        lsp_types::CodeActionKind::QUICKFIX,
+                        lsp_types::CodeActionKind::REFACTOR_EXTRACT,
+                        lsp_types::CodeActionKind::REFACTOR_INLINE,
+                        lsp_types::CodeActionKind::REFACTOR_REWRITE,
+                        lsp_types::CodeActionKind::SOURCE_FIX_ALL,
+                    ]),
+                    resolve_provider: Some(false),
+                    work_done_progress_options: Default::default(),
+                },
+            )),
+            linked_editing_range_provider: Some(
+                lsp_types::LinkedEditingRangeServerCapabilities::Simple(true),
+            ),
             execute_command_provider: Some(lsp_types::ExecuteCommandOptions {
                 commands: vec![
                     kind::COMMAND.to_owned(),
@@ -718,6 +735,14 @@ impl Server<'_> {
                 Ok(match self.documents.get(&params.text_document.uri) {
                     Some(doc) => self.out.json(&folding::ranges(doc, self.encoding))?,
                     None => self.out.null(),
+                })
+            }
+            lsp_types::request::LinkedEditingRange::METHOD => {
+                let params: lsp_types::LinkedEditingRangeParams =
+                    serde_json::from_value(request.params)?;
+                let at = params.text_document_position_params;
+                self.with(&at.text_document.uri, Some(at.position), |c| {
+                    self.out.json(&c.linked_editing(at.position))
                 })
             }
             DocumentHighlightRequest::METHOD => {

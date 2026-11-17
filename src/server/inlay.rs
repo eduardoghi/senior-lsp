@@ -137,7 +137,19 @@ pub(crate) fn implicit_names(doc: &super::documents::Document) -> Vec<text_size:
             Some(SyntaxKind::Goto | SyntaxKind::Label) => true,
             _ => false,
         };
+        // As variáveis que cada identificador acrescenta começam com VS ou VE, como `VSCodEmp`, e
+        // o servidor não tem a lista delas. Compara bytes, porque um nome pode começar com letra
+        // acentuada.
+        let identifier_variable = doc.context == crate::builtins::Context::Rule
+            && name.len() > 2
+            && name
+                .as_bytes()
+                .get(..2)
+                .is_some_and(|p| p.eq_ignore_ascii_case(b"VS") || p.eq_ignore_ascii_case(b"VE"));
+        let ident = tree.tokens().kind(tree.token_range(node).start) == SyntaxKind::Ident;
         if member_or_call
+            || !ident
+            || identifier_variable
             // Tipo no `AdicionarCampo`, modo no `Abrir` e tipo do `Mensagem`, que são palavras
             // do ERP e não variáveis.
             || SyntaxKind::keyword(name).is_some()

@@ -31,6 +31,7 @@ O servidor oferece:
   tratar
 - correção rápida que cria o `definir` de um nome usado sem definição, com o tipo deduzido do uso
   (texto atribuído, parâmetro da função do ERP que recebe o nome ou a letra inicial, como `aTexto`)
+  e, com mais de um nome assim no arquivo, a que cria o `definir` de todos de uma vez
 - diagnósticos da pasta inteira, opcionais, sem abrir cada regra
 - correções rápidas que apagam a definição sem uso (SEN068), põem a comparação entre parênteses
   (SEN041), trocam o apóstrofo por maiúscula (SEN064), acrescentam o `SQL_UsarAbrangencia(obj, 0)`
@@ -147,6 +148,8 @@ O servidor oferece:
   sozinha depois do ponto. Nos outros lugares do texto ela abre com Ctrl+Espaço, a não ser que
   `editor.quickSuggestions` esteja ligado para `strings`
 - renomear num editor, trocando só o símbolo certo, nos outros arquivos do formulário SGI inclusive
+- edição ligada no nome do `Definir Funcao` e da `funcao`, que mudam juntos enquanto se digita num
+  deles. As chamadas ficam para o renomear
 
 ## Formatação
 

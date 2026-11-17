@@ -14,7 +14,8 @@ use crate::symbols::VarType;
 use crate::{NodeId, SyntaxKind, Tree};
 
 impl Context<'_> {
-    /// A ação que define o nome no cursor, quando ele não tem `definir` em lugar nenhum.
+    /// A ação que define o nome no cursor, quando ele não tem `definir` em lugar nenhum, e a que
+    /// define de uma vez todos os nomes assim do arquivo.
     pub(crate) fn define_actions(&self, position: Position) -> Vec<CodeAction> {
         // Dentro do JSON de modelo, a linha nova teria que ir para dentro do texto escapado.
         if self.embedding.is_some() {
@@ -26,51 +27,52 @@ impl Context<'_> {
         let Some((node, false)) = name_at(tree, offset) else {
             return Vec::new();
         };
-        let range = tree.text_range(node);
-        let name = &text[range];
-        if !self.undefined(node, range, name) {
+        let name = &text[tree.text_range(node)];
+        let implicit = super::inlay::implicit_names(self.doc);
+        let Some(&first) = implicit
+            .iter()
+            .find(|r| text[**r].eq_ignore_ascii_case(name))
+        else {
             return Vec::new();
+        };
+        let mut actions = vec![self.define_action(&[first], None)];
+        if implicit.len() > 1 {
+            let title = format!("Definir os {} nomes sem definir", implicit.len());
+            actions.push(self.define_action(&implicit, Some(title)));
         }
-        let ty = type_of(tree, text, self.doc.context, name);
-        let line = self.keyword_case(&format!("Definir {}", type_keyword(ty)));
-        let line = format!("{line} {name};");
-        let (at, insert) = self.insertion(range.start(), &line);
+        actions
+    }
+
+    /// Ação que escreve o `definir` de cada nome, com o tipo pelo uso, antes do primeiro deles.
+    /// `names` é o primeiro uso de cada um, em ordem de texto.
+    fn define_action(&self, names: &[TextRange], title: Option<String>) -> CodeAction {
+        let text = &self.doc.text;
+        let newline = newline(text);
+        let lines: Vec<String> = names
+            .iter()
+            .map(|&range| {
+                let name = &text[range];
+                let ty = type_of(&self.doc.tree, text, self.doc.context, name);
+                let keyword = self.keyword_case(&format!("Definir {}", type_keyword(ty)));
+                format!("{keyword} {name};")
+            })
+            .collect();
+        let (at, insert) = self.insertion(names[0].start(), &lines.join(newline));
         let position = self.range(TextRange::empty(at)).start;
         let edit = TextEdit::new(lsp_types::Range::new(position, position), insert);
         #[allow(clippy::mutable_key_type)]
         let changes = HashMap::from([(self.uri.clone(), vec![edit])]);
-        vec![CodeAction {
-            title: line,
+        let single = title.is_none();
+        CodeAction {
+            title: title.unwrap_or_else(|| lines[0].clone()),
             kind: Some(CodeActionKind::QUICKFIX),
             edit: Some(WorkspaceEdit {
                 changes: Some(changes),
                 ..WorkspaceEdit::default()
             }),
-            is_preferred: Some(true),
+            is_preferred: Some(single),
             ..CodeAction::default()
-        }]
-    }
-
-    /// O nome não tem definição no arquivo, nas outras regras nem no ERP.
-    fn undefined(&self, node: NodeId, range: TextRange, name: &str) -> bool {
-        let tree = &self.doc.tree;
-        let inherited = &self.doc.inherited;
-        let ident = tree.tokens().kind(tree.token_range(node).start) == SyntaxKind::Ident;
-        // As variáveis que cada identificador acrescenta começam com VS ou VE, como `VSCodEmp`, e
-        // o servidor não tem a lista delas.
-        // Compara bytes, porque um nome pode começar com letra acentuada.
-        let identifier_variable = self.doc.context == builtins::Context::Rule
-            && name.len() > 2
-            && name
-                .as_bytes()
-                .get(..2)
-                .is_some_and(|p| p.eq_ignore_ascii_case(b"VS") || p.eq_ignore_ascii_case(b"VE"));
-        ident
-            && !identifier_variable
-            && self.doc.symbols.reference_at(range).is_none()
-            && builtins::system_variable(name, self.doc.context).is_none()
-            && inherited.variable(name).is_none()
-            && !inherited.is_entry(name)
+        }
     }
 
     /// As palavras reservadas com a caixa que o arquivo já usa, pelo primeiro `definir` dele.
