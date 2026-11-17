@@ -4718,3 +4718,47 @@ fn correcoes_com_nome_acentuado_e_edicao_ligada_sem_chamada() {
         .collect();
     assert_eq!(ranges, [(0, 15), (1, 7)]);
 }
+
+#[test]
+fn acoes_seguem_o_nivel_novo_do_senior_lsp_json() {
+    // A lista de diagnósticos das ações fica guardada por texto, e o nível novo tem que valer
+    // sem o texto mudar.
+    let text = "definir numero nSobra;\n";
+    let (base, config, uri) = pasta_com_config(
+        "acoes-nivel",
+        r#"{ "diagnostics": { "SEN068": "off" } }"#,
+        "regras/R1.LSP/Rule.txt",
+        text,
+    );
+    let (mut editor, _) = Editor::start(None);
+    editor.open(&uri, 1, text);
+    editor.diagnostics();
+    let titles = |editor: &mut Editor| -> String {
+        let response = editor.request(
+            lsp_types::request::CodeActionRequest::METHOD,
+            json!({ "textDocument": { "uri": uri },
+                    "range": { "start": { "line": 0, "character": 16 },
+                               "end": { "line": 0, "character": 16 } },
+                    "context": { "diagnostics": [] } }),
+        );
+        response.response_result.unwrap().to_string()
+    };
+    let before = titles(&mut editor);
+    assert!(
+        !before.contains("SEN068") && !before.contains("Corrigir o arquivo"),
+        "{before}"
+    );
+    // A segunda vez vem da lista guardada.
+    assert_eq!(titles(&mut editor), before);
+
+    std::fs::write(&config, "{}").unwrap();
+    config_mudou(&editor, &config);
+    editor.diagnostics();
+    let after = titles(&mut editor);
+    assert!(
+        after.contains("SEN068") && after.contains("Corrigir o arquivo"),
+        "{after}"
+    );
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}

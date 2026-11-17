@@ -827,10 +827,12 @@ impl Server<'_> {
                         encoding: self.encoding,
                         embedding: None,
                     };
-                    let shown = self
-                        .diagnostics_of(&self.documents, uri)
-                        .map(|(diagnostics, _)| diagnostics)
-                        .unwrap_or_default();
+                    let levels = self.levels_of(uri);
+                    let shown = doc.shown(&levels, || {
+                        document_diagnostics(&self.documents, uri, &levels, self.encoding)
+                            .map(|(diagnostics, _)| diagnostics)
+                            .unwrap_or_default()
+                    });
                     actions.extend(
                         context
                             .define_actions(params.range.start)
@@ -851,11 +853,16 @@ impl Server<'_> {
                                     .into_iter()
                                     .flatten(),
                             )
-                            .chain(context.ignore_actions(params.range, &shown))
+                            .chain(context.ignore_actions(params.range, &shown.diagnostics))
                             .chain(self.extra_table_actions(&context, params.range))
                             .chain(
                                 wants(&lsp_types::CodeActionKind::SOURCE_FIX_ALL)
-                                    .then(|| context.fix_all(&shown))
+                                    .then(|| {
+                                        shown
+                                            .fix_all
+                                            .get_or_init(|| context.fix_all(&shown.diagnostics))
+                                            .clone()
+                                    })
                                     .flatten(),
                             )
                             .map(lsp_types::CodeActionOrCommand::CodeAction),
@@ -1200,6 +1207,9 @@ impl Server<'_> {
     }
 
     fn publish(&self, uri: &Uri) -> Result<()> {
+        if let Some(doc) = self.documents.get(uri) {
+            doc.forget_shown();
+        }
         match self.diagnostics_of(&self.documents, uri) {
             Some((diagnostics, version)) => {
                 self.send_diagnostics(uri.clone(), diagnostics, version)

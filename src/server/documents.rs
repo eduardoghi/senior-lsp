@@ -36,6 +36,8 @@ pub(crate) struct Document {
     scan: OnceCell<directives::Scan>,
     code_lines: OnceCell<Vec<usize>>,
     implicit: OnceCell<Vec<text_size::TextRange>>,
+    /// Diagnósticos montados para as ações de código, com os níveis que valeram para eles.
+    shown: std::cell::RefCell<Option<(super::config::Levels, Shown)>>,
 }
 
 impl Document {
@@ -60,6 +62,7 @@ impl Document {
             scan: OnceCell::new(),
             code_lines: OnceCell::new(),
             implicit: OnceCell::new(),
+            shown: Default::default(),
         }
     }
 
@@ -90,11 +93,46 @@ impl Document {
             .get_or_init(|| super::inlay::implicit_names(self))
     }
 
+    /// Diagnósticos do texto com estes níveis, para as ações de código. O editor pede ações a cada
+    /// movimento do cursor, e montar as mensagens de novo custava uns 5 µs por diagnóstico. Com
+    /// outros níveis, a lista é montada de novo.
+    pub(crate) fn shown(
+        &self,
+        levels: &super::config::Levels,
+        make: impl FnOnce() -> Vec<lsp_types::Diagnostic>,
+    ) -> Shown {
+        if let Some((cached, shown)) = self.shown.borrow().as_ref()
+            && cached == levels
+        {
+            return shown.clone();
+        }
+        let shown = Shown {
+            diagnostics: Arc::new(make()),
+            fix_all: Default::default(),
+        };
+        *self.shown.borrow_mut() = Some((levels.clone(), shown.clone()));
+        shown
+    }
+
+    /// Descarta a lista das ações de código, quando os diagnósticos são publicados de novo por
+    /// algo de fora do texto, como o `Port.json` do web service.
+    pub(crate) fn forget_shown(&self) {
+        self.shown.borrow_mut().take();
+    }
+
     /// Linhas com código, para as diretivas de próxima linha.
     pub(crate) fn code_lines(&self) -> &[usize] {
         self.code_lines
             .get_or_init(|| directives::code_lines(&self.tree, &self.index))
     }
+}
+
+/// Diagnósticos que o editor mostra, para as ações de código, e o "Corrigir o arquivo", que só
+/// depende deles e do texto, e não da posição do cursor.
+#[derive(Clone)]
+pub(crate) struct Shown {
+    pub(crate) diagnostics: Arc<Vec<lsp_types::Diagnostic>>,
+    pub(crate) fix_all: std::rc::Rc<OnceCell<Option<lsp_types::CodeAction>>>,
 }
 
 /// JSON de um modelo de relatório, com cada regra dele analisada como um documento.
