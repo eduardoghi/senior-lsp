@@ -1,7 +1,7 @@
 //! Busca de campo do dicionário pela descrição, para o comando da extensão que insere
 //! `TABELA.Campo` no cursor.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use serde::{Deserialize, Serialize};
 
@@ -33,14 +33,15 @@ pub(crate) struct FoundField {
 type Folded = Vec<(String, Vec<(String, String)>)>;
 
 /// O texto normalizado do último dicionário buscado. Refazer a cada tecla custaria percorrer e
-/// converter todas as descrições de novo.
-static CACHE: std::sync::Mutex<Option<(Arc<Dictionary>, Arc<Folded>)>> =
+/// converter todas as descrições de novo. A referência fraca deixa o dicionário antigo ser
+/// liberado depois do recarregar, e enquanto ela existe o endereço não é reaproveitado.
+static CACHE: std::sync::Mutex<Option<(Weak<Dictionary>, Arc<Folded>)>> =
     std::sync::Mutex::new(None);
 
 fn folded(dictionary: &Arc<Dictionary>) -> Arc<Folded> {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((cached, folded)) = cache.as_ref()
-        && Arc::ptr_eq(cached, dictionary)
+        && std::ptr::eq(cached.as_ptr(), Arc::as_ptr(dictionary))
     {
         return folded.clone();
     }
@@ -66,7 +67,7 @@ fn folded(dictionary: &Arc<Dictionary>) -> Arc<Folded> {
             })
             .collect(),
     );
-    *cache = Some((dictionary.clone(), folded.clone()));
+    *cache = Some((Arc::downgrade(dictionary), folded.clone()));
     folded
 }
 
@@ -139,6 +140,16 @@ mod tests {
             .into_iter()
             .map(|f| format!("{}.{}", f.tabela, f.campo))
             .collect()
+    }
+
+    #[test]
+    fn cache_nao_prende_o_dicionario() {
+        let bytes = std::fs::read("tests/fixtures/dicionario-ficticio.tbs").unwrap();
+        let dictionary = Arc::new(Dictionary::read(&bytes).unwrap());
+        search(&dictionary, "empresa");
+        let weak = Arc::downgrade(&dictionary);
+        drop(dictionary);
+        assert!(weak.upgrade().is_none());
     }
 
     #[test]

@@ -349,7 +349,13 @@ pub(crate) struct Watch(Vec<(PathBuf, Stamp)>);
 impl Watch {
     /// Registra o caminho antes de ele ser lido. Uma mudança entre o registro e a leitura só faz
     /// o resultado ser montado de novo na próxima consulta.
+    /// Um caminho já registrado fica com a data do primeiro registro. A herança de uma regra é
+    /// remontada a cada mudança na tela e registra de novo os mesmos arquivos de opção, que
+    /// iam se acumulando e sendo conferidos a cada tecla.
     pub(crate) fn add(&mut self, path: &Path) {
+        if self.0.iter().any(|(p, _)| p == path) {
+            return;
+        }
         self.0.push((path.to_path_buf(), stamp(path)));
     }
 
@@ -1048,6 +1054,15 @@ mod tests {
     /// Sem isso, duas mudanças no mesmo instante do relógio podem ficar com a mesma data.
     fn tick() {
         std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+
+    #[test]
+    fn vigia_nao_repete_caminho() {
+        let mut watch = Watch::default();
+        let path = std::path::Path::new("/nao/existe/senior-lsp.json");
+        watch.add(path);
+        watch.add(path);
+        assert_eq!(watch.0.len(), 1);
     }
 
     #[test]
