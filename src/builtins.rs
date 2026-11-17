@@ -131,7 +131,7 @@ static DOCUMENTATION_PAGES: LazyLock<FxHashMap<String, &'static str>> = LazyLock
 
 /// Endereço da página da função na documentação da Senior, quando ela tem uma.
 pub fn documentation(name: &str) -> Option<String> {
-    let path = DOCUMENTATION_PAGES.get(&name.to_uppercase())?;
+    let path = crate::with_upper(name, |upper| DOCUMENTATION_PAGES.get(upper))?;
     Some(format!("{DOCUMENTATION}{path}"))
 }
 
@@ -140,11 +140,12 @@ const SGI_FIELDS: [&str; 4] = ["CODOPE", "MSGERRO", "MSGAVISO", "TELOPE"];
 
 /// Tipo da variável do sistema com esse nome, incluindo os campos que a tela SGI sempre tem.
 pub fn system_variable(name: &str, context: Context) -> Option<VarType> {
-    let upper = name.to_uppercase();
-    if context == Context::Sgi && SGI_FIELDS.contains(&upper.as_str()) {
-        return Some(VarType::Alfa);
-    }
-    SYSTEM_VARIABLES.get(&upper).copied()
+    crate::with_upper(name, |upper| {
+        if context == Context::Sgi && SGI_FIELDS.contains(&upper) {
+            return Some(VarType::Alfa);
+        }
+        SYSTEM_VARIABLES.get(upper).copied()
+    })
 }
 
 /// Todas as funções do ERP do contexto, na ordem dos arquivos de declaração. Percorrer o índice
@@ -160,7 +161,7 @@ pub fn all(context: Context) -> impl Iterator<Item = &'static Builtin> {
 
 /// Função do ERP com esse nome no contexto, sem diferença de caixa.
 pub fn lookup(name: &str, context: Context) -> Option<&'static Builtin> {
-    let &(i, only) = TABLE.index.get(&name.to_uppercase())?;
+    let &(i, only) = crate::with_upper(name, |upper| TABLE.index.get(upper))?;
     only.is_none_or(|c| c == context)
         .then(|| &TABLE.builtins[i])
 }

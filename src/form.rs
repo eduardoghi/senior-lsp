@@ -64,7 +64,7 @@ pub struct Inherited {
 
 impl Inherited {
     pub fn get(&self, name: &str) -> Option<&InheritedDef> {
-        self.functions.get(&name.to_uppercase())
+        crate::with_upper(name, |key| self.functions.get(key))
     }
 
     pub fn functions(&self) -> impl Iterator<Item = &InheritedDef> {
@@ -78,20 +78,20 @@ impl Inherited {
     /// Diz se o nome é de uma entrada ou de um controle do relatório. Ele vem do cadastro do
     /// modelo, então renomear só nas regras quebra a ligação.
     pub fn is_entry(&self, name: &str) -> bool {
-        self.entries.contains(&name.to_uppercase())
+        crate::with_upper(name, |key| self.entries.contains(key))
     }
 
     pub fn variable(&self, name: &str) -> Option<&InheritedDef> {
-        self.variables.get(&name.to_uppercase())
+        crate::with_upper(name, |key| self.variables.get(key))
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        self.functions.contains_key(&name.to_uppercase())
+        crate::with_upper(name, |key| self.functions.contains_key(key))
     }
 
     /// A função tem a `funcao` numa regra que vem depois desta na tela.
     pub fn implemented_later(&self, name: &str) -> bool {
-        self.later_implemented.contains(&name.to_uppercase())
+        crate::with_upper(name, |key| self.later_implemented.contains(key))
     }
 
     /// Nenhuma definição de outra regra, só os dicionários de dados.

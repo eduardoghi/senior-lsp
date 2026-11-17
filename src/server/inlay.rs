@@ -78,11 +78,11 @@ impl Context<'_> {
             }
         }
         let implicit = if types {
-            implicit_names(self.doc)
+            self.doc.implicit_names()
         } else {
-            Vec::new()
+            &[]
         };
-        for name in implicit {
+        for &name in implicit {
             let position = self.range(name).end;
             if position < range.start || position > range.end {
                 continue;
@@ -122,11 +122,8 @@ pub(crate) fn implicit_names(doc: &super::documents::Document) -> Vec<text_size:
     let text = &doc.text;
     let mut seen = std::collections::HashSet::new();
     let mut found = Vec::new();
-    let mut stack = vec![tree.root()];
-    while let Some(node) = stack.pop() {
-        // Filhos em ordem de texto, para o primeiro uso sair antes dos outros.
-        let children: Vec<_> = tree.children(node).collect();
-        stack.extend(children.into_iter().rev());
+    // Em ordem de texto, para o primeiro uso sair antes dos outros.
+    for node in tree.nodes() {
         if tree.kind(node) != SyntaxKind::NameRef {
             continue;
         }

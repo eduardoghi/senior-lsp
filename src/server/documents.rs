@@ -35,6 +35,7 @@ pub(crate) struct Document {
     checks: OnceCell<Vec<Check>>,
     scan: OnceCell<directives::Scan>,
     code_lines: OnceCell<Vec<usize>>,
+    implicit: OnceCell<Vec<text_size::TextRange>>,
 }
 
 impl Document {
@@ -58,6 +59,7 @@ impl Document {
             checks: OnceCell::new(),
             scan: OnceCell::new(),
             code_lines: OnceCell::new(),
+            implicit: OnceCell::new(),
         }
     }
 
@@ -79,6 +81,13 @@ impl Document {
     pub(crate) fn scan(&self) -> &directives::Scan {
         self.scan
             .get_or_init(|| directives::scan(&self.text, &self.tree))
+    }
+
+    /// Primeiro uso de cada nome sem `definir`, para a dica de tipo e a correção de definir. A
+    /// dica é pedida a cada rolagem da tela, e o texto não muda entre elas.
+    pub(crate) fn implicit_names(&self) -> &[text_size::TextRange] {
+        self.implicit
+            .get_or_init(|| super::inlay::implicit_names(self))
     }
 
     /// Linhas com código, para as diretivas de próxima linha.

@@ -121,6 +121,12 @@ impl Tree {
         }
     }
 
+    /// Todos os nós em ordem de texto. Os nós ficam guardados em pré-ordem, o pai antes dos
+    /// filhos e cada filho antes do irmão seguinte.
+    pub fn nodes(&self) -> impl Iterator<Item = NodeId> + '_ {
+        (0..self.kinds.len() as u32).map(NodeId)
+    }
+
     /// Filhos que são nós, em ordem.
     pub fn children(&self, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
         let stop = self.next[node.0 as usize];

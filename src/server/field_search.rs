@@ -81,13 +81,18 @@ pub(crate) fn search(dictionary: &Arc<Dictionary>, text: &str) -> Vec<FoundField
     }
     let folded = folded(dictionary);
     let mut found = Vec::new();
+    let mut in_table = vec![false; words.len()];
     for (table, (table_text, fields)) in dictionary.tables.iter().zip(folded.iter()) {
+        // Uma vez por tabela, e não uma por campo dela.
+        for (has, w) in in_table.iter_mut().zip(&words) {
+            *has = table_text.contains(w.as_str());
+        }
         for (field, (own, titles)) in table.fields.iter().zip(fields) {
             let mut outside = 0;
-            let all = words.iter().all(|w| {
+            let all = words.iter().zip(&in_table).all(|(w, &has)| {
                 if own.contains(w.as_str()) {
                     true
-                } else if titles.contains(w.as_str()) || table_text.contains(w.as_str()) {
+                } else if has || titles.contains(w.as_str()) {
                     outside += 1;
                     true
                 } else {
@@ -99,10 +104,18 @@ pub(crate) fn search(dictionary: &Arc<Dictionary>, text: &str) -> Vec<FoundField
             }
         }
     }
-    found.sort_by(|a, b| (a.0, &a.1.name, &a.2.name).cmp(&(b.0, &b.1.name, &b.2.name)));
+    type Found<'a> = (usize, &'a crate::tbs::Table, &'a crate::tbs::Field);
+    let order =
+        |a: &Found, b: &Found| (a.0, &a.1.name, &a.2.name).cmp(&(b.0, &b.1.name, &b.2.name));
+    // Uma palavra curta acha dezenas de milhares de campos, e só os primeiros aparecem. Separa
+    // os primeiros sem ordenar o resto.
+    if found.len() > LIMIT {
+        found.select_nth_unstable_by(LIMIT, order);
+        found.truncate(LIMIT);
+    }
+    found.sort_by(order);
     found
         .into_iter()
-        .take(LIMIT)
         .map(|(_, table, field)| FoundField {
             tabela: table.name.clone(),
             campo: field.name.clone(),

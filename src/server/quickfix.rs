@@ -28,7 +28,7 @@ impl Context<'_> {
             return Vec::new();
         };
         let name = &text[tree.text_range(node)];
-        let implicit = super::inlay::implicit_names(self.doc);
+        let implicit = self.doc.implicit_names();
         // A mesma comparação de `implicit_names`, que junta `Ação` e `AÇÃO`.
         let key = name.to_uppercase();
         let Some(&first) = implicit.iter().find(|r| text[**r].to_uppercase() == key) else {
@@ -37,7 +37,7 @@ impl Context<'_> {
         let mut actions = vec![self.define_action(&[first], None)];
         if implicit.len() > 1 {
             let title = format!("Definir os {} nomes sem definir", implicit.len());
-            actions.push(self.define_action(&implicit, Some(title)));
+            actions.push(self.define_action(implicit, Some(title)));
         }
         actions
     }
@@ -47,11 +47,12 @@ impl Context<'_> {
     fn define_action(&self, names: &[TextRange], title: Option<String>) -> CodeAction {
         let text = &self.doc.text;
         let newline = newline(text);
-        let lines: Vec<String> = names
+        let list: Vec<&str> = names.iter().map(|&range| &text[range]).collect();
+        let types = types_of(&self.doc.tree, text, self.doc.context, &list);
+        let lines: Vec<String> = list
             .iter()
-            .map(|&range| {
-                let name = &text[range];
-                let ty = type_of(&self.doc.tree, text, self.doc.context, name);
+            .zip(types)
+            .map(|(name, ty)| {
                 let keyword = self.keyword_case(&format!("Definir {}", type_keyword(ty)));
                 format!("{keyword} {name};")
             })
@@ -131,11 +132,21 @@ fn type_keyword(ty: VarType) -> &'static str {
     }
 }
 
-/// Tipo pelo uso do nome no arquivo. Primeiro uma atribuição com texto do lado direito, depois um
-/// parâmetro de função do ERP que recebe o nome, depois a letra inicial que as regras costumam
-/// usar (`aTexto`, `nValor`, `dData`). Sem nada disso, número, que é o que o compilador cria.
-fn type_of(tree: &Tree, text: &str, context: builtins::Context, name: &str) -> VarType {
-    let mut from_call = None;
+/// Tipo de cada nome pelo uso no arquivo, numa passada só pela árvore. Primeiro uma atribuição
+/// com texto do lado direito, depois um parâmetro de função do ERP que recebe o nome, depois a
+/// letra inicial que as regras costumam usar (`aTexto`, `nValor`, `dData`). Sem nada disso,
+/// número, que é o que o compilador cria.
+fn types_of(tree: &Tree, text: &str, context: builtins::Context, names: &[&str]) -> Vec<VarType> {
+    // A comparação é sem diferença de caixa ASCII, como sempre foi.
+    let index: HashMap<String, usize> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.to_ascii_lowercase(), i))
+        .collect();
+    let slot = |range: TextRange| index.get(&text[range].to_ascii_lowercase()).copied();
+    let mut alfa = vec![false; names.len()];
+    let mut from_call: Vec<Option<VarType>> = vec![None; names.len()];
+    // A mesma ordem de visita de antes, que decide qual chamada vale quando há mais de uma.
     let mut stack = vec![tree.root()];
     while let Some(node) = stack.pop() {
         stack.extend(tree.children(node));
@@ -146,27 +157,37 @@ fn type_of(tree: &Tree, text: &str, context: builtins::Context, name: &str) -> V
                     continue;
                 };
                 if tree.kind(lhs) == SyntaxKind::NameRef
-                    && text[tree.text_range(lhs)].eq_ignore_ascii_case(name)
+                    && let Some(i) = slot(tree.text_range(lhs))
+                    && !alfa[i]
                     && has_string(tree, rhs)
                 {
-                    return VarType::Alfa;
+                    alfa[i] = true;
                 }
             }
-            SyntaxKind::CallExpr if from_call.is_none() => {
-                from_call = argument_type(tree, text, context, node, name);
+            SyntaxKind::CallExpr => {
+                argument_types(tree, text, context, node, &slot, &mut from_call)
             }
             _ => {}
         }
     }
-    if let Some(ty) = from_call {
-        return ty;
-    }
-    let mut chars = name.chars();
-    match (chars.next(), chars.next()) {
-        (Some('a'), Some(c)) if c.is_ascii_uppercase() => VarType::Alfa,
-        (Some('d'), Some(c)) if c.is_ascii_uppercase() => VarType::Data,
-        _ => VarType::Numero,
-    }
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            if alfa[i] {
+                return VarType::Alfa;
+            }
+            if let Some(ty) = from_call[i] {
+                return ty;
+            }
+            let mut chars = name.chars();
+            match (chars.next(), chars.next()) {
+                (Some('a'), Some(c)) if c.is_ascii_uppercase() => VarType::Alfa,
+                (Some('d'), Some(c)) if c.is_ascii_uppercase() => VarType::Data,
+                _ => VarType::Numero,
+            }
+        })
+        .collect()
 }
 
 /// O lado direito tem um texto entre aspas, como `"x"` ou `aA + "x"`.
@@ -187,23 +208,37 @@ fn has_string(tree: &Tree, node: NodeId) -> bool {
 }
 
 /// Tipo do parâmetro de função do ERP que recebe o nome como argumento.
-fn argument_type(
+/// Tipo do parâmetro da função do ERP para cada nome passado na chamada que ainda não tem tipo.
+/// Num nome repetido na chamada, vale o primeiro argumento com parâmetro.
+fn argument_types(
     tree: &Tree,
     text: &str,
     context: builtins::Context,
     call: NodeId,
-    name: &str,
-) -> Option<VarType> {
+    slot: &dyn Fn(TextRange) -> Option<usize>,
+    found: &mut [Option<VarType>],
+) {
     let mut children = tree.children(call);
-    let callee = children.next()?;
-    let args = children.find(|&c| tree.kind(c) == SyntaxKind::ArgList)?;
-    let builtin = builtins::lookup(&text[tree.text_range(callee)], context)?;
-    tree.children(args).enumerate().find_map(|(i, arg)| {
-        (tree.kind(arg) == SyntaxKind::NameRef
-            && text[tree.text_range(arg)].eq_ignore_ascii_case(name))
-        .then(|| builtin.params.get(i).map(|p| p.ty))
-        .flatten()
-    })
+    let Some(callee) = children.next() else {
+        return;
+    };
+    let Some(args) = children.find(|&c| tree.kind(c) == SyntaxKind::ArgList) else {
+        return;
+    };
+    let Some(builtin) = builtins::lookup(&text[tree.text_range(callee)], context) else {
+        return;
+    };
+    for (i, arg) in tree.children(args).enumerate() {
+        if tree.kind(arg) != SyntaxKind::NameRef {
+            continue;
+        }
+        if let Some(n) = slot(tree.text_range(arg))
+            && found[n].is_none()
+            && let Some(param) = builtin.params.get(i)
+        {
+            found[n] = Some(param.ty);
+        }
+    }
 }
 
 impl Context<'_> {

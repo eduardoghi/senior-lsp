@@ -554,12 +554,14 @@ impl Context<'_> {
         };
         let mut seen = std::collections::HashSet::new();
         let mut items = Vec::new();
-        let mut add = |name: &str, kind, detail: String, rank: char| {
+        // O detalhe só é montado para o nome que passa no filtro. Quase tudo é descartado pelo
+        // começo digitado, e montar antes copiava a declaração de cada função do ERP.
+        let mut add = |name: &str, kind, detail: &dyn Fn() -> String, rank: char| {
             if matches(name) && seen.insert(name.to_uppercase()) {
                 items.push(CompletionItem {
                     label: name.to_owned(),
                     kind: Some(kind),
-                    detail: Some(detail),
+                    detail: Some(detail()),
                     sort_text: Some(format!("{rank}{}", name.to_lowercase())),
                     ..CompletionItem::default()
                 });
@@ -581,13 +583,13 @@ impl Context<'_> {
                 DefKind::Function => CompletionItemKind::FUNCTION,
                 _ => CompletionItemKind::VARIABLE,
             };
-            add(&text[def.name], kind, self.header(def.node), '0');
+            add(&text[def.name], kind, &|| self.header(def.node), '0');
         }
         for def in self.doc.inherited.functions() {
             add(
                 &def.text[def.name],
                 CompletionItemKind::FUNCTION,
-                def.decl.clone(),
+                &|| def.decl.clone(),
                 '1',
             );
         }
@@ -595,7 +597,7 @@ impl Context<'_> {
             add(
                 &def.text[def.name],
                 CompletionItemKind::VARIABLE,
-                def.decl.clone(),
+                &|| def.decl.clone(),
                 '1',
             );
         }
@@ -603,7 +605,7 @@ impl Context<'_> {
             add(
                 builtin.name,
                 CompletionItemKind::FUNCTION,
-                builtin.decl.to_owned(),
+                &|| builtin.decl.to_owned(),
                 '2',
             );
         }
@@ -611,7 +613,7 @@ impl Context<'_> {
             add(
                 word,
                 CompletionItemKind::KEYWORD,
-                "palavra da linguagem".to_owned(),
+                &|| "palavra da linguagem".to_owned(),
                 '3',
             );
         }

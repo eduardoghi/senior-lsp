@@ -169,10 +169,9 @@ impl Symbols {
         }
         for (node, namespace, function) in uses {
             let range = tree.text_range(node);
-            let candidates = by_name
-                .get(&upper(&text[range]))
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
+            let candidates = crate::with_upper(&text[range], |key| {
+                by_name.get(key).map(Vec::as_slice).unwrap_or(&[])
+            });
             let (targets, foreign) = self.pick(candidates, namespace, function);
             if !targets.is_empty() {
                 self.references.push(Reference {
