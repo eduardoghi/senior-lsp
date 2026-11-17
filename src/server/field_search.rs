@@ -72,8 +72,7 @@ fn folded(dictionary: &Arc<Dictionary>) -> Arc<Folded> {
 
 /// Campos em que todas as palavras do texto aparecem no nome da tabela, no nome do campo, na
 /// descrição ou nos títulos, sem diferença de caixa nem de acento. Vêm primeiro os que têm mais
-/// palavras no nome e na descrição do próprio campo e, entre eles, os de descrição mais curta, que
-/// é a que mais se parece com o texto buscado.
+/// palavras no nome e na descrição do próprio campo, e em cada grupo a ordem é por tabela e campo.
 pub(crate) fn search(dictionary: &Arc<Dictionary>, text: &str) -> Vec<FoundField> {
     let words: Vec<String> = fold(text).split_whitespace().map(str::to_owned).collect();
     if words.is_empty() {
@@ -95,12 +94,11 @@ pub(crate) fn search(dictionary: &Arc<Dictionary>, text: &str) -> Vec<FoundField
                 }
             });
             if all {
-                found.push(((outside, field.description.len()), table, field));
+                found.push((outside, table, field));
             }
         }
     }
-    // Estável, então no empate fica a ordem do dicionário.
-    found.sort_by_key(|(rank, _, _)| *rank);
+    found.sort_by(|a, b| (a.0, &a.1.name, &a.2.name).cmp(&(b.0, &b.1.name, &b.2.name)));
     found
         .into_iter()
         .take(LIMIT)

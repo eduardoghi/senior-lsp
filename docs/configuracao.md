@@ -78,7 +78,7 @@ customização no CBDS, o comando `senior-lsp.recarregarDicionario` lê os dois 
 No VS Code, o "Senior LSP: Buscar campo do dicionário" procura um campo pelas palavras da
 descrição, dos títulos, do nome ou da tabela, sem diferença de acento, e insere `TABELA.Campo` no
 cursor. Cada palavra tem que aparecer em algum desses textos, e vêm primeiro os campos que têm todas
-na própria descrição. A busca usa o dicionário de produção, ou o de teste quando só ele está
+na própria descrição, em ordem de tabela e campo. A busca usa o dicionário de produção, ou o de teste quando só ele está
 configurado. Outro editor pode mandar o pedido `senior-lsp/buscarCampo` com `{ "texto": "..." }`,
 que devolve até 100 campos com `tabela`, `campo`, `tipo`, `descricao` e `descricaoTabela`, ou `null` sem dicionário.
 
