@@ -251,13 +251,16 @@ impl SyntaxKind {
     /// reservado. Recebe o identificador inteiro, então `E075PRO` não casa com `E`.
     pub fn keyword(ident: &str) -> Option<SyntaxKind> {
         let len = ident.len();
-        if len > MAX_KEYWORD_LEN {
+        if len == 0 || len > MAX_KEYWORD_LEN {
             return None;
         }
         let (words, starts) = &KEYWORDS_BY_LEN;
+        // O lexer pergunta para cada nome do arquivo. A primeira letra, que as palavras guardam em
+        // maiúscula, descarta quase todas antes da comparação inteira.
+        let first = ident.as_bytes()[0].to_ascii_uppercase();
         words[starts[len]..starts[len + 1]]
             .iter()
-            .find(|(text, _)| text.eq_ignore_ascii_case(ident))
+            .find(|(text, _)| text.as_bytes()[0] == first && text.eq_ignore_ascii_case(ident))
             .map(|&(_, kind)| kind)
     }
 }

@@ -94,6 +94,11 @@ impl LineIndex {
         TextSize::new((start + bytes) as u32)
     }
 
+    /// Começo de cada linha, em ordem.
+    pub fn starts(&self) -> &[TextSize] {
+        &self.line_starts
+    }
+
     pub fn line_count(&self) -> usize {
         self.line_starts.len()
     }

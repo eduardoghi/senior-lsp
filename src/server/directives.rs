@@ -222,17 +222,27 @@ fn words(text: &str, base: TextSize) -> Vec<(TextRange, &str)> {
 /// Linhas, a partir de zero, que têm algo além de espaço e comentário.
 pub(crate) fn code_lines(tree: &Tree, index: &LineIndex) -> Vec<usize> {
     let tokens = tree.tokens();
+    let starts = index.starts();
+    // Os tokens vêm em ordem, então a linha só anda para a frente. Buscar a linha de cada token
+    // no índice custava duas buscas binárias por token, a cada tecla.
+    let mut line = 0;
+    let line_of = |line: &mut usize, offset: TextSize| {
+        while starts.get(*line + 1).is_some_and(|&next| next <= offset) {
+            *line += 1;
+        }
+        *line
+    };
     let mut lines: Vec<usize> = Vec::new();
     for i in 0..tokens.len() {
         let range = tokens.range(i);
         if tokens.kind(i).is_trivia() || range.is_empty() {
             continue;
         }
-        let first = index.line_of(range.start());
-        let last = index.line_of(range.end() - TextSize::new(1));
-        for line in first..=last {
-            if lines.last() != Some(&line) {
-                lines.push(line);
+        let first = line_of(&mut line, range.start());
+        let last = line_of(&mut line, range.end() - TextSize::new(1));
+        for l in first..=last {
+            if lines.last() != Some(&l) {
+                lines.push(l);
             }
         }
     }

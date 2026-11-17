@@ -23,7 +23,6 @@ impl Context<'_> {
         }
         let doc = self.doc;
         let scan = doc.scan();
-        let lines = doc.code_lines();
         let mut done: Vec<(&str, u32)> = Vec::new();
         let mut actions = Vec::new();
         for d in shown {
@@ -36,6 +35,8 @@ impl Context<'_> {
                 continue;
             }
             done.push((code, line));
+            // Só aqui, porque a maioria dos pedidos não tem aviso no cursor.
+            let lines = doc.code_lines();
             let line = line as usize;
             let above = scan.directives.iter().find(|dir| {
                 let end = directives::end_line(&doc.index, dir.comment);
