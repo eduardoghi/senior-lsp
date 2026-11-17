@@ -4645,3 +4645,76 @@ fn opcao_dica_tipo_desliga_so_a_dica_de_tipo() {
     );
     assert_eq!(kinds(&mut editor), [parameter, ty, parameter]);
 }
+
+#[test]
+fn modelos_pos_fixados_com_acento_e_objeto_de_outra_regra() {
+    let completar = |editor: &mut Editor, uri: &str, line: u32, character: u32| {
+        let response = editor.request(
+            lsp_types::request::Completion::METHOD,
+            json!({ "textDocument": { "uri": uri }, "position": { "line": line, "character": character } }),
+        );
+        let items: Vec<lsp_types::CompletionItem> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        items
+            .into_iter()
+            .filter(|i| i.filter_text.as_deref().is_some_and(|f| f.contains('.')))
+            .collect::<Vec<_>>()
+    };
+
+    // O nome acentuado entra inteiro na troca.
+    let (mut editor, _) = Editor::start_with(None, json!({ "snippetSupport": true }));
+    let text = "definir numero Ação;\nAção.se\n";
+    editor.open(RULE, 1, text);
+    let found = completar(&mut editor, RULE, 1, 7);
+    let Some(lsp_types::CompletionTextEdit::Edit(edit)) = &found[0].text_edit else {
+        panic!("sem troca");
+    };
+    assert_eq!(edit.range.start.character, 0, "{edit:?}");
+    assert_eq!(edit.new_text, "se (Ação) {\n\t$0\n}");
+    editor.stop();
+
+    // O cursor da regra da raiz da tela é objeto também na ação.
+    let base = std::env::temp_dir().join(format!("senior-lsp-posfixo-{}", std::process::id()));
+    let form = base.join("Formulários SGI/interface/F1");
+    std::fs::create_dir_all(form.join("actions/A1")).unwrap();
+    std::fs::write(
+        form.join("rule.txt"),
+        "definir cursor cur;\ndefinir lista lst;\n",
+    )
+    .unwrap();
+    let action = form.join("actions/A1/rule.txt");
+    let text = "cur.\nlst.\n";
+    std::fs::write(&action, text).unwrap();
+    let uri = crate::form::uri_from_path(&action);
+    let (mut editor, _) = Editor::start_with(None, json!({ "snippetSupport": true }));
+    editor.open(&uri, 1, text);
+    assert!(completar(&mut editor, &uri, 0, 4).is_empty());
+    assert!(completar(&mut editor, &uri, 1, 4).is_empty());
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn correcoes_com_nome_acentuado_e_edicao_ligada_sem_chamada() {
+    let (mut editor, _) = Editor::start(None);
+    // O segundo uso, em outra caixa, também tem a correção.
+    let text = "Ação = 1;\nAÇÃO = 2;\n";
+    editor.open(RULE, 1, text);
+    let fixed = apply_fix(&mut editor, text, 1, 1, "Definir Numero Ação;");
+    assert_eq!(fixed, "Definir Numero Ação;\nAção = 1;\nAÇÃO = 2;\n");
+
+    let text = "Definir Funcao Soma();\nFuncao Soma();\ninicio\nfim;\n";
+    editor.open(RULE, 2, text);
+    let response = editor.request(
+        lsp_types::request::LinkedEditingRange::METHOD,
+        json!({ "textDocument": { "uri": RULE }, "position": { "line": 1, "character": 8 } }),
+    );
+    let result: lsp_types::LinkedEditingRanges =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    let ranges: Vec<_> = result
+        .ranges
+        .iter()
+        .map(|r| (r.start.line, r.start.character))
+        .collect();
+    assert_eq!(ranges, [(0, 15), (1, 7)]);
+}

@@ -687,14 +687,26 @@ impl Context<'_> {
         };
         let expression = &head[start..];
         // Nome sozinho de objeto: o ponto é o membro dele, e o completar de membros cuida.
+        let object = |kind: DefKind| {
+            matches!(
+                kind,
+                DefKind::Cursor | DefKind::List | DefKind::Table | DefKind::WebService
+            )
+        };
+        let key = expression.to_uppercase();
         let is_object = !expression.contains(['.', '(', '[']) && {
-            self.doc.symbols.definitions.iter().any(|d| {
-                text[d.name].eq_ignore_ascii_case(expression)
-                    && matches!(
-                        d.kind,
-                        DefKind::Cursor | DefKind::List | DefKind::Table | DefKind::WebService
-                    )
-            }) || self.doc.inherited.dictionaries.table(expression).is_some()
+            self.doc
+                .symbols
+                .definitions
+                .iter()
+                .any(|d| text[d.name].to_uppercase() == key && object(d.kind))
+                // O cursor ou a lista de outra regra da tela também.
+                || self
+                    .doc
+                    .inherited
+                    .variable(expression)
+                    .is_some_and(|v| object(v.kind))
+                || self.doc.inherited.dictionaries.table(expression).is_some()
         };
         if is_object {
             return Vec::new();
@@ -962,29 +974,28 @@ const KEYWORDS: &[&str] = &[
 /// Começo da expressão que termina no fim de `head`: nomes ligados por ponto, com chamadas e
 /// índices entre parênteses e colchetes. `None` quando não há expressão ali.
 fn expression_start(head: &str) -> Option<usize> {
-    let bytes = head.as_bytes();
-    let mut i = bytes.len();
+    // Por caractere, porque o nome pode ter letra acentuada, como `Ação`.
+    let mut start = head.len();
     let mut depth = 0usize;
-    while i > 0 {
-        let b = bytes[i - 1];
-        match b {
-            b')' | b']' => depth += 1,
-            b'(' | b'[' if depth > 0 => depth -= 1,
-            b'(' | b'[' => break,
+    for (i, c) in head.char_indices().rev() {
+        match c {
+            ')' | ']' => depth += 1,
+            '(' | '[' if depth > 0 => depth -= 1,
+            '(' | '[' => break,
             _ if depth > 0 => {}
-            b'.' | b'_' => {}
-            _ if b.is_ascii_alphanumeric() => {}
+            '.' | '_' => {}
+            _ if c.is_alphanumeric() => {}
             _ => break,
         }
-        i -= 1;
+        start = i;
     }
-    if depth > 0 || i == bytes.len() {
+    if depth > 0 || start == head.len() {
         return None;
     }
     // A expressão começa num nome ou num parêntese, e não termina em ponto.
-    let first = bytes[i];
-    (first.is_ascii_alphabetic() || first == b'_' || first == b'(')
-        .then_some(i)
+    let first = head[start..].chars().next()?;
+    (first.is_alphabetic() || first == '_' || first == '(')
+        .then_some(start)
         .filter(|_| !head.ends_with('.'))
 }
 

@@ -17,23 +17,29 @@ impl Context<'_> {
     ) -> Option<lsp_types::LinkedEditingRanges> {
         let offset = self.offset(position);
         let symbols = &self.doc.symbols;
-        let start: Vec<usize> = symbols.at(offset)?;
-        let mut targets: rustc_hash::FxHashSet<usize> = start.into_iter().collect();
-        for r in &symbols.references {
-            if r.targets.iter().any(|t| targets.contains(t)) {
-                targets.extend(&r.targets);
-            }
-        }
-        let mut names: Vec<TextRange> = targets
+        let text = &self.doc.text;
+        let function =
+            |d: &&crate::symbols::Definition| d.kind == crate::symbols::DefKind::Function;
+        let here = symbols
+            .definitions
             .iter()
-            .map(|&t| &symbols.definitions[t])
-            .filter(|d| d.kind == crate::symbols::DefKind::Function)
+            .filter(function)
+            .find(|d| d.name.contains_inclusive(offset))?;
+        // Pelo nome, e não pelas referências, porque sem chamada nada liga as duas definições.
+        // O ERP compara os 31 primeiros caracteres.
+        let key =
+            |range: TextRange| -> String { text[range].to_uppercase().chars().take(31).collect() };
+        let wanted = key(here.name);
+        let mut names: Vec<TextRange> = symbols
+            .definitions
+            .iter()
+            .filter(function)
+            .filter(|d| key(d.name) == wanted)
             .map(|d| d.name)
             .collect();
         names.sort_by_key(|r| r.start());
         names.dedup();
-        // O cursor tem que estar num dos nomes ligados, não numa chamada.
-        if names.len() < 2 || !names.iter().any(|r| r.contains_inclusive(offset)) {
+        if names.len() < 2 {
             return None;
         }
         Some(lsp_types::LinkedEditingRanges {

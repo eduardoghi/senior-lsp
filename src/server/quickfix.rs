@@ -29,10 +29,9 @@ impl Context<'_> {
         };
         let name = &text[tree.text_range(node)];
         let implicit = super::inlay::implicit_names(self.doc);
-        let Some(&first) = implicit
-            .iter()
-            .find(|r| text[**r].eq_ignore_ascii_case(name))
-        else {
+        // A mesma comparação de `implicit_names`, que junta `Ação` e `AÇÃO`.
+        let key = name.to_uppercase();
+        let Some(&first) = implicit.iter().find(|r| text[**r].to_uppercase() == key) else {
             return Vec::new();
         };
         let mut actions = vec![self.define_action(&[first], None)];
