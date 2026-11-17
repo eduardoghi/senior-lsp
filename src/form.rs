@@ -62,8 +62,12 @@ pub struct Inherited {
     later_implemented: std::collections::HashSet<String>,
 }
 
+// Na regra comum a herança é vazia, e as buscas saem antes de passar o nome para maiúsculas.
 impl Inherited {
     pub fn get(&self, name: &str) -> Option<&InheritedDef> {
+        if self.functions.is_empty() {
+            return None;
+        }
         crate::with_upper(name, |key| self.functions.get(key))
     }
 
@@ -78,20 +82,25 @@ impl Inherited {
     /// Diz se o nome é de uma entrada ou de um controle do relatório. Ele vem do cadastro do
     /// modelo, então renomear só nas regras quebra a ligação.
     pub fn is_entry(&self, name: &str) -> bool {
-        crate::with_upper(name, |key| self.entries.contains(key))
+        !self.entries.is_empty() && crate::with_upper(name, |key| self.entries.contains(key))
     }
 
     pub fn variable(&self, name: &str) -> Option<&InheritedDef> {
+        if self.variables.is_empty() {
+            return None;
+        }
         crate::with_upper(name, |key| self.variables.get(key))
     }
 
     pub fn contains(&self, name: &str) -> bool {
-        crate::with_upper(name, |key| self.functions.contains_key(key))
+        !self.functions.is_empty()
+            && crate::with_upper(name, |key| self.functions.contains_key(key))
     }
 
     /// A função tem a `funcao` numa regra que vem depois desta na tela.
     pub fn implemented_later(&self, name: &str) -> bool {
-        crate::with_upper(name, |key| self.later_implemented.contains(key))
+        !self.later_implemented.is_empty()
+            && crate::with_upper(name, |key| self.later_implemented.contains(key))
     }
 
     /// Nenhuma definição de outra regra, só os dicionários de dados.
