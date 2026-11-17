@@ -875,12 +875,12 @@ impl Server<'_> {
             field_search::FIELD_SEARCH_REQUEST => {
                 let params: field_search::FieldSearch = serde_json::from_value(request.params)?;
                 let dictionaries = crate::dictionary::current();
+                // `null` sem dicionário, para o editor avisar em vez de mostrar uma lista vazia.
                 let found = dictionaries
                     .production
                     .as_ref()
                     .or(dictionaries.test.as_ref())
-                    .map(|d| field_search::search(d, &params.texto))
-                    .unwrap_or_default();
+                    .map(|d| field_search::search(d, &params.texto));
                 Ok(self.out.json(&found)?)
             }
             parameters::ADD_PARAMETER_REQUEST => {

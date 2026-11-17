@@ -422,9 +422,9 @@ async function searchField(): Promise<void> {
         timer = setTimeout(async () => {
             const id = ++sent;
             pick.busy = true;
-            let found: FoundField[] = [];
+            let found: FoundField[] | null = [];
             try {
-                found = await client!.sendRequest<FoundField[]>("senior-lsp/buscarCampo", { texto: value });
+                found = await client!.sendRequest<FoundField[] | null>("senior-lsp/buscarCampo", { texto: value });
             } catch {
                 // Servidor reiniciando ou sem dicionário. A lista fica vazia.
             }
@@ -433,6 +433,21 @@ async function searchField(): Promise<void> {
                 return;
             }
             pick.busy = false;
+            if (found === null) {
+                pick.items = [
+                    {
+                        label: "Nenhum dicionário configurado",
+                        detail: "Informe o caminho do sapiens.tbs em seniorLsp.tbsProducao ou seniorLsp.tbsTeste.",
+                        alwaysShow: true,
+                        text: "",
+                    },
+                ];
+                return;
+            }
+            if (found.length === 0 && value.trim() !== "") {
+                pick.items = [{ label: "Nenhum campo com essas palavras", alwaysShow: true, text: "" }];
+                return;
+            }
             pick.items = found.map((f) => ({
                 label: `${f.tabela}.${f.campo}`,
                 description: f.tipo,
@@ -445,7 +460,7 @@ async function searchField(): Promise<void> {
     pick.onDidAccept(async () => {
         const chosen = pick.selectedItems[0];
         pick.hide();
-        if (chosen) {
+        if (chosen?.text) {
             await editor.edit((edit) => {
                 for (const selection of editor.selections) {
                     edit.replace(selection, chosen.text);
