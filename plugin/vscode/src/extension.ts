@@ -52,6 +52,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         statusBar,
         vscode.commands.registerCommand("seniorLsp.restart", () => restart(context, output)),
         vscode.commands.registerCommand("seniorLsp.escolherTipo", () => chooseKind()),
+        vscode.commands.registerCommand("seniorLsp.buscarCampo", () => searchField()),
         // Clique na contagem de referências em cima de cada função. O servidor manda o JSON do
         // protocolo, e o painel do VS Code precisa dos tipos dele.
         vscode.commands.registerCommand(
@@ -391,4 +392,70 @@ async function addParameter(uri: string, position: LspPosition, at: number): Pro
         const message = err instanceof Error ? err.message : String(err);
         void vscode.window.showErrorMessage(`Não foi possível acrescentar o parâmetro porque ${message}`);
     }
+}
+
+/** Campo que o servidor achou no dicionário. */
+interface FoundField {
+    tabela: string;
+    campo: string;
+    tipo: string;
+    descricao: string;
+    descricaoTabela: string;
+}
+
+/**
+ * Busca um campo do dicionário pela descrição e insere `TABELA.Campo` no cursor. A busca é do
+ * servidor, sem acento e com todas as palavras, então a lista não usa o filtro do VS Code.
+ */
+async function searchField(): Promise<void> {
+    const editor = vscode.window.activeTextEditor;
+    if (!client || !editor) {
+        return;
+    }
+    const pick = vscode.window.createQuickPick<vscode.QuickPickItem & { text: string }>();
+    pick.placeholder = "Palavras da descrição, da tabela ou do nome, como: data emissão nota";
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let sent = 0;
+    pick.onDidChangeValue((value) => {
+        clearTimeout(timer);
+        // Espera a digitação parar, para não buscar o dicionário a cada tecla.
+        timer = setTimeout(async () => {
+            const id = ++sent;
+            pick.busy = true;
+            let found: FoundField[] = [];
+            try {
+                found = await client!.sendRequest<FoundField[]>("senior-lsp/buscarCampo", { texto: value });
+            } catch {
+                // Servidor reiniciando ou sem dicionário. A lista fica vazia.
+            }
+            // Uma resposta antiga que chega depois da nova não troca a lista.
+            if (id !== sent) {
+                return;
+            }
+            pick.busy = false;
+            pick.items = found.map((f) => ({
+                label: `${f.tabela}.${f.campo}`,
+                description: f.tipo,
+                detail: `${f.descricao} (${f.descricaoTabela})`,
+                alwaysShow: true,
+                text: `${f.tabela}.${f.campo}`,
+            }));
+        }, 150);
+    });
+    pick.onDidAccept(async () => {
+        const chosen = pick.selectedItems[0];
+        pick.hide();
+        if (chosen) {
+            await editor.edit((edit) => {
+                for (const selection of editor.selections) {
+                    edit.replace(selection, chosen.text);
+                }
+            });
+        }
+    });
+    pick.onDidHide(() => {
+        clearTimeout(timer);
+        pick.dispose();
+    });
+    pick.show();
 }

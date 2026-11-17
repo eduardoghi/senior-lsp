@@ -116,6 +116,11 @@
                 "category": "Senior LSP"
             },
             {
+                "command": "seniorLsp.buscarCampo",
+                "title": "Buscar campo do dicionário",
+                "category": "Senior LSP"
+            },
+            {
                 "command": "seniorLsp.restart",
                 "title": "Reiniciar o servidor",
                 "category": "Senior LSP"

@@ -10,6 +10,7 @@ mod diagnostics;
 mod directives;
 mod documents;
 mod extract;
+mod field_search;
 mod folding;
 mod formatting;
 mod highlight;
@@ -870,6 +871,17 @@ impl Server<'_> {
                     return Err(Failure::boxed(ErrorCode::InvalidParams, message));
                 }
                 Ok(self.out.null())
+            }
+            field_search::FIELD_SEARCH_REQUEST => {
+                let params: field_search::FieldSearch = serde_json::from_value(request.params)?;
+                let dictionaries = crate::dictionary::current();
+                let found = dictionaries
+                    .production
+                    .as_ref()
+                    .or(dictionaries.test.as_ref())
+                    .map(|d| field_search::search(d, &params.texto))
+                    .unwrap_or_default();
+                Ok(self.out.json(&found)?)
             }
             parameters::ADD_PARAMETER_REQUEST => {
                 let params: parameters::AddParameter = serde_json::from_value(request.params)?;

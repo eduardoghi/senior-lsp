@@ -75,6 +75,13 @@ minutos fora da digitação, para ler de novo o que mudou. Depois de uma atualiz
 customização no CBDS, o comando `senior-lsp.recarregarDicionario` lê os dois na hora. No VS Code ele
 é o "Senior LSP: Recarregar o dicionário de dados" da paleta de comandos.
 
+No VS Code, o "Senior LSP: Buscar campo do dicionário" procura um campo pelas palavras da
+descrição, dos títulos, do nome ou da tabela, sem diferença de acento, e insere `TABELA.Campo` no
+cursor. Cada palavra tem que aparecer em algum desses textos, e vêm primeiro os campos que têm todas
+na própria descrição. A busca usa o dicionário de produção, ou o de teste quando só ele está
+configurado. Outro editor pode mandar o pedido `senior-lsp/buscarCampo` com `{ "texto": "..." }`,
+que devolve até 100 campos com `tabela`, `campo`, `tipo`, `descricao` e `descricaoTabela`.
+
 O executável também imprime as tabelas e os campos em texto, uma linha por tabela e uma por
 campo, separadas por tabulação:
 
