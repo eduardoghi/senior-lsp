@@ -90,6 +90,11 @@
                     "default": false,
                     "description": "Analisa todas as regras da pasta aberta ao iniciar, e não só os arquivos abertos, e mostra os problemas de todas no painel Problemas."
                 },
+                "seniorLsp.dicaTipo": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Mostra : numero depois do primeiro uso de um nome sem definir, que o compilador cria como número. Os nomes de parâmetro nas chamadas não mudam."
+                },
                 "seniorLsp.tbsProducao": {
                     "type": "string",
                     "default": "",

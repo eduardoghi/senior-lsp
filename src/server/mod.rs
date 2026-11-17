@@ -101,6 +101,7 @@ fn serve(connection: &Connection, out: Output) -> Result<()> {
     let folders = params.folders.clone();
     let analyze_folders = analyze_folders(params.options);
     let ask_parameters = ask_parameters(params.options);
+    let type_hints = type_hints(params.options);
     let encoding = negotiate_encoding(&params);
     let result = InitializeResult {
         capabilities: ServerCapabilities {
@@ -215,6 +216,8 @@ fn serve(connection: &Connection, out: Output) -> Result<()> {
         folders,
         analyze_folders,
         ask_parameters,
+        type_hints,
+        refresh_hints: params.refresh_hints,
         snippets: params.snippets,
         progress: params.progress,
         index: Default::default(),
@@ -265,6 +268,8 @@ struct ClientInit<'a> {
     snippets: bool,
     /// O editor mostra o progresso que o servidor manda pelo `$/progress`.
     progress: bool,
+    /// O editor aceita o `workspace/inlayHint/refresh`.
+    refresh_hints: bool,
 }
 
 impl<'a> ClientInit<'a> {
@@ -284,6 +289,10 @@ impl<'a> ClientInit<'a> {
             .pointer("/capabilities/general/positionEncodings")
             .and_then(|e| e.as_array())
             .is_some_and(|kinds| kinds.iter().any(|k| k.as_str() == Some("utf-8")));
+        let refresh_hints = params
+            .pointer("/capabilities/workspace/inlayHint/refreshSupport")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let snippets = params
             .pointer("/capabilities/textDocument/completion/completionItem/snippetSupport")
             .and_then(serde_json::Value::as_bool)
@@ -301,6 +310,7 @@ impl<'a> ClientInit<'a> {
             utf8,
             snippets,
             progress,
+            refresh_hints,
         }
     }
 }
@@ -321,7 +331,7 @@ fn option_warnings(options: Options) -> Vec<String> {
         }
         let problem = match key.as_str() {
             "tbs_producao" | "tbs_teste" if !value.is_string() => Some("deveria ser texto"),
-            "analisar_pasta" | "acrescentar_parametro" if !value.is_boolean() => {
+            "analisar_pasta" | "acrescentar_parametro" | "dica_tipo" if !value.is_boolean() => {
                 Some("deveria ser true ou false")
             }
             "tipo_padrao" => match value.as_str() {
@@ -331,7 +341,11 @@ fn option_warnings(options: Options) -> Vec<String> {
                 }
                 Some(_) => None,
             },
-            "tbs_producao" | "tbs_teste" | "analisar_pasta" | "acrescentar_parametro" => None,
+            "tbs_producao"
+            | "tbs_teste"
+            | "analisar_pasta"
+            | "acrescentar_parametro"
+            | "dica_tipo" => None,
             _ => Some("não é uma opção do senior-lsp"),
         };
         if let Some(problem) = problem {
@@ -384,6 +398,15 @@ fn ask_parameters(options: Options) -> bool {
         .get("acrescentar_parametro")
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
+}
+
+/// Opção `dica_tipo`, que mostra `: numero` depois do primeiro uso de um nome sem `definir`.
+/// Ligada sem a opção.
+fn type_hints(options: Options) -> bool {
+    options
+        .get("dica_tipo")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
 }
 
 /// Opção `analisar_pasta`, que liga os diagnósticos da pasta inteira.
@@ -445,6 +468,11 @@ struct Server<'a> {
     analyze_folders: bool,
     /// Opção `acrescentar_parametro`: o editor pergunta o que o parâmetro novo precisa.
     ask_parameters: bool,
+    /// Dica de tipo no nome sem `definir`, pela opção `dica_tipo`.
+    type_hints: bool,
+    /// O editor aceita o `workspace/inlayHint/refresh`, para pedir as dicas de novo quando a
+    /// opção muda.
+    refresh_hints: bool,
     /// O editor aceita snippets, e o completar oferece os modelos de comando.
     snippets: bool,
     /// O editor mostra o progresso da análise da pasta.
@@ -683,7 +711,8 @@ impl Server<'_> {
                             encoding: self.encoding,
                             embedding: None,
                         };
-                        self.out.json(&context.inlay_hints(params.range))?
+                        self.out
+                            .json(&context.inlay_hints(params.range, self.type_hints))?
                     }
                     None => self.out.null(),
                 })
@@ -1221,6 +1250,16 @@ impl Server<'_> {
             .filter(|&on| on != self.analyze_folders);
         if options.get("acrescentar_parametro").is_some() {
             self.ask_parameters = ask_parameters(options);
+        }
+        if options.get("dica_tipo").is_some() && type_hints(options) != self.type_hints {
+            self.type_hints = type_hints(options);
+            if self.refresh_hints {
+                self.out.request(
+                    lsp_server::RequestId::from("dica_tipo".to_owned()),
+                    "workspace/inlayHint/refresh",
+                    &serde_json::Value::Null,
+                )?;
+            }
         }
         self.default_kind = kind.unwrap_or(self.default_kind);
         self.analyze_folders = folders.unwrap_or(self.analyze_folders);

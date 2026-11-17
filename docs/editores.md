@@ -24,9 +24,10 @@ code --install-extension senior-lsp-*.vsix
 As configurações são `seniorLsp.server.path`, para usar outro executável, `seniorLsp.tipoPadrao`,
 com o tipo dos [arquivos fora da exportação](regras.md#arquivos-fora-da-exportação), e `seniorLsp.tbsProducao`
 e `seniorLsp.tbsTeste`, com os dicionários descritos em [Dicionário de dados](configuracao.md#dicionário-de-dados).
+`seniorLsp.dicaTipo` desliga a dica `: numero` no nome sem `definir` e deixa os nomes de parâmetro.
 Mudar o caminho do executável reinicia o servidor. As outras valem na hora, sem reiniciar. A
 extensão manda as opções no `settings` do `workspace/didChangeConfiguration`, com as mesmas chaves
-das opções de inicialização (`tbs_producao`, `tbs_teste`, `tipo_padrao` e `analisar_pasta`), e
+das opções de inicialização (`tbs_producao`, `tbs_teste`, `tipo_padrao`, `analisar_pasta` e `dica_tipo`), e
 qualquer editor pode mandar o mesmo aviso. Só as chaves que vêm no aviso mudam. A extensão também
 manda `acrescentar_parametro` ligada, porque sabe perguntar o que a ação "Acrescentar parâmetro"
 precisa. Um editor que liga a opção tem que atender o comando `senior-lsp.acrescentarParametro` da

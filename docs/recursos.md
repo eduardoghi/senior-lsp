@@ -114,7 +114,8 @@ O servidor oferece:
   argumento com o mesmo nome do parâmetro
 - `: numero` depois do primeiro uso de um nome sem `definir`, que o compilador cria como número.
   Ficam de fora as palavras do ERP, como `Retorna` no `Mensagem` e o tipo no `AdicionarCampo`, os
-  campos de outras regras da tela e as tabelas do dicionário
+  campos de outras regras da tela e as tabelas do dicionário. A opção `dica_tipo` desligada (no VS
+  Code, `seniorLsp.dicaTipo`) tira só essa dica
 - seleção expandida, que aumenta a seleção do nome para a expressão, o comando, o bloco e a função
 - recolher cada `funcao`, os blocos, os comentários `/* */` e a sequência de `definir` do começo
 - destaque semântico, que colore cada nome pelo que ele é (função do ERP ou da regra, variável,

@@ -123,6 +123,7 @@ function serverOptions(config: vscode.WorkspaceConfiguration): Record<string, st
         tbs_teste: config.get<string>("tbsTeste", ""),
         tipo_padrao: config.get<string>("tipoPadrao", "comum"),
         analisar_pasta: config.get<boolean>("analisarPasta", false),
+        dica_tipo: config.get<boolean>("dicaTipo", true),
         // A extensão sabe perguntar o tipo, o nome e o valor de um parâmetro novo.
         acrescentar_parametro: true,
     };

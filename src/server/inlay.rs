@@ -9,7 +9,8 @@ use super::signature::params_of;
 use crate::SyntaxKind;
 
 impl Context<'_> {
-    pub(crate) fn inlay_hints(&self, range: Range) -> Vec<InlayHint> {
+    /// Dicas do trecho na tela. `types` liga a dica de tipo no nome sem `definir`.
+    pub(crate) fn inlay_hints(&self, range: Range, types: bool) -> Vec<InlayHint> {
         let tree = &self.doc.tree;
         let text = &self.doc.text;
         let mut hints = Vec::new();
@@ -76,7 +77,12 @@ impl Context<'_> {
                 });
             }
         }
-        for name in implicit_names(self.doc) {
+        let implicit = if types {
+            implicit_names(self.doc)
+        } else {
+            Vec::new()
+        };
+        for name in implicit {
             let position = self.range(name).end;
             if position < range.start || position > range.end {
                 continue;

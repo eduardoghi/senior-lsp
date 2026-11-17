@@ -4619,3 +4619,29 @@ fn edicao_ligada_entre_declaracao_e_implementacao() {
     // Na chamada não liga, quem muda as chamadas é o renomear.
     assert_eq!(ranges(&mut editor, 1, 1), None);
 }
+
+#[test]
+fn opcao_dica_tipo_desliga_so_a_dica_de_tipo() {
+    let kinds = |editor: &mut Editor| {
+        let response = editor.request(
+            lsp_types::request::InlayHintRequest::METHOD,
+            json!({ "textDocument": { "uri": RULE },
+                    "range": { "start": { "line": 0, "character": 0 },
+                               "end": { "line": 9, "character": 0 } } }),
+        );
+        let hints: Vec<lsp_types::InlayHint> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        hints.into_iter().map(|h| h.kind).collect::<Vec<_>>()
+    };
+    let text = "definir alfa aTxt;\nIntParaAlfa(nValor, aTxt);\n";
+    let (mut editor, _) = Editor::start_with(None, json!({ "dica_tipo": false }));
+    editor.open(RULE, 1, text);
+    let parameter = Some(lsp_types::InlayHintKind::PARAMETER);
+    let ty = Some(lsp_types::InlayHintKind::TYPE);
+    assert_eq!(kinds(&mut editor), [parameter, parameter]);
+    editor.notify(
+        DidChangeConfiguration::METHOD,
+        json!({ "settings": { "dica_tipo": true } }),
+    );
+    assert_eq!(kinds(&mut editor), [parameter, ty, parameter]);
+}
