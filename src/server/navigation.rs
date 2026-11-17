@@ -527,7 +527,10 @@ impl Context<'_> {
     /// Vêm primeiro as definições do arquivo, depois as das regras anteriores do formulário SGI, as
     /// funções do ERP e as palavras da linguagem. Dentro do texto de um SQL saem as tabelas e os
     /// campos do dicionário de dados. Em outro texto e em comentário não há sugestão.
-    pub(crate) fn completion(&self, position: Position) -> Vec<CompletionItem> {
+    /// Itens do completar no cursor. Com `lazy`, o editor resolve o detalhe pelo
+    /// `completionItem/resolve`, e o item leva em `data` de onde veio. Uma resposta com a
+    /// declaração de cada item passava de 160 KB a cada tecla numa regra comum.
+    pub(crate) fn completion(&self, position: Position, lazy: bool) -> Vec<CompletionItem> {
         let offset = self.offset(position);
         let text = &self.doc.text;
         let tree = &self.doc.tree;
@@ -552,25 +555,34 @@ impl Context<'_> {
                 && name.is_char_boundary(prefix.len())
                 && name[..prefix.len()].eq_ignore_ascii_case(prefix)
         };
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = rustc_hash::FxHashSet::default();
         let mut items = Vec::new();
         // O detalhe só é montado para o nome que passa no filtro. Quase tudo é descartado pelo
         // começo digitado, e montar antes copiava a declaração de cada função do ERP.
-        let mut add = |name: &str, kind, detail: &dyn Fn() -> String, rank: char| {
-            if matches(name) && seen.insert(name.to_uppercase()) {
-                items.push(CompletionItem {
-                    label: name.to_owned(),
-                    kind: Some(kind),
-                    detail: Some(detail()),
-                    sort_text: Some(format!("{rank}{}", name.to_lowercase())),
-                    ..CompletionItem::default()
-                });
-            }
-        };
+        // Sem o resolve, o detalhe vem direto de quem chama, porque achar a função do ERP pela
+        // posição na lista percorreria a lista a cada item.
+        let mut add =
+            |name: &str, kind, origin: Origin, detail: &dyn Fn() -> String, rank: char| {
+                if matches(name) && seen.insert(name.to_uppercase()) {
+                    let (detail, data) = if lazy {
+                        (None, Some(origin.data(self.doc.version)))
+                    } else {
+                        (Some(detail()), None)
+                    };
+                    items.push(CompletionItem {
+                        label: name.to_owned(),
+                        kind: Some(kind),
+                        detail,
+                        sort_text: Some(format!("{rank}{}", name.to_lowercase())),
+                        data,
+                        ..CompletionItem::default()
+                    });
+                }
+            };
 
         // Um parâmetro só vale dentro da `funcao` dele.
         let function = enclosing_function_at(tree, offset);
-        for def in &self.doc.symbols.definitions {
+        for (i, def) in self.doc.symbols.definitions.iter().enumerate() {
             let kind = match def.kind {
                 DefKind::Label => continue,
                 DefKind::Parameter(_) => {
@@ -583,28 +595,37 @@ impl Context<'_> {
                 DefKind::Function => CompletionItemKind::FUNCTION,
                 _ => CompletionItemKind::VARIABLE,
             };
-            add(&text[def.name], kind, &|| self.header(def.node), '0');
+            add(
+                &text[def.name],
+                kind,
+                Origin::Local(i),
+                &|| self.header(def.node),
+                '0',
+            );
         }
-        for def in self.doc.inherited.functions() {
+        for (i, def) in self.doc.inherited.functions().enumerate() {
             add(
                 &def.text[def.name],
                 CompletionItemKind::FUNCTION,
+                Origin::InheritedFunction(i),
                 &|| def.decl.clone(),
                 '1',
             );
         }
-        for def in self.doc.inherited.variables() {
+        for (i, def) in self.doc.inherited.variables().enumerate() {
             add(
                 &def.text[def.name],
                 CompletionItemKind::VARIABLE,
+                Origin::InheritedVariable(i),
                 &|| def.decl.clone(),
                 '1',
             );
         }
-        for builtin in builtins::all(self.doc.context) {
+        for (i, builtin) in builtins::all(self.doc.context).enumerate() {
             add(
                 builtin.name,
                 CompletionItemKind::FUNCTION,
+                Origin::Builtin(i),
                 &|| builtin.decl.to_owned(),
                 '2',
             );
@@ -613,11 +634,44 @@ impl Context<'_> {
             add(
                 word,
                 CompletionItemKind::KEYWORD,
-                &|| "palavra da linguagem".to_owned(),
+                Origin::Keyword,
+                &|| KEYWORD_DETAIL.to_owned(),
                 '3',
             );
         }
         items
+    }
+
+    /// Detalhe do item do completar no resolve, a declaração ou a linha da definição.
+    fn completion_detail(&self, origin: Origin) -> Option<String> {
+        Some(match origin {
+            Origin::Local(i) => self.header(self.doc.symbols.definitions.get(i)?.node),
+            Origin::InheritedFunction(i) => self.doc.inherited.functions().nth(i)?.decl.clone(),
+            Origin::InheritedVariable(i) => self.doc.inherited.variables().nth(i)?.decl.clone(),
+            Origin::Builtin(i) => builtins::all(self.doc.context).nth(i)?.decl.to_owned(),
+            Origin::Keyword => KEYWORD_DETAIL.to_owned(),
+        })
+    }
+
+    /// Detalhe do item pelo `data` que o completar pôs nele. `None` quando o texto mudou desde o
+    /// completar, porque o índice pode apontar para outra definição.
+    pub(crate) fn resolve_completion(&self, data: &serde_json::Value) -> Option<String> {
+        let [version, origin, i] = data.as_array()?.as_slice() else {
+            return None;
+        };
+        if version.as_i64()? != i64::from(self.doc.version) {
+            return None;
+        }
+        let i = i.as_u64()? as usize;
+        let origin = match origin.as_u64()? {
+            0 => Origin::Local(i),
+            1 => Origin::InheritedFunction(i),
+            2 => Origin::InheritedVariable(i),
+            3 => Origin::Builtin(i),
+            4 => Origin::Keyword,
+            _ => return None,
+        };
+        self.completion_detail(origin)
     }
 
     /// Modelos de comando para o completar, filtrados pelo começo já digitado. Só no começo de
@@ -1501,5 +1555,33 @@ mod tests {
             ["Busca em E012FAM por CodEmp, CodFam, mostra DesFam"]
         );
         assert_eq!(lines(1), ["Busca na view VW_FOR por CodFor (com ForPad)"]);
+    }
+}
+
+const KEYWORD_DETAIL: &str = "palavra da linguagem";
+
+/// De onde vem o item do completar, com a posição na lista de cada origem.
+#[derive(Clone, Copy)]
+enum Origin {
+    Local(usize),
+    InheritedFunction(usize),
+    InheritedVariable(usize),
+    Builtin(usize),
+    Keyword,
+}
+
+impl Origin {
+    /// Versão do texto, origem e posição. O URI fica no servidor, com a última lista do
+    /// completar, que é a única que o editor resolve. Um objeto com o URI em cada item custava
+    /// mais que o detalhe que ele substitui.
+    fn data(self, version: i32) -> serde_json::Value {
+        let (origin, i) = match self {
+            Origin::Local(i) => (0, i),
+            Origin::InheritedFunction(i) => (1, i),
+            Origin::InheritedVariable(i) => (2, i),
+            Origin::Builtin(i) => (3, i),
+            Origin::Keyword => (4, 0),
+        };
+        serde_json::Value::Array(vec![version.into(), origin.into(), i.into()])
     }
 }

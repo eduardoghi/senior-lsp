@@ -1170,7 +1170,7 @@ mod tests {
             encoding: crate::line_index::ColumnEncoding::Utf8,
             embedding: None,
         };
-        let mut items = context.completion(lsp_types::Position::new(line, character));
+        let mut items = context.completion(lsp_types::Position::new(line, character), false);
         items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
         items.into_iter().map(|i| i.label).collect()
     }

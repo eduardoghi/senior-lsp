@@ -66,6 +66,15 @@ impl Editor {
             params["capabilities"]["textDocument"] =
                 json!({ "completion": { "completionItem": { "snippetSupport": snippets } } });
         }
+        // `resolveDetail` dentro das opções vira o `resolveSupport` do completar.
+        if let Some(true) = params["initializationOptions"]
+            .as_object_mut()
+            .and_then(|o| o.remove("resolveDetail"))
+            .and_then(|v| v.as_bool())
+        {
+            params["capabilities"]["textDocument"] = json!({ "completion": { "completionItem": {
+                "resolveSupport": { "properties": ["detail"] } } } });
+        }
         // `workDoneProgress` dentro das opções vira capacidade do editor, para o teste do progresso
         // da análise da pasta.
         if let Some(progress) = params["initializationOptions"]
@@ -1769,6 +1778,23 @@ fn correcoes_dos_avisos() {
     editor.stop();
 }
 
+/// Pede o `codeLens/resolve` de cada lente, como o editor faz com as que estão na tela.
+fn resolve_lenses(
+    editor: &mut Editor,
+    lenses: Vec<lsp_types::CodeLens>,
+) -> Vec<lsp_types::CodeLens> {
+    lenses
+        .into_iter()
+        .map(|lens| {
+            let response = editor.request(
+                lsp_types::request::CodeLensResolve::METHOD,
+                serde_json::to_value(lens).unwrap(),
+            );
+            serde_json::from_value(response.response_result.unwrap()).unwrap()
+        })
+        .collect()
+}
+
 #[test]
 fn contagem_de_referencias_das_funcoes() {
     let (mut editor, _) = Editor::start(None);
@@ -1786,6 +1812,9 @@ fn contagem_de_referencias_das_funcoes() {
     );
     let lenses: Vec<lsp_types::CodeLens> =
         serde_json::from_value(response.response_result.unwrap()).unwrap();
+    // A lista vem sem comando, que sai no resolve.
+    assert!(lenses.iter().all(|l| l.command.is_none()));
+    let lenses = resolve_lenses(&mut editor, lenses);
     let found: Vec<String> = lenses
         .iter()
         .map(|l| {
@@ -1835,7 +1864,7 @@ fn lentes_contam_os_usos_nas_regras_seguintes_do_formulario() {
         );
         let lenses: Vec<lsp_types::CodeLens> =
             serde_json::from_value(response.response_result.unwrap()).unwrap();
-        lenses
+        resolve_lenses(editor, lenses)
             .into_iter()
             .map(|l| {
                 let command = l.command.unwrap();
@@ -4761,4 +4790,38 @@ fn acoes_seguem_o_nivel_novo_do_senior_lsp_json() {
     );
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn detalhe_do_completar_pelo_resolve() {
+    let text = "Definir Funcao SomaTudo(Numero A);\ndefinir alfa aSoma;\nSo\nfuncao SomaTudo(Numero A); { }\n";
+    let items = |editor: &mut Editor| -> Vec<lsp_types::CompletionItem> {
+        editor.open(RULE, 1, text);
+        let response = editor.request(
+            lsp_types::request::Completion::METHOD,
+            json!({ "textDocument": { "uri": RULE }, "position": { "line": 2, "character": 2 } }),
+        );
+        serde_json::from_value(response.response_result.unwrap()).unwrap()
+    };
+    // Sem a capacidade, o detalhe vem no item, como sempre.
+    let (mut editor, _) = Editor::start(None);
+    let full = items(&mut editor);
+    assert!(full.iter().all(|i| i.detail.is_some() && i.data.is_none()));
+    editor.stop();
+
+    let (mut editor, _) = Editor::start_with(None, json!({ "resolveDetail": true }));
+    let lazy = items(&mut editor);
+    assert_eq!(lazy.len(), full.len());
+    for (item, expected) in lazy.into_iter().zip(&full) {
+        assert!(item.detail.is_none());
+        assert_eq!(item.label, expected.label);
+        let response = editor.request(
+            lsp_types::request::ResolveCompletionItem::METHOD,
+            serde_json::to_value(item).unwrap(),
+        );
+        let resolved: lsp_types::CompletionItem =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        assert_eq!(resolved.detail, expected.detail, "{}", expected.label);
+    }
+    editor.stop();
 }

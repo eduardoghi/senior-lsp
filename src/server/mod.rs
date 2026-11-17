@@ -127,7 +127,7 @@ fn serve(connection: &Connection, out: Output) -> Result<()> {
             )),
             call_hierarchy_provider: Some(lsp_types::CallHierarchyServerCapability::Simple(true)),
             code_lens_provider: Some(lsp_types::CodeLensOptions {
-                resolve_provider: Some(false),
+                resolve_provider: Some(true),
             }),
             folding_range_provider: Some(lsp_types::FoldingRangeProviderCapability::Simple(true)),
             document_formatting_provider: Some(OneOf::Left(true)),
@@ -149,6 +149,7 @@ fn serve(connection: &Connection, out: Output) -> Result<()> {
             document_symbol_provider: Some(OneOf::Left(true)),
             workspace_symbol_provider: Some(OneOf::Left(true)),
             completion_provider: Some(lsp_types::CompletionOptions {
+                resolve_provider: Some(true),
                 // Depois do ponto vêm os membros do cursor, da lista e da tabela.
                 trigger_characters: Some(vec![".".to_owned()]),
                 ..lsp_types::CompletionOptions::default()
@@ -219,6 +220,8 @@ fn serve(connection: &Connection, out: Output) -> Result<()> {
         ask_parameters,
         type_hints,
         refresh_hints: params.refresh_hints,
+        resolve_detail: params.resolve_detail,
+        completed: Default::default(),
         snippets: params.snippets,
         progress: params.progress,
         index: Default::default(),
@@ -271,6 +274,8 @@ struct ClientInit<'a> {
     progress: bool,
     /// O editor aceita o `workspace/inlayHint/refresh`.
     refresh_hints: bool,
+    /// O editor resolve o `detail` do item do completar.
+    resolve_detail: bool,
 }
 
 impl<'a> ClientInit<'a> {
@@ -290,6 +295,13 @@ impl<'a> ClientInit<'a> {
             .pointer("/capabilities/general/positionEncodings")
             .and_then(|e| e.as_array())
             .is_some_and(|kinds| kinds.iter().any(|k| k.as_str() == Some("utf-8")));
+        // O editor resolve o detalhe do item do completar quando ele aparece na lista.
+        let resolve_detail = params
+            .pointer(
+                "/capabilities/textDocument/completion/completionItem/resolveSupport/properties",
+            )
+            .and_then(|p| p.as_array())
+            .is_some_and(|p| p.iter().any(|p| p.as_str() == Some("detail")));
         let refresh_hints = params
             .pointer("/capabilities/workspace/inlayHint/refreshSupport")
             .and_then(serde_json::Value::as_bool)
@@ -312,6 +324,7 @@ impl<'a> ClientInit<'a> {
             snippets,
             progress,
             refresh_hints,
+            resolve_detail,
         }
     }
 }
@@ -474,6 +487,10 @@ struct Server<'a> {
     /// O editor aceita o `workspace/inlayHint/refresh`, para pedir as dicas de novo quando a
     /// opção muda.
     refresh_hints: bool,
+    /// O editor resolve o detalhe do completar, que sai do `completionItem/resolve`.
+    resolve_detail: bool,
+    /// Arquivo da última lista do completar, a que o editor resolve.
+    completed: std::cell::RefCell<Option<Uri>>,
     /// O editor aceita snippets, e o completar oferece os modelos de comando.
     snippets: bool,
     /// O editor mostra o progresso da análise da pasta.
@@ -571,13 +588,35 @@ impl Server<'_> {
                 let params: lsp_types::CompletionParams = serde_json::from_value(request.params)?;
                 let at = params.text_document_position;
                 self.with(&at.text_document.uri, Some(at.position), |c| {
-                    let mut items = c.completion(at.position);
+                    // A regra dentro do JSON de modelo não fica entre os documentos que o resolve
+                    // procura, e o detalhe vai no item.
+                    let lazy = self.resolve_detail && c.embedding.is_none();
+                    let mut items = c.completion(at.position, lazy);
+                    *self.completed.borrow_mut() = Some(at.text_document.uri.clone());
                     if self.snippets {
                         items.extend(c.snippets(at.position));
                         items.extend(c.postfix(at.position));
                     }
                     self.out.json(&lsp_types::CompletionResponse::Array(items))
                 })
+            }
+            lsp_types::request::ResolveCompletionItem::METHOD => {
+                let mut item: lsp_types::CompletionItem = serde_json::from_value(request.params)?;
+                let uri = self.completed.borrow().clone();
+                if item.detail.is_none()
+                    && let Some(uri) = uri
+                    && let Some(doc) = self.documents.get(&uri)
+                    && let Some(data) = &item.data
+                {
+                    let context = navigation::Context {
+                        doc,
+                        uri: &uri,
+                        encoding: self.encoding,
+                        embedding: None,
+                    };
+                    item.detail = context.resolve_completion(data);
+                }
+                Ok(self.out.json(&item)?)
             }
             PrepareRenameRequest::METHOD => {
                 let params: lsp_types::TextDocumentPositionParams =
@@ -658,6 +697,31 @@ impl Server<'_> {
                 self.with(&item.uri.clone(), Some(item.selection_range.start), |c| {
                     self.out.json(&c.outgoing_calls(&item))
                 })
+            }
+            lsp_types::request::CodeLensResolve::METHOD => {
+                let mut lens: lsp_types::CodeLens = serde_json::from_value(request.params)?;
+                let data = lens.data.take();
+                let uri = data
+                    .as_ref()
+                    .and_then(|d| d.get("uri")?.as_str())
+                    .and_then(|u| u.parse::<Uri>().ok());
+                let offset = data
+                    .as_ref()
+                    .and_then(|d| d.get("offset")?.as_u64())
+                    .and_then(|o| u32::try_from(o).ok());
+                if let (Some(uri), Some(offset)) = (uri, offset)
+                    && let Some(doc) = self.documents.get(&uri)
+                {
+                    let context = navigation::Context {
+                        doc,
+                        uri: &uri,
+                        encoding: self.encoding,
+                        embedding: None,
+                    };
+                    lens.command = context.resolve_lens(offset);
+                }
+                lens.data = data;
+                Ok(self.out.json(&lens)?)
             }
             CodeLensRequest::METHOD => {
                 let params: lsp_types::CodeLensParams = serde_json::from_value(request.params)?;
