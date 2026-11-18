@@ -5296,7 +5296,7 @@ fn diretiva_no_fim_da_linha_de_codigo_pula_a_linha_em_branco() {
     let (editor, _) = Editor::start(None);
     // A diretiva vale para a próxima linha com código, e a linha em branco depois do `;` não é
     // código.
-    let text = "x = 1; @ senior-lsp-disable-next-line SEN060 @\n\nCancel;\n";
+    let text = "x = 1; @ senior-lsp-disable-next-line SEN060 @\n\nx = 2 e -3;\n";
     editor.open(RULE, 1, text);
     let d = editor.diagnostics();
     assert!(
@@ -5306,6 +5306,8 @@ fn diretiva_no_fim_da_linha_de_codigo_pula_a_linha_em_branco() {
         "{:?}",
         d.diagnostics
     );
+    // E a diretiva escondeu alguma coisa, sem o aviso de diretiva sem efeito.
+    assert!(d.diagnostics.is_empty(), "{:?}", d.diagnostics);
 }
 
 #[test]
@@ -5504,9 +5506,12 @@ fn definir_pelo_prefixo_alfa_e_diretiva_na_linha_do_codigo() {
 
     // A diretiva antes do código na mesma linha vale para a próxima linha com código, depois da
     // linha em branco.
-    let text = "@ senior-lsp-disable-next-line SEN060 @ x = 1;\n\nCancel;\n";
-    editor.open(RULE, 2, text);
+    let text = "@ senior-lsp-disable-next-line SEN060 @ y = 1;\n\nx = 2 e -3;\n";
+    // Num editor novo, para a publicação ser a deste texto.
+    let (editor, _) = Editor::start(None);
+    editor.open(RULE, 1, text);
     let d = editor.diagnostics();
+    assert_eq!(d.version, Some(1));
     assert!(
         !d.diagnostics
             .iter()
@@ -5514,6 +5519,8 @@ fn definir_pelo_prefixo_alfa_e_diretiva_na_linha_do_codigo() {
         "{:?}",
         d.diagnostics
     );
+    // E a diretiva escondeu alguma coisa, sem o aviso de diretiva sem efeito.
+    assert!(d.diagnostics.is_empty(), "{:?}", d.diagnostics);
 }
 
 #[test]
