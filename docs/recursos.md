@@ -55,7 +55,9 @@ O servidor oferece:
   ERP, e o F2 renomeia depois. A ação não aparece quando a seleção corta um comando, quando o trecho
   tem `definir` ou `funcao`, quando um `pare` ou `continue` perde o laço, quando um `vapara` e o
   rótulo dele ficam em lados diferentes do trecho, quando o trecho dentro de uma `funcao` usa
-  parâmetro ou variável definida nela, e nas regras dentro do JSON de modelo de relatório
+  parâmetro ou variável definida nela, quando, na regra comum, o trecho tem a única aparição de um
+  nome antes de um SQL que usa `:nome` depois dele (sem ela o SQL daria SEN079), e nas regras
+  dentro do JSON de modelo de relatório
 - ação de código "Embutir função" (`refactor.inline`), o inverso da anterior, com o cursor no nome
   de uma chamada. Os comandos da função entram no lugar da chamada, e a função continua onde está.
   Vale para a função sem parâmetros, com o corpo num bloco só, sem `definir`, rótulo nem `vapara`
@@ -148,7 +150,9 @@ O servidor oferece:
   que já apareceram na regra. No VS Code a lista abre
   sozinha depois do ponto. Nos outros lugares do texto ela abre com Ctrl+Espaço, a não ser que
   `editor.quickSuggestions` esteja ligado para `strings`
-- renomear num editor, trocando só o símbolo certo, nos outros arquivos do formulário SGI inclusive
+- renomear num editor, trocando só o símbolo certo, nos outros arquivos do formulário SGI inclusive.
+  O `:nome` de uma variável dentro do SQL entra no renomear, nas referências e no destaque, e o
+  cursor sobre ele também acha a variável
 - edição ligada no nome do `Definir Funcao` e da `funcao`, que mudam juntos enquanto se digita num
   deles. As chamadas ficam para o renomear
 

@@ -172,4 +172,4 @@ O SEN072 e o SEN073 não se escondem por diretiva, mas mudam de nível no [`seni
 
 ## Ignorar pela correção rápida
 
-Em cada diagnóstico que se pode esconder, a ação de código "Ignorar SENxxx nesta linha" põe um `@ senior-lsp-disable-next-line SENxxx @` na linha de cima, com a indentação da linha do diagnóstico. Se a linha de cima já é um `senior-lsp-disable-next-line` dessa linha, o código entra no fim da lista dele. A ação não aparece dentro das regras de um JSON de modelo, onde o texto da regra é uma string escapada do JSON.
+Em cada diagnóstico que se pode esconder, a ação de código "Ignorar SENxxx nesta linha" põe um `@ senior-lsp-disable-next-line SENxxx @` na linha de cima, com a indentação da linha do diagnóstico. Se a linha de cima já é um `senior-lsp-disable-next-line` dessa linha, o código entra no fim da lista dele. A ação não aparece dentro das regras de um JSON de modelo, onde o texto da regra é uma string escapada do JSON, nem quando a linha do diagnóstico continua um texto ou comentário de linhas anteriores, como no meio de um SQL com `\` no fim. A diretiva entraria no texto, e não há linha antes dela onde valha só para o diagnóstico.
