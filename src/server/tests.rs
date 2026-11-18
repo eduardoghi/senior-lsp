@@ -4982,3 +4982,15 @@ fn renomear_na_tela_inclui_o_sql_das_regras_seguintes() {
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn extrair_nao_tira_o_primeiro_uso_de_um_nome_do_sql() {
+    // A linha cria o nome, e o SQL depois dela exige que ele tenha aparecido antes.
+    let text =
+        "definir cursor cur;\nnCodEmp = 1;\ncur.SQL \"SELECT A FROM T WHERE A = :nCodEmp\";\n";
+    assert_eq!(extract_lines(text, 1, 1), None);
+    // Com o nome antes do trecho, ele continua aparecendo antes do SQL.
+    let text = "definir cursor cur; definir numero nCodEmp;\nnCodEmp = 1;\n\
+                cur.SQL \"SELECT A FROM T WHERE A = :nCodEmp\";\n";
+    assert!(extract_lines(text, 1, 1).is_some());
+}

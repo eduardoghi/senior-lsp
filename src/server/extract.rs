@@ -208,6 +208,9 @@ impl Context<'_> {
         if has_label && self.label_used_outside(span) {
             return false;
         }
+        if self.doc.context == crate::builtins::Context::Rule && self.moves_sql_name(span) {
+            return false;
+        }
         let mut enclosing = None;
         let mut up = Some(container);
         while let Some(n) = up {
@@ -220,6 +223,43 @@ impl Context<'_> {
             Some(function) => self.independent_of_function(function, span),
             None => true,
         }
+    }
+
+    /// Algum `:nome` de um SQL depois do trecho só tem antes dele aparições do nome dentro do
+    /// trecho. Na regra comum o compilador exige que o nome do `:nome` tenha aparecido antes no
+    /// texto (SEN079), e o trecho vai para o fim do arquivo.
+    fn moves_sql_name(&self, span: TextRange) -> bool {
+        let text = &self.doc.text;
+        let after: Vec<TextRange> = super::sql_variables(&self.doc.tree, text)
+            .into_iter()
+            .filter(|use_| use_.start() >= span.end())
+            .collect();
+        if after.is_empty() {
+            return false;
+        }
+        // Por nome, a primeira aparição fora do trecho e se ele aparece dentro, numa passada só.
+        let mut seen: rustc_hash::FxHashMap<std::string::String, (Option<TextSize>, bool)> = after
+            .iter()
+            .map(|&r| (text[r].to_ascii_uppercase(), (None, false)))
+            .collect();
+        let tokens = self.doc.tree.tokens();
+        for i in 0..tokens.len() {
+            if tokens.kind(i) != SyntaxKind::Ident {
+                continue;
+            }
+            let range = tokens.range(i);
+            if let Some((outside, inside)) = seen.get_mut(&text[range].to_ascii_uppercase()) {
+                if span.contains_range(range) {
+                    *inside = true;
+                } else if outside.is_none() {
+                    *outside = Some(range.start());
+                }
+            }
+        }
+        after.iter().any(|&use_| {
+            let (outside, inside) = seen[&text[use_].to_ascii_uppercase()];
+            inside && outside.is_none_or(|at| at >= use_.start())
+        })
     }
 
     /// O `pare` ou `continue` tem um `enquanto` ou `para` entre ele e o bloco do trecho.
