@@ -830,6 +830,130 @@ mod tests {
     }
 
     #[test]
+    fn tipos_nas_chamadas_e_atribuicoes() {
+        use crate::builtins::Context;
+        // Cada aviso com o trecho e o nome citado na mensagem.
+        let rodar = |context: Context, text: &str, others: &[&str]| {
+            let tree = crate::parse(text).unwrap();
+            let inherited = crate::form::Inherited::from_rules(
+                others
+                    .iter()
+                    .enumerate()
+                    .map(|(i, o)| (format!("r{i}/rule.txt").into(), (*o).to_owned())),
+            );
+            let symbols = crate::symbols::Symbols::build(&tree, text);
+            crate::validate::validate(&tree, &symbols, text, context, &inherited)
+                .into_iter()
+                .filter(|c| !matches!(c.kind, Unused | UnusedParameter | UnusedFunction))
+                .map(|c| {
+                    let name = c.name.map(|n| text[tree.text_range(n)].to_owned());
+                    (c.kind, text[c.range].to_owned(), name)
+                })
+                .collect::<Vec<_>>()
+        };
+        let s = |t: &str| t.to_owned();
+        let d = "Definir Funcao g(Numero a);";
+        // No relatório, a função definida em mais de uma regra não tem a chamada conferida.
+        assert_eq!(
+            rodar(Context::Report, "g(1, 2);", &[d]),
+            [(TooManyArguments, s("g"), None)]
+        );
+        assert_eq!(rodar(Context::Report, "g(1, 2);", &[d, d]), []);
+        // Vale a assinatura da declaração, não a da implementação.
+        assert_eq!(
+            rodar(
+                Context::Rule,
+                "Definir Funcao f(Numero pA);\nf(\"x\");\nFuncao f(Alfa pA); { }",
+                &[]
+            ),
+            [(AlfaArgument, s("\"x\""), Some(s("pA")))]
+        );
+        assert_eq!(
+            rodar(
+                Context::Rule,
+                "Definir Funcao f(Alfa pNome);\nf(1);\nFuncao f(Alfa pNome); { }",
+                &[]
+            ),
+            [(NumberArgument, s("1"), Some(s("pNome")))]
+        );
+        for (context, text, expected) in [
+            (
+                Context::Rule,
+                "definir alfa a;\nIntParaAlfa(1);",
+                vec![(TooFewArguments, s("IntParaAlfa"))],
+            ),
+            (
+                Context::Rule,
+                "definir alfa a;\nIntParaAlfa(1, a, 2);",
+                vec![(TooManyArguments, s("IntParaAlfa"))],
+            ),
+            (
+                Context::Rule,
+                "definir numero n;\nTamanhoAlfa(1, n);",
+                vec![(NumberArgument, s("1"))],
+            ),
+            (Context::Rule, "definir alfa a;\na = 'X' + \"y\";", vec![]),
+            (
+                Context::Rule,
+                "definir numero n;\nn = 'X' + \"y\";",
+                vec![(NumberAndAlfa, s("\"y\""))],
+            ),
+            (
+                Context::Rule,
+                "definir numero n;\nn = ValStr;",
+                vec![(NumberAndAlfa, s("ValStr"))],
+            ),
+            (
+                Context::Rule,
+                "definir alfa a;\na = ValRet;",
+                vec![(AlfaAndNumber, s("ValRet"))],
+            ),
+            // Na regra de identificador o ERP acrescenta variáveis que o servidor não conhece.
+            (Context::Rule, "definir alfa a;\na = xyz;", vec![]),
+            (
+                Context::Report,
+                "definir alfa a;\na = xyz;",
+                vec![(AlfaAndNumber, s("xyz"))],
+            ),
+        ] {
+            let found: Vec<_> = rodar(context, text, &[])
+                .into_iter()
+                .map(|(k, t, _)| (k, t))
+                .collect();
+            assert_eq!(found, expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn coluna_retornada_com_tabela_e_apelido_no_select() {
+        // O `T.*` vira os campos da tabela do apelido, e o `SQL_Retornar*` de outra coluna é
+        // cobrado.
+        let regra = |sql: &str| {
+            format!(
+                "definir alfa aQ; definir alfa a;\nSQL_Criar(aQ);\nSQL_DefinirComando(aQ, \"{sql}\");\n\
+                 SQL_RetornarAlfa(aQ, \"NomEmp\", a);\nSQL_RetornarAlfa(aQ, \"NomFil\", a);"
+            )
+        };
+        let fora = |text: &str| -> Vec<std::string::String> {
+            checks_com_dicionario(text)
+                .into_iter()
+                .filter(|(k, _)| *k == ReturnedColumnNotInSelect)
+                .map(|(_, t)| t.to_owned())
+                .collect()
+        };
+        assert_eq!(fora(&regra("SELECT E.* FROM E070EMP E")), ["\"NomFil\""]);
+        assert_eq!(
+            fora(&regra("SELECT F.* FROM E999XYZ E, E070EMP F")),
+            ["\"NomFil\""]
+        );
+        assert_eq!(
+            fora(&regra("SELECT e070emp.* FROM E070EMP")),
+            ["\"NomFil\""]
+        );
+        assert!(fora(&regra("SELECT X.* FROM E070EMP E")).is_empty());
+    }
+
+    #[test]
     fn sql_nativo_do_sql_definircomando_contra_o_dicionario() {
         let regra = |nativo: &str| {
             format!(
