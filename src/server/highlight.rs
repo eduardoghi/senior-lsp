@@ -82,10 +82,14 @@ impl Context<'_> {
             }
         } else if let Some(ranges) = keyword_partners(&self.doc.tree, offset) {
             highlights.extend(ranges.into_iter().map(|r| (r, DocumentHighlightKind::TEXT)));
-        } else if let Some((node, call)) = name_at(&self.doc.tree, offset) {
+        } else if let Some((at, call)) = name_at(&self.doc.tree, offset)
+            .map(|(node, call)| (self.doc.tree.text_range(node), call))
+            // O `:nome` do SQL que não aponta para nada do arquivo, como a variável de outra regra.
+            .or_else(|| self.sql_name_at(offset).map(|(range, _)| (range, false)))
+        {
             let tree = &self.doc.tree;
             let text = &self.doc.text;
-            let name = &text[tree.text_range(node)];
+            let name = &text[at];
             let mut stack = vec![tree.root()];
             while let Some(n) = stack.pop() {
                 stack.extend(tree.children(n));
@@ -106,6 +110,13 @@ impl Context<'_> {
                 if same_role && text[range].eq_ignore_ascii_case(name) {
                     highlights.push((range, DocumentHighlightKind::TEXT));
                 }
+            }
+            if !call {
+                highlights.extend(
+                    self.foreign_sql_uses(name)
+                        .into_iter()
+                        .map(|range| (range, DocumentHighlightKind::TEXT)),
+                );
             }
         }
         highlights.sort_by_key(|(range, _)| range.start());

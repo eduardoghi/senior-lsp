@@ -555,8 +555,9 @@ impl RuleUses {
                         .push(range);
                 }
             }
-            for range in crate::server::sql_variables(&tree, &text) {
-                if !sql_variable_is_own(&tree, &symbols, &text, range) {
+            for (range, function) in crate::server::sql_variables_in_functions(&tree, &text) {
+                let targets = symbols.value_targets(&tree, &text, &text[range], function);
+                if reach(&symbols, &targets) == Reach::Nothing {
                     sql.entry(text[range].to_ascii_uppercase())
                         .or_default()
                         .push(range);
@@ -886,15 +887,20 @@ pub fn uses(text: &str, name: &str, own: bool, value: bool) -> Vec<TextRange> {
         if member || !text[range].eq_ignore_ascii_case(name) {
             continue;
         }
-        if symbols.reference_at(range).is_some() == own {
+        let targets = symbols
+            .reference_at(range)
+            .map_or(&[][..], |r| &r.targets[..]);
+        if wanted(reach(&symbols, targets), own) {
             out.push(range);
         }
     }
     if value {
-        for range in crate::server::sql_variables(&tree, text) {
-            if text[range].eq_ignore_ascii_case(name)
-                && sql_variable_is_own(&tree, &symbols, text, range) == own
-            {
+        for (range, function) in crate::server::sql_variables_in_functions(&tree, text) {
+            if !text[range].eq_ignore_ascii_case(name) {
+                continue;
+            }
+            let targets = symbols.value_targets(&tree, text, &text[range], function);
+            if wanted(reach(&symbols, &targets), own) {
                 out.push(range);
             }
         }
@@ -903,18 +909,41 @@ pub fn uses(text: &str, name: &str, own: bool, value: bool) -> Vec<TextRange> {
     out
 }
 
-/// O `:nome` do SQL em `range` aponta para uma definição do próprio texto, vista da `funcao` em
-/// volta, como no ir-para-definição.
-fn sql_variable_is_own(
-    tree: &crate::Tree,
-    symbols: &Symbols,
-    text: &str,
-    range: TextRange,
-) -> bool {
-    let function = crate::server::enclosing_function_at(tree, range.start());
-    !symbols
-        .value_targets(tree, text, &text[range], function)
-        .is_empty()
+/// O que um uso alcança no próprio texto.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// Nada, e o nome vem de outra regra.
+    Nothing,
+    /// Uma definição do nível de cima, que outras regras também enxergam.
+    Global,
+    /// Um parâmetro ou rótulo, que só vale dentro da regra.
+    Local,
+}
+
+fn reach(symbols: &Symbols, targets: &[usize]) -> Reach {
+    if targets.is_empty() {
+        Reach::Nothing
+    } else if targets.iter().any(|&t| {
+        matches!(
+            symbols.definitions[t].kind,
+            DefKind::Parameter(_) | DefKind::Label
+        )
+    }) {
+        Reach::Local
+    } else {
+        Reach::Global
+    }
+}
+
+/// Com `own`, o uso conta quando alcança uma definição do nível de cima do próprio texto. O
+/// parâmetro de mesmo nome de outra função é outra coisa, e o renomear não pode tocá-lo. Sem
+/// `own`, conta quando não alcança nada do texto.
+fn wanted(reach: Reach, own: bool) -> bool {
+    if own {
+        reach == Reach::Global
+    } else {
+        reach == Reach::Nothing
+    }
 }
 
 /// Caminho local de uma URI `file://`. `None` para outro esquema.

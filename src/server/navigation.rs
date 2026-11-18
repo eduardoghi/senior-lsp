@@ -104,7 +104,14 @@ impl Context<'_> {
 
     /// Nome na posição que vem de uma regra anterior do formulário, com o trecho dele aqui.
     fn inherited_at(&self, offset: TextSize) -> Option<(TextRange, &InheritedDef)> {
-        let (node, is_callee) = name_at(&self.doc.tree, offset)?;
+        let Some((node, is_callee)) = name_at(&self.doc.tree, offset) else {
+            // O `:nome` do SQL que não aponta para nada do arquivo vale como a variável herdada.
+            let (range, _) = self.sql_name_at(offset)?;
+            if self.sql_variable_at(offset).is_some() {
+                return None;
+            }
+            return Some((range, self.doc.inherited.variable(&self.doc.text[range])?));
+        };
         let range = self.doc.tree.text_range(node);
         let name = &self.doc.text[range];
         let def = if is_callee {
@@ -206,7 +213,10 @@ impl Context<'_> {
     /// ficam de fora, porque valem só na regra deles.
     fn model_symbol_at(&self, offset: TextSize) -> Option<(std::string::String, bool)> {
         let symbols = &self.doc.symbols;
-        if let Some(targets) = symbols.at(offset) {
+        if let Some(targets) = symbols
+            .at(offset)
+            .or_else(|| self.sql_variable_at(offset).map(|(_, targets)| targets))
+        {
             let def = &symbols.definitions[targets[0]];
             if matches!(def.kind, DefKind::Parameter(_) | DefKind::Label) {
                 return None;
@@ -292,6 +302,21 @@ impl Context<'_> {
                 });
                 if !to_param {
                     ranges.push(range);
+                }
+            }
+            // O `:nome` do SQL da variável, menos o que aponta para um parâmetro.
+            if !function {
+                for (range, inside) in crate::server::sql_variables_in_functions(&tree, text) {
+                    if !text[range].eq_ignore_ascii_case(name) {
+                        continue;
+                    }
+                    let targets = symbols.value_targets(&tree, text, &text[range], inside);
+                    let to_param = targets
+                        .iter()
+                        .any(|&t| matches!(symbols.definitions[t].kind, DefKind::Parameter(_)));
+                    if !to_param {
+                        ranges.push(range);
+                    }
                 }
             }
             ranges.sort_by_key(|r| r.start());

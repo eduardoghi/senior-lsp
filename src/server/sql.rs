@@ -265,13 +265,61 @@ impl Context<'_> {
     /// Definições do `:nome` do SQL em `offset`. `None` fora de um `:nome` ou quando ele não aponta
     /// para nada do arquivo.
     pub(super) fn sql_variable_at(&self, offset: TextSize) -> Option<(TextRange, Vec<usize>)> {
-        let (literal, _, spot) = self.spot_at(offset)?;
-        let Spot::Variable(name) = spot else {
-            return None;
-        };
-        let range = shift(literal, &name);
-        let targets = self.variable_targets(offset, &self.doc.text[range]);
+        let (range, function) = self.sql_name_at(offset)?;
+        let targets = self.doc.symbols.value_targets(
+            &self.doc.tree,
+            &self.doc.text,
+            &self.doc.text[range],
+            function,
+        );
         (!targets.is_empty()).then_some((range, targets))
+    }
+
+    /// Os `:nome` do SQL do arquivo com o nome `name` que não apontam para nada dele, como a
+    /// variável de outra regra da tela.
+    pub(super) fn foreign_sql_uses(&self, name: &str) -> Vec<TextRange> {
+        let mut foreign: rustc_hash::FxHashMap<Option<crate::NodeId>, bool> = Default::default();
+        self.sql_uses_named(name)
+            .filter(|&(range, function)| {
+                *foreign.entry(function).or_insert_with(|| {
+                    self.doc
+                        .symbols
+                        .value_targets(
+                            &self.doc.tree,
+                            &self.doc.text,
+                            &self.doc.text[range],
+                            function,
+                        )
+                        .is_empty()
+                })
+            })
+            .map(|(range, _)| range)
+            .collect()
+    }
+
+    /// Os `:nome` do arquivo com o nome `name`, sem diferença de caixa, com a `funcao` em volta.
+    fn sql_uses_named<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> impl Iterator<Item = (TextRange, Option<crate::NodeId>)> + 'a {
+        let text = &self.doc.text;
+        self.doc
+            .sql_variables()
+            .iter()
+            .copied()
+            .filter(move |(range, _)| text[*range].eq_ignore_ascii_case(name))
+    }
+
+    /// O `:nome` do SQL em `offset`, com a `funcao` em volta, pela lista guardada no documento.
+    pub(super) fn sql_name_at(
+        &self,
+        offset: TextSize,
+    ) -> Option<(TextRange, Option<crate::NodeId>)> {
+        let all = self.doc.sql_variables();
+        let i = all.partition_point(|(r, _)| r.end() < offset);
+        all.get(i)
+            .copied()
+            .filter(|(r, _)| r.contains_inclusive(offset))
     }
 
     /// Os `:nome` do SQL do arquivo que apontam para alguma das definições `targets`, que são de
@@ -289,15 +337,18 @@ impl Context<'_> {
         }
         let text = &self.doc.text;
         let name = &text[symbols.definitions[first].name];
-        sql_variables(&self.doc.tree, text)
-            .into_iter()
-            .filter(|&range| {
-                text[range].eq_ignore_ascii_case(name)
-                    && self
-                        .variable_targets(range.start(), &text[range])
+        // A resolução só depende do nome e da `funcao` em volta, então sai uma vez por `funcao`.
+        let mut reaches: rustc_hash::FxHashMap<Option<crate::NodeId>, bool> = Default::default();
+        self.sql_uses_named(name)
+            .filter(|&(range, function)| {
+                *reaches.entry(function).or_insert_with(|| {
+                    symbols
+                        .value_targets(&self.doc.tree, text, &text[range], function)
                         .iter()
                         .any(|t| targets.contains(t))
+                })
             })
+            .map(|(range, _)| range)
             .collect()
     }
 
@@ -697,6 +748,9 @@ pub(super) fn cited_tables(text: &str, tree: &crate::Tree, offset: TextSize) -> 
 
 /// Trecho do nome de cada `:nome` dos textos da regra, em ordem, sem os dois-pontos. É o mesmo
 /// reconhecimento do ir-para-definição, fora do que o compilador não lê como SQL.
+///
+/// O `:` colado numa letra, dígito ou `_`, como em `"hh:mm"` ou `"Erro:x"`, fica de fora. É texto
+/// comum, e o renomear não pode trocá-lo. O `:nome` de SQL vem depois de espaço, `=`, `(` ou `,`.
 pub(crate) fn sql_variables(tree: &crate::Tree, text: &str) -> Vec<TextRange> {
     let tokens = tree.tokens();
     let mut out = Vec::new();
@@ -706,19 +760,95 @@ pub(crate) fn sql_variables(tree: &crate::Tree, text: &str) -> Vec<TextRange> {
         }
         let literal = tokens.range(i);
         let source = &text[literal];
-        if !source.contains(':') {
+        if memchr::memchr(b':', source.as_bytes()).is_none() {
             continue;
         }
-        let mask = mask(source);
-        for colon in memchr::memchr_iter(b':', &mask) {
-            if let Some(Spot::Variable(name)) = spot_at(&mask, colon + 1)
-                && name.start == colon + 1
-            {
-                out.push(shift(literal, &name));
-            }
+        for name in literal_variables(source).iter() {
+            out.push(shift(literal, name));
         }
     }
     out
+}
+
+/// Os `:nome` de um literal, em posições dentro dele.
+fn scan_literal(source: &str) -> Vec<Range<usize>> {
+    let mask = mask(source);
+    let mut out = Vec::new();
+    for colon in memchr::memchr_iter(b':', &mask) {
+        if colon > 0 && is_word(mask[colon - 1]) {
+            continue;
+        }
+        if let Some(Spot::Variable(name)) = spot_at(&mask, colon + 1)
+            && name.start == colon + 1
+        {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// Bytes de literal em cada uma das duas gerações do cache de `literal_variables`.
+const LITERAL_CACHE_LIMIT: usize = 4 * 1024 * 1024;
+
+#[derive(Default)]
+struct LiteralCache {
+    current: rustc_hash::FxHashMap<String, std::rc::Rc<[Range<usize>]>>,
+    previous: rustc_hash::FxHashMap<String, std::rc::Rc<[Range<usize>]>>,
+    bytes: usize,
+}
+
+thread_local! {
+    static LITERALS: std::cell::RefCell<LiteralCache> = Default::default();
+}
+
+/// Os `:nome` do literal, guardados pelo texto dele. A cada edição só o literal que mudou é lido
+/// de novo, e numa regra grande os textos somam mais de 1 MB.
+fn literal_variables(source: &str) -> std::rc::Rc<[Range<usize>]> {
+    LITERALS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(hit) = cache.current.get(source) {
+            return hit.clone();
+        }
+        let found = match cache.previous.remove(source) {
+            Some(hit) => hit,
+            None => std::rc::Rc::from(scan_literal(source)),
+        };
+        if cache.bytes + source.len() > LITERAL_CACHE_LIMIT {
+            cache.previous = std::mem::take(&mut cache.current);
+            cache.bytes = 0;
+        }
+        cache.bytes += source.len();
+        cache.current.insert(source.to_owned(), found.clone());
+        found
+    })
+}
+
+/// Os `:nome` de [`sql_variables`] com a `funcao` em volta de cada um, numa varredura só. Buscar a
+/// `funcao` de cada um pela árvore custava uma descida por uso, e uma regra grande tem dezenas de
+/// milhares deles.
+pub(crate) fn sql_variables_in_functions(
+    tree: &crate::Tree,
+    text: &str,
+) -> Vec<(TextRange, Option<crate::NodeId>)> {
+    let functions: Vec<(TextRange, crate::NodeId)> = tree
+        .nodes()
+        .filter(|&n| tree.kind(n) == SyntaxKind::FuncImpl)
+        .map(|n| (tree.text_range(n), n))
+        .collect();
+    sql_variables(tree, text)
+        .into_iter()
+        .map(|range| {
+            // A última `funcao` que começa antes do nome, se ela o contém. As funções ficam no
+            // nível de cima, uma depois da outra.
+            let i = functions.partition_point(|(r, _)| r.start() <= range.start());
+            let function = i
+                .checked_sub(1)
+                .map(|i| functions[i])
+                .filter(|(r, _)| r.contains_inclusive(range.start()))
+                .map(|(_, n)| n);
+            (range, function)
+        })
+        .collect()
 }
 
 /// Trecho do literal de texto, dado em posições dentro dele, no texto da regra.

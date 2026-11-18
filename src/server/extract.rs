@@ -230,9 +230,14 @@ impl Context<'_> {
     /// texto (SEN079), e o trecho vai para o fim do arquivo.
     fn moves_sql_name(&self, span: TextRange) -> bool {
         let text = &self.doc.text;
+        // A variável do sistema e a de outra regra a validação já conhece, como no SEN079.
+        let known = |name: &str| {
+            crate::builtins::system_variable(name, self.doc.context).is_some()
+                || self.doc.inherited.variable(name).is_some()
+        };
         let after: Vec<TextRange> = super::sql_variables(&self.doc.tree, text)
             .into_iter()
-            .filter(|use_| use_.start() >= span.end())
+            .filter(|use_| use_.start() >= span.end() && !known(&text[*use_]))
             .collect();
         if after.is_empty() {
             return false;

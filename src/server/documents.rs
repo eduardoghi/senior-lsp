@@ -36,6 +36,7 @@ pub(crate) struct Document {
     scan: OnceCell<directives::Scan>,
     code_lines: OnceCell<Vec<usize>>,
     implicit: OnceCell<Vec<text_size::TextRange>>,
+    sql_variables: OnceCell<Vec<(text_size::TextRange, Option<crate::NodeId>)>>,
     /// Diagnósticos montados para as ações de código, com os níveis que valeram para eles.
     shown: std::cell::RefCell<Option<(super::config::Levels, Shown)>>,
 }
@@ -62,6 +63,7 @@ impl Document {
             scan: OnceCell::new(),
             code_lines: OnceCell::new(),
             implicit: OnceCell::new(),
+            sql_variables: OnceCell::new(),
             shown: Default::default(),
         }
     }
@@ -119,6 +121,13 @@ impl Document {
     /// mostra. O `Port.json` do web service é lido nessa publicação, e mudar só ele não publica.
     pub(crate) fn forget_shown(&self) {
         self.shown.borrow_mut().take();
+    }
+
+    /// Os `:nome` dos textos do arquivo, para o destaque, as referências e o renomear. O destaque
+    /// roda a cada movimento do cursor, e uma regra grande tem mais de 1 MB de SQL.
+    pub(crate) fn sql_variables(&self) -> &[(text_size::TextRange, Option<crate::NodeId>)] {
+        self.sql_variables
+            .get_or_init(|| super::sql_variables_in_functions(&self.tree, &self.text))
     }
 
     /// Linhas com código, para as diretivas de próxima linha.

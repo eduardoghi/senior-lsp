@@ -4994,3 +4994,167 @@ fn extrair_nao_tira_o_primeiro_uso_de_um_nome_do_sql() {
                 cur.SQL \"SELECT A FROM T WHERE A = :nCodEmp\";\n";
     assert!(extract_lines(text, 1, 1).is_some());
 }
+
+#[test]
+fn renomear_nao_troca_dois_pontos_de_texto_comum() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "definir alfa mm; definir alfa a; definir cursor cur;\n\
+                mm = \"x\";\n\
+                FormataData(DatSis, \"hh:mm\", a);\n\
+                a = \"Erro:mm\";\n\
+                cur.SQL \"SELECT A FROM T WHERE B = :mm\";\n";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let params = json!({ "textDocument": { "uri": RULE },
+                         "position": { "line": 1, "character": 0 }, "newName": "zz" });
+    let r = editor.request(Rename::METHOD, params);
+    let edits: Vec<lsp_types::TextEdit> =
+        serde_json::from_value(r.response_result.unwrap()["changes"][RULE].clone()).unwrap();
+    let lines: Vec<u32> = edits.iter().map(|e| e.range.start.line).collect();
+    // A definição, a atribuição e o `= :mm` do SQL. O `hh:mm` e o `Erro:mm` são texto.
+    assert_eq!(lines, [0, 1, 4]);
+}
+
+#[test]
+fn renomear_herdada_nao_toca_parametro_de_outra_funcao() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-param-ren-{}", std::process::id()));
+    let form = base.join("Formulários SGI/interface/F1");
+    std::fs::create_dir_all(form.join("actions/A1")).unwrap();
+    let root = form.join("rule.txt");
+    std::fs::write(
+        &root,
+        "definir numero x; definir cursor cur; definir funcao f(numero x);\nx = 1;\n\
+         funcao f(numero x); {\n  x = x + 1;\n  cur.SQL \"SELECT A FROM T WHERE B = :x\";\n}",
+    )
+    .unwrap();
+    let action = form.join("actions/A1/rule.txt");
+    let action_text = "x = 2;";
+    std::fs::write(&action, action_text).unwrap();
+    let action_uri = crate::form::uri_from_path(&action);
+    let root_uri = crate::form::uri_from_path(&root);
+    let (mut editor, _) = Editor::start(None);
+    editor.open(&action_uri, 1, action_text);
+    editor.diagnostics();
+    let params = json!({ "textDocument": { "uri": action_uri },
+                         "position": { "line": 0, "character": 0 }, "newName": "y" });
+    let r = editor.request(Rename::METHOD, params);
+    let changes = r.response_result.unwrap()["changes"].clone();
+    let root_edits: Vec<lsp_types::TextEdit> =
+        serde_json::from_value(changes[root_uri.as_str()].clone()).unwrap();
+    // Só o `definir numero x` e o `x = 1`. O parâmetro e o `:x` de dentro de `f` são outra coisa.
+    let lines: Vec<u32> = root_edits.iter().map(|e| e.range.start.line).collect();
+    assert_eq!(lines, [0, 1], "{changes}");
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn nome_no_sql_de_variavel_herdada_e_de_modelo() {
+    // Tela: o `:nCodEmp` da ação é a variável da raiz.
+    let base = std::env::temp_dir().join(format!("senior-lsp-herdada-sql-{}", std::process::id()));
+    let form = base.join("Formulários SGI/interface/F1");
+    std::fs::create_dir_all(form.join("actions/A1")).unwrap();
+    let root = form.join("rule.txt");
+    std::fs::write(&root, "definir numero nCodEmp;\nnCodEmp = 1;").unwrap();
+    let action = form.join("actions/A1/rule.txt");
+    let action_text =
+        "definir cursor cur;\ncur.SQL \"SELECT A FROM T WHERE B = :nCodEmp\";\nnCodEmp = 2;";
+    std::fs::write(&action, action_text).unwrap();
+    let action_uri = crate::form::uri_from_path(&action);
+    let (mut editor, _) = Editor::start(None);
+    editor.open(&action_uri, 1, action_text);
+    editor.diagnostics();
+    let at = |line: u32, character: u32| json!({ "textDocument": { "uri": action_uri }, "position": { "line": line, "character": character } });
+    let r = editor.request(PrepareRenameRequest::METHOD, at(1, 39));
+    assert!(!r.response_result.unwrap().is_null());
+    let mut params = at(1, 39);
+    params["context"] = json!({ "includeDeclaration": true });
+    let r = editor.request(References::METHOD, params);
+    assert_eq!(r.response_result.unwrap().as_array().unwrap().len(), 4);
+    // O destaque a partir do SQL e a partir do código marca os dois usos da ação.
+    for (line, character) in [(1, 39), (2, 1)] {
+        let r = editor.request(
+            lsp_types::request::DocumentHighlightRequest::METHOD,
+            at(line, character),
+        );
+        assert_eq!(
+            r.response_result.unwrap().as_array().unwrap().len(),
+            2,
+            "{line}"
+        );
+    }
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+
+    // Modelo: o `:nY` do SQL entra nas referências da variável.
+    let base = std::env::temp_dir().join(format!("senior-lsp-modelo-sql-{}", std::process::id()));
+    let model = base.join("Modelos/M1.GER");
+    std::fs::create_dir_all(&model).unwrap();
+    std::fs::write(model.join("Base_Structure.json"), "{ \"children\": [] }").unwrap();
+    let header = r#"{ "children": [ { "rule": { "prop_name": "SOnPrint", "lines": [
+  "Definir Numero nY; Definir Cursor cur;",
+  "nY = 1;",
+  "cur.SQL \"SELECT A FROM T WHERE B = :nY\";"
+] } } ] }"#;
+    let header_path = model.join("Cabecalho.json");
+    std::fs::write(&header_path, header).unwrap();
+    let uri = crate::form::uri_from_path(&header_path);
+    let (mut editor, _) = Editor::start(None);
+    editor.open(&uri, 1, header);
+    editor.diagnostics();
+    let params = json!({ "textDocument": { "uri": uri },
+                         "position": { "line": 2, "character": 4 }, "newName": "nZ" });
+    let r = editor.request(Rename::METHOD, params);
+    let edits: Vec<lsp_types::TextEdit> =
+        serde_json::from_value(r.response_result.unwrap()["changes"][uri.as_str()].clone())
+            .unwrap();
+    let lines: Vec<u32> = edits.iter().map(|e| e.range.start.line).collect();
+    assert_eq!(lines, [1, 2, 3]);
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn extrair_aceita_variavel_do_sistema_antes_do_sql() {
+    let text = "definir cursor cur; definir numero n;\nn = CodEmp;\n\
+                cur.SQL \"SELECT A FROM T WHERE A = :CodEmp\";\n";
+    assert!(extract_lines(text, 1, 1).is_some());
+}
+
+#[test]
+fn resolve_do_completar_com_funcao_de_outra_regra_da_tela() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-resolve-tela-{}", std::process::id()));
+    let form = base.join("Formulários SGI/interface/F1");
+    std::fs::create_dir_all(form.join("actions/A1")).unwrap();
+    std::fs::write(
+        form.join("rule.txt"),
+        "definir funcao RaizSoma(numero x);\nfuncao RaizSoma(numero x); { }",
+    )
+    .unwrap();
+    let action = form.join("actions/A1/rule.txt");
+    std::fs::write(&action, "Rai").unwrap();
+    let uri = crate::form::uri_from_path(&action);
+    let (mut editor, _) = Editor::start_with(None, json!({ "resolveDetail": true }));
+    editor.open(&uri, 1, "Rai");
+    let response = editor.request(
+        lsp_types::request::Completion::METHOD,
+        json!({ "textDocument": { "uri": uri }, "position": { "line": 0, "character": 3 } }),
+    );
+    let items: Vec<lsp_types::CompletionItem> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    let item = items.into_iter().find(|i| i.label == "RaizSoma").unwrap();
+    // Com a lista aberta, a ação muda e a herança da tela continua a mesma.
+    editor.change(&uri, 2, "Raiz");
+    let response = editor.request(
+        lsp_types::request::ResolveCompletionItem::METHOD,
+        serde_json::to_value(item).unwrap(),
+    );
+    let resolved: lsp_types::CompletionItem =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    assert_eq!(
+        resolved.detail.as_deref(),
+        Some("definir funcao RaizSoma(numero x);")
+    );
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
