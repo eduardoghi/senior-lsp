@@ -1052,6 +1052,90 @@ mod tests {
     }
 
     #[test]
+    fn recuperacao_de_erros_de_sintaxe() {
+        // Cada entrada com a árvore e os erros que o parser dá hoje. A recuperação não muda o
+        // que o código válido vira, e estes casos travam o que ela faz com o inválido.
+        let casos = [
+            (
+                "se (1 = 1) { Cancel }",
+                "(If (BinaryExpr 1 1) (Block (KeywordStmt)))",
+                vec![ParseErrorKind::Expected(Semicolon)],
+            ),
+            (
+                "Cancel }",
+                "(KeywordStmt) (ErrorNode)",
+                vec![
+                    ParseErrorKind::Expected(Semicolon),
+                    ParseErrorKind::UnmatchedEnd,
+                ],
+            ),
+            (
+                "{ x = 1; }\nfuncao f(); x = 1; } y = 2;",
+                "(Block (Assign x 1)) (FuncImpl f (ParamList) (Assign x 1) (ErrorNode) (Assign y 2))",
+                vec![ParseErrorKind::UnmatchedEnd],
+            ),
+            ("x 1;", "x (ErrorNode)", vec![ParseErrorKind::Expected(Eq)]),
+            ("x.y 1;", "(FieldCommand (FieldExpr x y) 1)", vec![]),
+            (
+                "Mensagem(Foo, \"a\");",
+                "(CallStmt (CallExpr Mensagem (ArgList Foo \"a\")))",
+                vec![ParseErrorKind::InvalidMessageType],
+            ),
+            (
+                "Mensagem(+, \"a\");",
+                "(CallStmt (CallExpr Mensagem (ArgList (ErrorNode) \"a\")))",
+                vec![ParseErrorKind::InvalidMessageType],
+            ),
+            (
+                "Mensagem(Erro x);",
+                "(CallStmt (CallExpr Mensagem (ArgList Erro x)))",
+                vec![ParseErrorKind::Expected(Comma)],
+            ),
+            (
+                "f(a (b) c;",
+                "(CallStmt (CallExpr f (ArgList (CallExpr a (ArgList b)) c)))",
+                vec![
+                    ParseErrorKind::Expected(Comma),
+                    ParseErrorKind::Expected(RParen),
+                ],
+            ),
+            (
+                "f(a (b) se (1) {}",
+                "(CallStmt (CallExpr f (ArgList (CallExpr a (ArgList b))))) (If 1 (Block))",
+                vec![
+                    ParseErrorKind::Expected(RParen),
+                    ParseErrorKind::Expected(Semicolon),
+                ],
+            ),
+            (
+                "f(a, (b;\nx = 1;",
+                "(CallStmt (CallExpr f (ArgList a (ParenExpr b)))) (Assign x 1)",
+                vec![
+                    ParseErrorKind::Expected(RParen),
+                    ParseErrorKind::Expected(RParen),
+                ],
+            ),
+            (
+                "Se 1;",
+                "(If (ErrorNode))",
+                vec![
+                    ParseErrorKind::Expected(LParen),
+                    ParseErrorKind::ExpectedStatement,
+                ],
+            ),
+            (
+                "Retorna x",
+                "Retorna (ErrorNode)",
+                vec![ParseErrorKind::Expected(Eq)],
+            ),
+        ];
+        for (texto, arvore, esperados) in casos {
+            assert_eq!(regra(texto), arvore, "{texto:?}");
+            assert_eq!(erros_regra(texto), esperados, "{texto:?}");
+        }
+    }
+
+    #[test]
     fn precedencia() {
         assert_eq!(sexp("a + b * c"), "(BinaryExpr a (BinaryExpr b c))");
         assert_eq!(sexp("a * b + c"), "(BinaryExpr (BinaryExpr a b) c)");

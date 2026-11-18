@@ -1076,6 +1076,36 @@ mod tests {
     }
 
     #[test]
+    fn casos_de_borda_do_fim_da_linha_e_do_arquivo() {
+        // Depois do comentário de várias linhas, o operador só junta com o primeiro caractere
+        // da linha seguinte. A linha em branco não deixa o `+` de baixo juntar.
+        for texto in ["/*\n*/ +\n\n+", "/*\r\n*/ +\r\n\r\n+"] {
+            assert_eq!(
+                kinds(texto),
+                [BlockComment, Whitespace, Plus, Newline, Newline, Plus],
+                "{texto:?}"
+            );
+        }
+        // Numa linha normal, o `\"` encostado na quebra ainda é escape, e a string fica aberta.
+        let texto = "a = \"ab\\\"\n\";";
+        assert_eq!(
+            kinds(texto),
+            [Ident, Whitespace, Eq, Whitespace, Str, Newline, Str]
+        );
+        assert_eq!(
+            erros(texto),
+            [(UnterminatedString, 4, 5), (UnterminatedString, 10, 11)]
+        );
+        // A string sem fechar no fim do arquivo, sem quebra de linha, vai até o fim.
+        let texto = "x = \"abc";
+        let tokens = lex_ok(texto);
+        assert_eq!(tokens.kinds(), [Ident, Whitespace, Eq, Whitespace, Str]);
+        assert_eq!(tokens.text(4, texto), "\"abc");
+        assert!(!tokens.is_empty() && lex("").unwrap().is_empty());
+        assert_eq!(TextTooLarge.to_string(), "texto maior que 4 GiB");
+    }
+
+    #[test]
     fn literal_de_caractere() {
         for texto in ["'''", "' '", "'é'", "'\"'", "'x'"] {
             let tokens = lex_ok(texto);

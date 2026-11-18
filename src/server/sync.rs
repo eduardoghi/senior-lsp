@@ -83,6 +83,17 @@ mod tests {
     }
 
     #[test]
+    fn texto_inteiro_no_meio_das_mudancas() {
+        // Só vale o que vem depois do último texto inteiro, com as linhas do texto novo.
+        let changes = vec![
+            edit((0, 0), (0, 1), "X"),
+            whole("um\ndois\n"),
+            edit((1, 0), (1, 4), "três"),
+        ];
+        assert_eq!(run("abc\ndef\nghi\n", changes, Utf8), "um\ntrês\n");
+    }
+
+    #[test]
     fn insere_apaga_e_troca() {
         assert_eq!(
             run("x = 1;", vec![edit((0, 4), (0, 5), "22")], Utf16),

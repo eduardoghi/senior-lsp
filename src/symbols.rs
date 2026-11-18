@@ -335,6 +335,17 @@ mod tests {
     }
 
     #[test]
+    fn membro_e_argumento_no_espaco_de_nomes_certo() {
+        // O campo depois do ponto não é a variável de mesmo nome, e o argumento da chamada é
+        // valor, não função.
+        let text = "definir numero Achou;\ndefinir cursor c;\nx = c.Achou;\nf(Achou);";
+        assert_eq!(
+            resolve(text),
+            [("c", vec![2], false), ("Achou", vec![1], false)]
+        );
+    }
+
+    #[test]
     fn variavel_global_sem_caixa_e_antes_do_definir() {
         let text = "Abc = 1;\ndefinir numero abc;\nx = ABC;";
         assert_eq!(
