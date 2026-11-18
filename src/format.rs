@@ -990,6 +990,157 @@ mod tests {
         );
     }
 
+    /// Textos para as conferências de propriedade do recuo, com continuação de comando, SQL de
+    /// várias linhas, trecho desligado, tabulação misturada, CRLF e erro de sintaxe.
+    fn textos_de_recuo() -> Vec<std::string::String> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/regras");
+        let mut textos: Vec<std::string::String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+            .collect();
+        textos.extend(
+            [
+                "enquanto (a < 1) {\nse ((a = 1) e\n    (b = 2)) {\nx = Soma(1,\n  2,\n\t3);\n}\n}\n",
+                "se (a = 1) {\n@ senior-lsp-format-off @\n      x  =  1;\n@ senior-lsp-format-on @\n\t  z = 3;\n}\n",
+                "definir cursor c;\r\nse (a = 1) {\r\n\tc.SQL \"SELECT A \\\r\n       FROM T\";\r\n  }\r\n",
+                "se (a = 1)\ninicio\n\t\tx = 1;\n   fim\nsenao\n y = 2;\n",
+                "se (a = 1) {\n  x = ;\n}\n",
+                "funcao f(); {\n\t\t\tx = 1;\n se (x) { y = 1;\n}\n}\n",
+            ]
+            .map(str::to_owned),
+        );
+        textos
+    }
+
+    fn estilos() -> [Indent; 4] {
+        [
+            Indent {
+                tab_size: 2,
+                spaces: true,
+            },
+            Indent {
+                tab_size: 4,
+                spaces: true,
+            },
+            Indent {
+                tab_size: 4,
+                spaces: false,
+            },
+            Indent {
+                tab_size: 3,
+                spaces: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn recuo_de_uma_linha_igual_ao_do_arquivo() {
+        // O recuo de uma linha só, usado ao digitar, tem de dar o mesmo que o recuo do arquivo
+        // inteiro restrito àquela linha, em todo estilo de recuo.
+        for text in textos_de_recuo() {
+            let tree = crate::parse(&text).unwrap();
+            for indent in estilos() {
+                let mut start = 0;
+                for line in text.split('\n') {
+                    let end = start + line.len();
+                    let range =
+                        TextRange::new(TextSize::new(start as u32), TextSize::new(end as u32));
+                    let one = line_indentation(&text, &tree, indent, range);
+                    let all = indentation(&text, &tree, indent, Some(range));
+                    assert_eq!(one, all, "{indent:?} na linha {line:?} de {text:?}");
+                    start = end + 1;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn recuo_estavel_em_todo_estilo() {
+        // Aplicar o recuo e calcular de novo não muda nada, e o texto só muda em espaço.
+        for text in textos_de_recuo() {
+            for indent in estilos() {
+                let tree = crate::parse(&text).unwrap();
+                let Some(edits) = indentation(&text, &tree, indent, None) else {
+                    continue;
+                };
+                let mut out = text.clone();
+                for edit in edits.iter().rev() {
+                    let range = usize::from(edit.range.start())..usize::from(edit.range.end());
+                    out.replace_range(range, &edit.new_text);
+                }
+                let sem_espaco = |t: &str| t.split_whitespace().collect::<std::string::String>();
+                assert_eq!(sem_espaco(&out), sem_espaco(&text), "{indent:?}");
+                let tree = crate::parse(&out).unwrap();
+                assert_eq!(
+                    indentation(&out, &tree, indent, None).map(|e| e.len()),
+                    Some(0),
+                    "{indent:?} em {out:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ao_digitar_nos_limites() {
+        let run = |text: &str, at: usize, typed: &str, indent: Indent| {
+            let tree = crate::parse(text).unwrap();
+            let edits = on_type(text, &tree, indent, TextSize::new(at as u32), typed);
+            edits.map(|edits| {
+                let mut out = text.to_owned();
+                for edit in edits.iter().rev() {
+                    let range = usize::from(edit.range.start())..usize::from(edit.range.end());
+                    out.replace_range(range, &edit.new_text);
+                }
+                out
+            })
+        };
+        let spaces = Indent {
+            tab_size: 4,
+            spaces: true,
+        };
+        let tabs = Indent {
+            tab_size: 4,
+            spaces: false,
+        };
+        // Com a regra ainda com erro, a linha depois de um `{` entra um nível, com espaço ou
+        // tabulação, a partir do recuo da linha de cima.
+        assert_eq!(
+            run("se (n = 1) {\n", 13, "\n", spaces).as_deref(),
+            Some("se (n = 1) {\n    ")
+        );
+        assert_eq!(
+            run("se (n = 1) {\n", 13, "\n", tabs).as_deref(),
+            Some("se (n = 1) {\n\t")
+        );
+        assert_eq!(
+            run("\tse (n = 1) {\n", 14, "\n", tabs).as_deref(),
+            Some("\tse (n = 1) {\n\t\t")
+        );
+        // Só o `fim` inteiro fecha o bloco.
+        assert_eq!(
+            run("se (n = 1)\ninicio\n  fim\n", 21, "m", spaces).as_deref(),
+            Some("se (n = 1)\ninicio\nfim\n")
+        );
+        assert_eq!(run("se (n = 1)\ninicio\n  fim_\n", 22, "m", spaces), None);
+        assert_eq!(run("se (n = 1)\ninicio\n  fimx\n", 22, "m", spaces), None);
+        // O `}` no meio da linha não mexe nela.
+        assert_eq!(run("se (a = 1) {\n  x = {};\n}\n", 20, "}", spaces), None);
+        // A quebra com o resto da linha depois do cursor leva o resto para o nível do bloco, e a
+        // linha nova que já tem recuo fica com o do bloco.
+        assert_eq!(
+            run("se (a = 1) {\nx = 1;\n}\n", 13, "\n", spaces).as_deref(),
+            Some("se (a = 1) {\n    x = 1;\n}\n")
+        );
+        assert_eq!(
+            run("se (a = 1) {\n      \n}\n", 13, "\n", spaces).as_deref(),
+            Some("se (a = 1) {\n    \n}\n")
+        );
+        assert_eq!(
+            run("se (a = 1) {\n    \n}\n", 13, "\n", spaces).as_deref(),
+            Some("se (a = 1) {\n    \n}\n")
+        );
+    }
+
     #[test]
     fn trecho_desligado_fica_como_esta() {
         let text = "se (a = 1) {\n@ senior-lsp-format-off @\n      x  =  1;\n          y = 2;\n@ senior-lsp-format-on @\nz = 3;\n}\n";

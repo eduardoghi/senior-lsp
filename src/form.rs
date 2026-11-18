@@ -1136,6 +1136,69 @@ mod tests {
     }
 
     #[test]
+    fn juncao_da_heranca_nos_limites() {
+        let defs = |text: &str| RuleDefs::of(Arc::from(text));
+        let (a, b) = (defs("definir alfa x;"), defs("definir numero x;"));
+        let rules = |unordered| {
+            Inherited::merge(
+                [
+                    (Path::new("a/rule.txt"), &a, None),
+                    (Path::new("b/rule.txt"), &b, None),
+                ]
+                .into_iter(),
+                unordered,
+            )
+        };
+        // Na tela vale a primeira regra. No modelo, sem ordem, o tipo que diverge fica sem tipo.
+        assert_eq!(
+            rules(false).variable("x").map(|v| v.kind),
+            Some(DefKind::Variable(Some(VarType::Alfa)))
+        );
+        assert_eq!(
+            rules(true).variable("x").map(|v| v.kind),
+            Some(DefKind::Variable(None))
+        );
+
+        // O parâmetro data da função de outra regra.
+        let inherited = Inherited::from_rules([(
+            PathBuf::from("a/rule.txt"),
+            "definir funcao f(data dDia, numero end n);".to_owned(),
+        )]);
+        let params: Vec<_> = inherited
+            .get("f")
+            .unwrap()
+            .params
+            .iter()
+            .map(|p| (p.ty, p.by_ref))
+            .collect();
+        assert_eq!(params, [(VarType::Data, false), (VarType::Numero, true)]);
+
+        // Os dicionários passam para a herança sem definições.
+        let dictionaries = crate::dictionary::Dictionaries {
+            production: Some(Arc::new(crate::tbs::Dictionary::default())),
+            test: None,
+        };
+        assert!(
+            Inherited::with_dictionaries(dictionaries)
+                .dictionaries
+                .production
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn uso_antes_do_ponto_conta() {
+        // O cursor de outra regra usado como base de `cur.AbrirCursor()` é uso dele, e o campo
+        // depois do ponto não é.
+        let text = "cur.AbrirCursor();\nx.cur = 1;";
+        let found: Vec<_> = uses(text, "cur", false, false)
+            .into_iter()
+            .map(|r| u32::from(r.start()))
+            .collect();
+        assert_eq!(found, [0]);
+    }
+
+    #[test]
     fn implementada_em_outra_regra_e_entradas() {
         // Declarada numa regra e implementada em outra, as duas antes desta.
         let inherited = Inherited::from_rules([
