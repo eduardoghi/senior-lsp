@@ -4844,3 +4844,54 @@ fn ignorar_nao_entra_no_meio_de_sql_de_varias_linhas() {
     let titles = ignore_titles(&mut editor, 2, 6);
     assert!(!titles.iter().any(|t| t.contains("SEN076")), "{titles:?}");
 }
+
+#[test]
+fn resolve_do_completar_so_vale_para_a_ultima_lista() {
+    let other = "file:///regras/OUTRA.LSP/Rule.txt";
+    let (mut editor, _) = Editor::start_with(None, json!({ "resolveDetail": true }));
+    // As duas regras com a mesma versão, como na revisão que achou o caso.
+    editor.open(RULE, 1, "definir funcao Aaa(Numero x);\nA");
+    editor.open(other, 1, "definir funcao Mmm(Numero x);\nM");
+    let list = |editor: &mut Editor, uri: &str| -> Vec<lsp_types::CompletionItem> {
+        let response = editor.request(
+            lsp_types::request::Completion::METHOD,
+            json!({ "textDocument": { "uri": uri }, "position": { "line": 1, "character": 1 } }),
+        );
+        serde_json::from_value(response.response_result.unwrap()).unwrap()
+    };
+    let resolve = |editor: &mut Editor, item: &lsp_types::CompletionItem| -> Option<String> {
+        let response = editor.request(
+            lsp_types::request::ResolveCompletionItem::METHOD,
+            serde_json::to_value(item).unwrap(),
+        );
+        serde_json::from_value::<lsp_types::CompletionItem>(response.response_result.unwrap())
+            .unwrap()
+            .detail
+    };
+    let first = list(&mut editor, RULE);
+    let aaa = first.iter().find(|i| i.label == "Aaa").unwrap().clone();
+    let second = list(&mut editor, other);
+    let mmm = second.iter().find(|i| i.label == "Mmm").unwrap().clone();
+    // O item da lista anterior não recebe o detalhe da outra regra.
+    assert_eq!(resolve(&mut editor, &aaa), None);
+    assert_eq!(
+        resolve(&mut editor, &mmm).as_deref(),
+        Some("definir funcao Mmm(Numero x);")
+    );
+    // Com o texto mudado depois da lista, a definição do arquivo fica sem detalhe, e a função do
+    // ERP continua com o dela.
+    let items = list(&mut editor, other);
+    let mmm = items.iter().find(|i| i.label == "Mmm").unwrap().clone();
+    let erp = items
+        .iter()
+        .find(|i| i.kind == Some(lsp_types::CompletionItemKind::FUNCTION) && i.label != "Mmm")
+        .unwrap()
+        .clone();
+    editor.change(
+        other,
+        2,
+        "definir numero nOutra;\ndefinir funcao Mmm(Numero x);\nM",
+    );
+    assert_eq!(resolve(&mut editor, &mmm), None);
+    assert!(resolve(&mut editor, &erp).is_some(), "{}", erp.label);
+}

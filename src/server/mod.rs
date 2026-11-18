@@ -489,8 +489,8 @@ struct Server<'a> {
     refresh_hints: bool,
     /// O editor resolve o detalhe do completar, que sai do `completionItem/resolve`.
     resolve_detail: bool,
-    /// Arquivo da última lista do completar, a que o editor resolve.
-    completed: std::cell::RefCell<Option<Uri>>,
+    /// Última lista do completar, a que o editor resolve.
+    completed: std::cell::RefCell<Option<navigation::CompletionList>>,
     /// O editor aceita snippets, e o completar oferece os modelos de comando.
     snippets: bool,
     /// O editor mostra o progresso da análise da pasta.
@@ -591,8 +591,19 @@ impl Server<'_> {
                     // A regra dentro do JSON de modelo não fica entre os documentos que o resolve
                     // procura, e o detalhe vai no item.
                     let lazy = self.resolve_detail && c.embedding.is_none();
-                    let mut items = c.completion(at.position, lazy);
-                    *self.completed.borrow_mut() = Some(at.text_document.uri.clone());
+                    let mut completed = self.completed.borrow_mut();
+                    let id = completed.as_ref().map_or(1, |last| last.id + 1);
+                    let mut items = c.completion(at.position, lazy.then_some(id));
+                    if lazy {
+                        *completed = Some(navigation::CompletionList {
+                            id,
+                            uri: at.text_document.uri.clone(),
+                            version: c.doc.version,
+                            context: c.doc.context,
+                            inherited: c.doc.inherited.clone(),
+                        });
+                    }
+                    drop(completed);
                     if self.snippets {
                         items.extend(c.snippets(at.position));
                         items.extend(c.postfix(at.position));
@@ -602,19 +613,19 @@ impl Server<'_> {
             }
             lsp_types::request::ResolveCompletionItem::METHOD => {
                 let mut item: lsp_types::CompletionItem = serde_json::from_value(request.params)?;
-                let uri = self.completed.borrow().clone();
+                let last = self.completed.borrow().clone();
                 if item.detail.is_none()
-                    && let Some(uri) = uri
-                    && let Some(doc) = self.documents.get(&uri)
+                    && let Some(last) = last
+                    && let Some(doc) = self.documents.get(&last.uri)
                     && let Some(data) = &item.data
                 {
                     let context = navigation::Context {
                         doc,
-                        uri: &uri,
+                        uri: &last.uri,
                         encoding: self.encoding,
                         embedding: None,
                     };
-                    item.detail = context.resolve_completion(data);
+                    item.detail = context.resolve_completion(data, &last);
                 }
                 Ok(self.out.json(&item)?)
             }

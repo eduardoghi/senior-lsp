@@ -530,7 +530,7 @@ impl Context<'_> {
     /// Itens do completar no cursor. Com `lazy`, o editor resolve o detalhe pelo
     /// `completionItem/resolve`, e o item leva em `data` de onde veio. Uma resposta com a
     /// declaração de cada item passava de 160 KB a cada tecla numa regra comum.
-    pub(crate) fn completion(&self, position: Position, lazy: bool) -> Vec<CompletionItem> {
+    pub(crate) fn completion(&self, position: Position, lazy: Option<u64>) -> Vec<CompletionItem> {
         let offset = self.offset(position);
         let text = &self.doc.text;
         let tree = &self.doc.tree;
@@ -564,10 +564,9 @@ impl Context<'_> {
         let mut add =
             |name: &str, kind, origin: Origin, detail: &dyn Fn() -> String, rank: char| {
                 if matches(name) && seen.insert(name.to_uppercase()) {
-                    let (detail, data) = if lazy {
-                        (None, Some(origin.data(self.doc.version)))
-                    } else {
-                        (Some(detail()), None)
+                    let (detail, data) = match lazy {
+                        Some(list) => (None, Some(origin.data(list))),
+                        None => (Some(detail()), None),
                     };
                     items.push(CompletionItem {
                         label: name.to_owned(),
@@ -653,20 +652,29 @@ impl Context<'_> {
         })
     }
 
-    /// Detalhe do item pelo `data` que o completar pôs nele. `None` quando o texto mudou desde o
-    /// completar, porque o índice pode apontar para outra definição.
-    pub(crate) fn resolve_completion(&self, data: &serde_json::Value) -> Option<String> {
-        let [version, origin, i] = data.as_array()?.as_slice() else {
+    /// Detalhe do item pelo `data` que o completar pôs nele, se ele é da última lista. `None`
+    /// quando a lista é outra ou quando o que a posição aponta pode ter mudado. As funções do ERP
+    /// dependem do tipo da regra, as de outras regras da herança e as definições do arquivo do
+    /// texto.
+    pub(crate) fn resolve_completion(
+        &self,
+        data: &serde_json::Value,
+        last: &CompletionList,
+    ) -> Option<String> {
+        let [list, origin, i] = data.as_array()?.as_slice() else {
             return None;
         };
-        if version.as_i64()? != i64::from(self.doc.version) {
+        if list.as_u64()? != last.id || self.doc.context != last.context {
             return None;
         }
+        // Na tela a herança vem do cache dela e é a mesma enquanto nada muda no disco. Na regra
+        // comum ela é refeita a cada edição, mas não tem função nem variável.
+        let same_inherited = std::sync::Arc::ptr_eq(&self.doc.inherited, &last.inherited);
         let i = i.as_u64()? as usize;
         let origin = match origin.as_u64()? {
-            0 => Origin::Local(i),
-            1 => Origin::InheritedFunction(i),
-            2 => Origin::InheritedVariable(i),
+            0 if self.doc.version == last.version => Origin::Local(i),
+            1 if same_inherited => Origin::InheritedFunction(i),
+            2 if same_inherited => Origin::InheritedVariable(i),
             3 => Origin::Builtin(i),
             4 => Origin::Keyword,
             _ => return None,
@@ -1560,6 +1568,17 @@ mod tests {
 
 const KEYWORD_DETAIL: &str = "palavra da linguagem";
 
+/// A última lista do completar com o detalhe para resolver, e o que o detalhe dos itens dela
+/// depende.
+#[derive(Clone)]
+pub(crate) struct CompletionList {
+    pub(crate) id: u64,
+    pub(crate) uri: lsp_types::Uri,
+    pub(crate) version: i32,
+    pub(crate) context: crate::builtins::Context,
+    pub(crate) inherited: std::sync::Arc<crate::form::Inherited>,
+}
+
 /// De onde vem o item do completar, com a posição na lista de cada origem.
 #[derive(Clone, Copy)]
 enum Origin {
@@ -1571,10 +1590,10 @@ enum Origin {
 }
 
 impl Origin {
-    /// Versão do texto, origem e posição. O URI fica no servidor, com a última lista do
-    /// completar, que é a única que o editor resolve. Um objeto com o URI em cada item custava
-    /// mais que o detalhe que ele substitui.
-    fn data(self, version: i32) -> serde_json::Value {
+    /// Número da lista, origem e posição. O resto fica no servidor com a última lista do
+    /// completar (`CompletionList`), que é a que o editor resolve. Um objeto com o URI em cada
+    /// item custava mais que o detalhe que ele substitui.
+    fn data(self, list: u64) -> serde_json::Value {
         let (origin, i) = match self {
             Origin::Local(i) => (0, i),
             Origin::InheritedFunction(i) => (1, i),
@@ -1582,6 +1601,6 @@ impl Origin {
             Origin::Builtin(i) => (3, i),
             Origin::Keyword => (4, 0),
         };
-        serde_json::Value::Array(vec![version.into(), origin.into(), i.into()])
+        serde_json::Value::Array(vec![list.into(), origin.into(), i.into()])
     }
 }
