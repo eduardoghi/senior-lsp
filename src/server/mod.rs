@@ -31,6 +31,8 @@ mod selection;
 mod semantic;
 mod signature;
 mod sql;
+pub(crate) use navigation::enclosing_function_at;
+pub(crate) use sql::sql_variables;
 mod suggest;
 mod sync;
 mod webservice;

@@ -82,7 +82,7 @@ impl Context<'_> {
             && let Some(path) = crate::form::path_from_uri(self.uri.as_str())
         {
             let following = crate::form::following_uses(&path, None);
-            locations.extend(self.uses_in(&following, &text[def.name]));
+            locations.extend(self.uses_in(&following, &text[def.name], false));
         }
         let range = self.range(def.name);
         let title = match locations.len() {

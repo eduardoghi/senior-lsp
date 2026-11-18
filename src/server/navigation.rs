@@ -121,11 +121,12 @@ impl Context<'_> {
     }
 
     /// Usos de `name` nas regras que vêm depois de `rule` no formulário que não o definem de novo. A
-    /// regra aberta no editor usa o texto do editor, e as outras valem como estão no disco.
-    fn uses_after(&self, rule: &Path, name: &str) -> Vec<Location> {
+    /// regra aberta no editor usa o texto do editor, e as outras valem como estão no disco. Com
+    /// `value`, para nome de variável, entram também os `:nome` do SQL.
+    fn uses_after(&self, rule: &Path, name: &str, value: bool) -> Vec<Location> {
         let current = crate::form::path_from_uri(self.uri.as_str());
         let following = crate::form::following_uses(rule, current.as_deref());
-        self.uses_in(&following, name)
+        self.uses_in(&following, name, value)
     }
 
     /// Usos de `name` nas regras de `following`, que vêm de [`crate::form::following_uses`].
@@ -136,26 +137,31 @@ impl Context<'_> {
             Option<std::sync::Arc<crate::form::RuleUses>>,
         )],
         name: &str,
+        value: bool,
     ) -> Vec<Location> {
         let current = crate::form::path_from_uri(self.uri.as_str());
         let mut out = Vec::new();
         for (path, uses) in following {
             if current.as_deref() == Some(path.as_path()) {
-                let ranges = crate::form::uses(&self.doc.text, name, false);
+                let ranges = crate::form::uses(&self.doc.text, name, false, value);
                 out.extend(ranges.into_iter().map(|r| self.location(r)));
                 continue;
             }
             let Some(uses) = uses else {
                 continue;
             };
-            let ranges = uses.of_name(name);
+            let mut ranges = uses.of_name(name).to_vec();
+            if value {
+                ranges.extend_from_slice(uses.of_sql_name(name));
+                ranges.sort_by_key(|r| r.start());
+            }
             if ranges.is_empty() {
                 continue;
             }
             let Ok(uri) = crate::form::uri_from_path(path).parse::<Uri>() else {
                 continue;
             };
-            for &range in ranges {
+            for range in ranges {
                 let p = |offset| {
                     let lc = uses.index.line_col(&uses.text, offset, self.encoding);
                     Position::new(lc.line, lc.col)
@@ -178,10 +184,11 @@ impl Context<'_> {
         if include_declaration {
             out.extend(self.def_location(def, def.name));
         }
-        for r in crate::form::uses(&def.text, name, true) {
+        let value = matches!(def.kind, DefKind::Variable(_));
+        for r in crate::form::uses(&def.text, name, true, value) {
             out.extend(self.def_location(def, r));
         }
-        out.extend(self.uses_after(&def.path, name));
+        out.extend(self.uses_after(&def.path, name, value));
         out
     }
 
@@ -327,7 +334,10 @@ impl Context<'_> {
             return self.model_references(&name, function, include_declaration);
         }
         let symbols = &self.doc.symbols;
-        let Some(mut targets) = symbols.at(offset) else {
+        let Some(mut targets) = symbols
+            .at(offset)
+            .or_else(|| self.sql_variable_at(offset).map(|(_, targets)| targets))
+        else {
             return self.inherited_references(offset, include_declaration);
         };
         // Do `definir funcao` chega na `funcao` pelos usos, que alcançam as duas.
@@ -346,6 +356,7 @@ impl Context<'_> {
             .filter(|r| r.targets.iter().any(|t| targets.contains(t)))
             .map(|r| r.range)
             .collect();
+        ranges.extend(self.sql_variable_uses(&targets));
         if include_declaration {
             ranges.extend(targets.iter().map(|&t| symbols.definitions[t].name));
         }
@@ -358,7 +369,8 @@ impl Context<'_> {
             && self.doc.context == builtins::Context::Sgi
             && let Some(path) = crate::form::path_from_uri(self.uri.as_str())
         {
-            out.extend(self.uses_after(&path, &self.doc.text[first.name]));
+            let value = matches!(first.kind, DefKind::Variable(_));
+            out.extend(self.uses_after(&path, &self.doc.text[first.name], value));
         }
         out
     }
@@ -457,7 +469,10 @@ impl Context<'_> {
             Some(range) => Some(self.range(range)),
             None => self
                 .inherited_at(offset)
-                .map(|(range, _)| self.range(range)),
+                .map(|(range, _)| range)
+                // O `:nome` do SQL que aponta para uma definição do arquivo.
+                .or_else(|| self.sql_variable_at(offset).map(|(range, _)| range))
+                .map(|range| self.range(range)),
         }
     }
 

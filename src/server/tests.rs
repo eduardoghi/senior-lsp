@@ -4912,3 +4912,73 @@ fn lente_de_versao_anterior_nao_pega_outra_funcao_no_mesmo_lugar() {
     let resolved = resolve_lenses(&mut editor, lenses);
     assert!(resolved[0].command.is_none(), "{:?}", resolved[0].command);
 }
+
+#[test]
+fn renomear_e_referencias_incluem_o_nome_no_sql() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "definir numero nCodEmp; definir cursor cur;\n\
+                nCodEmp = 1;\n\
+                cur.SQL \"SELECT A FROM T WHERE CODEMP = :nCodEmp AND X = ':nCodEmp'\";\n";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let at = |line: u32, character: u32| json!({ "textDocument": { "uri": RULE }, "position": { "line": line, "character": character } });
+    // Do `:nCodEmp` do SQL para a definição, a atribuição e ele mesmo. O que está entre
+    // apóstrofos é texto do SQL e fica de fora.
+    let mut params = at(2, 44);
+    params["context"] = json!({ "includeDeclaration": true });
+    let r = editor.request(References::METHOD, params);
+    let lines: Vec<u64> = r
+        .response_result
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["range"]["start"]["line"].as_u64().unwrap())
+        .collect();
+    assert_eq!(lines, [0, 1, 2]);
+    let r = editor.request(
+        lsp_types::request::DocumentHighlightRequest::METHOD,
+        at(1, 2),
+    );
+    assert_eq!(r.response_result.unwrap().as_array().unwrap().len(), 3);
+
+    // Renomear a partir do SQL troca os três, e o SQL continua apontando para a variável.
+    let mut params = at(2, 44);
+    params["newName"] = json!("nEmp");
+    let r = editor.request(Rename::METHOD, params);
+    let edits: Vec<lsp_types::TextEdit> =
+        serde_json::from_value(r.response_result.unwrap()["changes"][RULE].clone()).unwrap();
+    assert_eq!(edits.len(), 3);
+    assert!(edits.iter().all(|e| e.new_text == "nEmp"));
+}
+
+#[test]
+fn renomear_na_tela_inclui_o_sql_das_regras_seguintes() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-sql-ren-{}", std::process::id()));
+    let form = base.join("Formulários SGI/interface/F1");
+    std::fs::create_dir_all(form.join("actions/A1")).unwrap();
+    let root = form.join("rule.txt");
+    let root_text = "definir numero nCodEmp;\nnCodEmp = 1;";
+    std::fs::write(&root, root_text).unwrap();
+    // A ação usa a variável da raiz só no SQL, e a `nLocal` dela não conta.
+    std::fs::write(
+        form.join("actions/A1/rule.txt"),
+        "definir cursor cur; definir numero nLocal;\ncur.SQL \"SELECT A FROM T WHERE A = :nCodEmp AND B = :nLocal\";",
+    )
+    .unwrap();
+    let root_uri = crate::form::uri_from_path(&root);
+    let action_uri = crate::form::uri_from_path(&form.join("actions/A1/rule.txt"));
+    let (mut editor, _) = Editor::start(None);
+    editor.open(&root_uri, 1, root_text);
+    editor.diagnostics();
+    let params = json!({ "textDocument": { "uri": root_uri },
+                         "position": { "line": 0, "character": 17 }, "newName": "nEmp" });
+    let r = editor.request(Rename::METHOD, params);
+    let changes = r.response_result.unwrap()["changes"].clone();
+    let action: Vec<lsp_types::TextEdit> =
+        serde_json::from_value(changes[action_uri.as_str()].clone()).unwrap();
+    assert_eq!(action.len(), 1, "{changes}");
+    assert_eq!(action[0].range.start, lsp_types::Position::new(1, 36));
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}

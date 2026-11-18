@@ -262,6 +262,45 @@ impl Context<'_> {
             .collect()
     }
 
+    /// Definições do `:nome` do SQL em `offset`. `None` fora de um `:nome` ou quando ele não aponta
+    /// para nada do arquivo.
+    pub(super) fn sql_variable_at(&self, offset: TextSize) -> Option<(TextRange, Vec<usize>)> {
+        let (literal, _, spot) = self.spot_at(offset)?;
+        let Spot::Variable(name) = spot else {
+            return None;
+        };
+        let range = shift(literal, &name);
+        let targets = self.variable_targets(offset, &self.doc.text[range]);
+        (!targets.is_empty()).then_some((range, targets))
+    }
+
+    /// Os `:nome` do SQL do arquivo que apontam para alguma das definições `targets`, que são de
+    /// variável ou parâmetro. O renomear e as referências precisam deles, porque o SQL usa o nome.
+    pub(super) fn sql_variable_uses(&self, targets: &[usize]) -> Vec<TextRange> {
+        let symbols = &self.doc.symbols;
+        let Some(&first) = targets.first() else {
+            return Vec::new();
+        };
+        if !matches!(
+            symbols.definitions[first].kind,
+            crate::symbols::DefKind::Variable(_) | crate::symbols::DefKind::Parameter(_)
+        ) {
+            return Vec::new();
+        }
+        let text = &self.doc.text;
+        let name = &text[symbols.definitions[first].name];
+        sql_variables(&self.doc.tree, text)
+            .into_iter()
+            .filter(|&range| {
+                text[range].eq_ignore_ascii_case(name)
+                    && self
+                        .variable_targets(range.start(), &text[range])
+                        .iter()
+                        .any(|t| targets.contains(t))
+            })
+            .collect()
+    }
+
     /// Definições do `:nome` usado em `offset`, vistas da `funcao` em volta.
     fn variable_targets(&self, offset: TextSize, name: &str) -> Vec<usize> {
         let tree = &self.doc.tree;
@@ -654,6 +693,32 @@ pub(super) fn cited_tables(text: &str, tree: &crate::Tree, offset: TextSize) -> 
         .filter(|t| t.scope.start <= at && at <= t.scope.end)
         .map(|t| source[t.table].to_owned())
         .collect()
+}
+
+/// Trecho do nome de cada `:nome` dos textos da regra, em ordem, sem os dois-pontos. É o mesmo
+/// reconhecimento do ir-para-definição, fora do que o compilador não lê como SQL.
+pub(crate) fn sql_variables(tree: &crate::Tree, text: &str) -> Vec<TextRange> {
+    let tokens = tree.tokens();
+    let mut out = Vec::new();
+    for i in 0..tokens.len() {
+        if tokens.kind(i) != SyntaxKind::String {
+            continue;
+        }
+        let literal = tokens.range(i);
+        let source = &text[literal];
+        if !source.contains(':') {
+            continue;
+        }
+        let mask = mask(source);
+        for colon in memchr::memchr_iter(b':', &mask) {
+            if let Some(Spot::Variable(name)) = spot_at(&mask, colon + 1)
+                && name.start == colon + 1
+            {
+                out.push(shift(literal, &name));
+            }
+        }
+    }
+    out
 }
 
 /// Trecho do literal de texto, dado em posições dentro dele, no texto da regra.

@@ -528,11 +528,14 @@ pub struct RuleUses {
     pub index: crate::line_index::LineIndex,
     /// Trechos de cada nome, em ordem de texto, pelo nome em maiúsculas.
     foreign: HashMap<String, Vec<TextRange>>,
+    /// Os `:nome` do SQL, à parte, porque só valem para variável.
+    sql: HashMap<String, Vec<TextRange>>,
 }
 
 impl RuleUses {
     fn of(text: Arc<str>) -> RuleUses {
         let mut foreign: HashMap<String, Vec<TextRange>> = HashMap::new();
+        let mut sql: HashMap<String, Vec<TextRange>> = HashMap::new();
         if let Ok(tree) = crate::parse(&text) {
             let symbols = Symbols::build(&tree, &text);
             let mut stack = vec![tree.root()];
@@ -552,6 +555,13 @@ impl RuleUses {
                         .push(range);
                 }
             }
+            for range in crate::server::sql_variables(&tree, &text) {
+                if !sql_variable_is_own(&tree, &symbols, &text, range) {
+                    sql.entry(text[range].to_ascii_uppercase())
+                        .or_default()
+                        .push(range);
+                }
+            }
         }
         for ranges in foreign.values_mut() {
             ranges.sort_by_key(|r| r.start());
@@ -560,7 +570,15 @@ impl RuleUses {
             index: crate::line_index::LineIndex::new(&text),
             text,
             foreign,
+            sql,
         }
+    }
+
+    /// Os `:nome` do SQL que não apontam para nada da regra, sem diferença de caixa, em ordem.
+    pub fn of_sql_name(&self, name: &str) -> &[TextRange] {
+        self.sql
+            .get(&name.to_ascii_uppercase())
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Usos de `name`, sem diferença de caixa, em ordem de texto.
@@ -848,8 +866,8 @@ fn link_targets(json: &str) -> HashMap<std::string::String, std::string::String>
 
 /// Usos de `name` no texto de uma regra, fora de campo depois de ponto. Com `own`, só os que
 /// apontam para uma definição do próprio texto. Sem `own`, só os que não apontam para nada dele,
-/// que vêm de outra regra.
-pub fn uses(text: &str, name: &str, own: bool) -> Vec<TextRange> {
+/// que vêm de outra regra. Com `value`, para nome de variável, entram também os `:nome` do SQL.
+pub fn uses(text: &str, name: &str, own: bool, value: bool) -> Vec<TextRange> {
     let Ok(tree) = crate::parse(text) else {
         return Vec::new();
     };
@@ -872,8 +890,31 @@ pub fn uses(text: &str, name: &str, own: bool) -> Vec<TextRange> {
             out.push(range);
         }
     }
+    if value {
+        for range in crate::server::sql_variables(&tree, text) {
+            if text[range].eq_ignore_ascii_case(name)
+                && sql_variable_is_own(&tree, &symbols, text, range) == own
+            {
+                out.push(range);
+            }
+        }
+    }
     out.sort_by_key(|r| r.start());
     out
+}
+
+/// O `:nome` do SQL em `range` aponta para uma definição do próprio texto, vista da `funcao` em
+/// volta, como no ir-para-definição.
+fn sql_variable_is_own(
+    tree: &crate::Tree,
+    symbols: &Symbols,
+    text: &str,
+    range: TextRange,
+) -> bool {
+    let function = crate::server::enclosing_function_at(tree, range.start());
+    !symbols
+        .value_targets(tree, text, &text[range], function)
+        .is_empty()
 }
 
 /// Caminho local de uma URI `file://`. `None` para outro esquema.
@@ -1222,7 +1263,10 @@ mod tests {
         assert_eq!(uses.of_name("f"), uses.of_name("F"));
         assert!(uses.of_name("Local").is_empty() && uses.of_name("cur").len() == 1);
         // O resultado é o mesmo de procurar um nome por vez.
-        assert_eq!(uses.of_name("F"), super::uses(&uses.text, "F", false));
+        assert_eq!(
+            uses.of_name("F"),
+            super::uses(&uses.text, "F", false, false)
+        );
         // A regra pulada vem sem os usos, e a de fora de formulário não tem regras seguintes.
         assert!(following[1].0 == a2 && following[1].1.is_none());
         assert!(following_uses(&base.join("regras/R/Rule.txt"), None).is_empty());
@@ -1413,10 +1457,10 @@ mod tests {
         fs::remove_dir_all(&base).unwrap();
 
         let text = "definir numero x;\nx = n + 1; cur.n = 2; f(n);";
-        assert_eq!(uses(text, "x", true).len(), 1);
-        assert!(uses(text, "x", false).is_empty());
+        assert_eq!(uses(text, "x", true, false).len(), 1);
+        assert!(uses(text, "x", false, false).is_empty());
         // `cur.n` é campo e não conta.
-        assert_eq!(uses(text, "N", false).len(), 2);
+        assert_eq!(uses(text, "N", false, false).len(), 2);
     }
 
     #[test]

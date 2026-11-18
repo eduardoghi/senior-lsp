@@ -55,7 +55,10 @@ impl Context<'_> {
         let offset = self.offset(position);
         let symbols = &self.doc.symbols;
         let mut highlights = Vec::new();
-        if let Some(targets) = symbols.at(offset) {
+        if let Some(targets) = symbols
+            .at(offset)
+            .or_else(|| self.sql_variable_at(offset).map(|(_, targets)| targets))
+        {
             // `definir funcao` e `funcao` são duas definições do mesmo nome, e uma referência
             // alcança as duas. Juntar os alvos das referências faz a declaração marcar a
             // implementação e o contrário.
@@ -72,6 +75,10 @@ impl Context<'_> {
                 if r.targets.iter().any(|t| targets.contains(t)) {
                     highlights.push((r.range, DocumentHighlightKind::READ));
                 }
+            }
+            let targets: Vec<usize> = targets.into_iter().collect();
+            for range in self.sql_variable_uses(&targets) {
+                highlights.push((range, DocumentHighlightKind::READ));
             }
         } else if let Some(ranges) = keyword_partners(&self.doc.tree, offset) {
             highlights.extend(ranges.into_iter().map(|r| (r, DocumentHighlightKind::TEXT)));
