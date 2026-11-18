@@ -425,6 +425,95 @@ mod tests {
         .collect()
     }
 
+    /// Todos os avisos, com o rótulo de cada um, no contexto e com as outras regras dados.
+    fn all(
+        text: &str,
+        context: crate::builtins::Context,
+        others: &[&str],
+    ) -> Vec<crate::validate::Check> {
+        let tree = crate::parse(text).unwrap();
+        let inherited =
+            crate::form::Inherited::from_rules(others.iter().enumerate().map(|(i, t)| {
+                (
+                    std::path::PathBuf::from(format!("r{i}/rule.txt")),
+                    (*t).to_owned(),
+                )
+            }));
+        crate::validate::validate(
+            &tree,
+            &crate::symbols::Symbols::build(&tree, text),
+            text,
+            context,
+            &inherited,
+        )
+    }
+
+    fn has(checks: &[crate::validate::Check], kind: CheckKind) -> bool {
+        checks.iter().any(|c| c.kind == kind)
+    }
+
+    #[test]
+    fn conferencias_da_chamada_nos_limites() {
+        use crate::builtins::Context::{Report, Rule};
+        // Nome de variável chamado como função não é chamada sem implementação.
+        assert!(!has(
+            &all("Definir Numero n;\nn(1);", Rule, &[]),
+            CallWithoutImplementation
+        ));
+        // A chamada é conferida contra a declaração, e não contra a `funcao`.
+        let text = "Definir Funcao f(Numero a);\nf(\"x\");\nFuncao f(Alfa a);\nInicio\nFim;";
+        assert!(!has(&all(text, Rule, &[]), LiteralInAlfaParameter));
+        // O nome do parâmetro vai no aviso do texto literal.
+        let text = "Definir Funcao f(Alfa pNome);\nf(\"x\");\nFuncao f(Alfa pNome);\nInicio\nFim;";
+        let literal: Vec<_> = all(text, Rule, &[])
+            .into_iter()
+            .filter(|c| c.kind == LiteralInAlfaParameter)
+            .map(|c| c.label)
+            .collect();
+        assert_eq!(literal, [Some("pNome".to_owned())]);
+
+        // No modelo de relatório, a função de uma regra só é conferida, a de duas não, porque não
+        // se sabe qual assinatura vale.
+        let decl = "Definir Funcao g(Alfa a);";
+        assert!(has(
+            &all("g(\"x\");", Report, &[decl]),
+            LiteralInAlfaParameter
+        ));
+        assert!(!has(
+            &all("g(\"x\");", Report, &[decl, decl]),
+            LiteralInAlfaParameter
+        ));
+        // Fora da tela a herança não diz se outra regra implementa, e a chamada à função declarada
+        // aqui e em outra regra do modelo fica sem aviso.
+        assert!(!has(
+            &all(
+                "Definir Funcao g();\ng();",
+                Report,
+                &["Definir Funcao g();"]
+            ),
+            CallWithoutImplementation
+        ));
+    }
+
+    #[test]
+    fn rotulos_parecidos_citam_o_primeiro_como_foi_escrito() {
+        // Iguais nos 30 primeiros caracteres. O aviso do segundo cita o primeiro como está no
+        // texto, e não em maiúsculas. Um `definir` com o mesmo nome não confunde.
+        let text = "definir numero ROTULOCOMTRINTACARACTERESABCDEA;\nx = 1;\n\
+                    rotuloComTrintaCaracteresAbcdeA:\nx = 2;\nrotuloComTrintaCaracteresAbcdeB:\nx = 3;";
+        let labels: Vec<_> = all(text, crate::builtins::Context::Rule, &[])
+            .into_iter()
+            .filter(|c| c.kind == LabelsSameStart)
+            .map(|c| c.label)
+            .collect();
+        assert_eq!(
+            labels,
+            [Some(
+                "rotuloComTrintaCaracteresAbcdeB|rotuloComTrintaCaracteresAbcdeA".to_owned()
+            )]
+        );
+    }
+
     #[test]
     fn vapara_para_rotulo_que_nao_existe() {
         assert_eq!(

@@ -155,6 +155,61 @@ mod tests {
             .collect()
     }
 
+    fn table(name: &str, description: &str, fields: &[(&str, &str)]) -> crate::tbs::Table {
+        crate::tbs::Table {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            fields: fields
+                .iter()
+                .map(|(n, d)| crate::tbs::Field {
+                    name: (*n).to_owned(),
+                    description: (*d).to_owned(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ordem_dos_grupos_e_limite() {
+        // O campo que tem a palavra na própria descrição vem antes do que só a tem na descrição
+        // da tabela, mesmo com a tabela antes na ordem alfabética.
+        let dictionary = Arc::new(Dictionary {
+            tables: vec![
+                table("A001", "Notas", &[("Cod", "Código")]),
+                table("B001", "Outros", &[("Num", "Número da nota")]),
+            ],
+            ..Default::default()
+        });
+        let order: Vec<_> = search(&dictionary, "nota")
+            .into_iter()
+            .map(|f| format!("{}.{}", f.tabela, f.campo))
+            .collect();
+        assert_eq!(order, ["B001.Num", "A001.Cod"]);
+
+        // Com mais campos que o limite, vêm os 100 primeiros em ordem.
+        let fields: Vec<(std::string::String, &str)> =
+            (0..150).map(|i| (format!("C{i:03}"), "valor")).collect();
+        let refs: Vec<(&str, &str)> = fields.iter().map(|(n, d)| (n.as_str(), *d)).collect();
+        let dictionary = Arc::new(Dictionary {
+            tables: vec![table("T", "Tabela", &refs)],
+            ..Default::default()
+        });
+        let found = search(&dictionary, "valor");
+        assert_eq!(found.len(), LIMIT);
+        assert_eq!(found[0].campo, "C000");
+        assert_eq!(found[LIMIT - 1].campo, "C099");
+    }
+
+    #[test]
+    fn sem_acento_em_todas_as_vogais() {
+        assert_eq!(
+            fold("ÁÀÂÃÄ ÉÈÊË ÍÌÎÏ ÓÒÔÕÖ ÚÙÛÜ Ç"),
+            "aaaaa eeee iiii ooooo uuuu c"
+        );
+    }
+
     #[test]
     fn cache_nao_prende_o_dicionario() {
         let bytes = std::fs::read("tests/fixtures/dicionario-ficticio.tbs").unwrap();

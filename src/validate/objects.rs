@@ -687,6 +687,104 @@ mod tests {
             .collect()
     }
 
+    /// Todos os avisos no contexto, com as outras regras da tela.
+    fn all(
+        text: &str,
+        context: crate::builtins::Context,
+        others: &[&str],
+    ) -> Vec<crate::validate::Check> {
+        let tree = crate::parse(text).unwrap();
+        let inherited =
+            crate::form::Inherited::from_rules(others.iter().enumerate().map(|(i, t)| {
+                (
+                    std::path::PathBuf::from(format!("r{i}/rule.txt")),
+                    (*t).to_owned(),
+                )
+            }));
+        crate::validate::validate(
+            &tree,
+            &crate::symbols::Symbols::build(&tree, text),
+            text,
+            context,
+            &inherited,
+        )
+    }
+
+    fn kinds(checks: &[crate::validate::Check]) -> Vec<CheckKind> {
+        checks.iter().map(|c| c.kind).collect()
+    }
+
+    #[test]
+    fn objetos_de_outra_regra_da_tela_sao_conferidos() {
+        use crate::builtins::Context::Sgi;
+        let cursor = kinds(&all("cur.AbrirCursor(1);", Sgi, &["Definir Cursor cur;"]));
+        assert!(cursor.contains(&CursorCommandArgument), "{cursor:?}");
+        let list = kinds(&all("n = lst.Primeiro;", Sgi, &["Definir Lista lst;"]));
+        assert!(list.contains(&ListFunctionWithoutParentheses), "{list:?}");
+        let table = kinds(&all(
+            "n = t.a;",
+            Sgi,
+            &["Definir Tabela t[2] = { Numero a; };"],
+        ));
+        assert!(table.contains(&TableWithoutIndex), "{table:?}");
+    }
+
+    #[test]
+    fn conferencias_de_objeto_nos_limites() {
+        use crate::builtins::Context::Rule;
+        let tabela = "Definir Tabela t[3] = { Numero a; Numero v[2]; };\nDefinir Numero n;\n";
+        // Nome definido como cursor e como alfa não é conferido como cursor.
+        let ambiguous = kinds(&all(
+            "Definir Cursor c;\nDefinir Alfa c;\nc.AbrirCursor(1);",
+            Rule,
+            &[],
+        ));
+        assert!(!ambiguous.contains(&CursorCommandArgument), "{ambiguous:?}");
+        // O erro de sintaxe dentro da tabela já diz o que falta, e a cobrança do tamanho fica
+        // de fora. O erro antes dela não conta.
+        let broken = kinds(&all("Definir Tabela t = { Numero ; };", Rule, &[]));
+        assert!(!broken.contains(&TableWithoutSize), "{broken:?}");
+        let before = kinds(&all("x = ;\nDefinir Tabela t = { Numero a; };", Rule, &[]));
+        assert!(before.contains(&TableWithoutSize), "{before:?}");
+        // A coluna `v[k]` usada como índice de outra variável continua sem o segundo índice.
+        let inside = kinds(&all(
+            &format!("{tabela}Definir Numero x[3];\nn = x[t[1].v];"),
+            Rule,
+            &[],
+        ));
+        assert!(inside.contains(&TableColumnWithoutIndex), "{inside:?}");
+        // O segundo índice 1 é válido, e a coluna sem tamanho não tem segundo índice a conferir.
+        let first = kinds(&all(&format!("{tabela}t[1].v[1] = 1;"), Rule, &[]));
+        assert!(!first.contains(&IndexOutOfRange), "{first:?}");
+        let plain = kinds(&all(&format!("{tabela}n = t[1].a[9];"), Rule, &[]));
+        assert!(!plain.contains(&IndexOutOfRange), "{plain:?}");
+        // AdicionarCampo só com o tipo não tem nome, e com o nome em número a lista fica sem a
+        // lista completa de campos, então o campo desconhecido não é cobrado.
+        let typed = kinds(&all(
+            "Definir Lista l;\nl.AdicionarCampo(Numero);",
+            Rule,
+            &[],
+        ));
+        assert!(typed.contains(&ListFieldWithoutName), "{typed:?}");
+        let numbered = kinds(&all(
+            "Definir Lista l;\nDefinir Numero n;\nl.AdicionarCampo(1, Alfa);\nn = l.Foo;",
+            Rule,
+            &[],
+        ));
+        assert!(!numbered.contains(&ListNotMember), "{numbered:?}");
+        // O campo repetido cita a lista e o campo em maiúsculas.
+        let repeated: Vec<_> = all(
+            "Definir Lista lst;\nlst.AdicionarCampo(\"A\", Alfa);\nlst.AdicionarCampo(\"a\", Alfa);",
+            Rule,
+            &[],
+        )
+        .into_iter()
+        .filter(|c| c.kind == ListRepeatedField)
+        .map(|c| c.label)
+        .collect();
+        assert_eq!(repeated, [Some("LST|A".to_owned())]);
+    }
+
     #[test]
     fn campo_de_lista_desconhecido_so_na_regra_comum() {
         // No modelo de relatório e na tela, outra regra pode criar o campo com AdicionarCampo.

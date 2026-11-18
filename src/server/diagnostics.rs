@@ -1217,6 +1217,20 @@ mod tests {
              linhas da tabela, que é 3 (Erro indexando fora dos limites: 4)."
         );
         assert_eq!(
+            hints(
+                "Definir Tabela t[0] = { Numero a; };\nDefinir Numero n;\nn = t[1].a;",
+                "SEN094"
+            )[0]
+            .1,
+            "O índice 1 está fora dos limites. t tem tamanho 0, então todo índice literal é \
+             recusado (Erro indexando fora dos limites: 1)."
+        );
+        assert!(
+            hints("Definir Cursor c;\nc.SQL = \"SELECT A FROM T\";", "SEN095")[0]
+                .1
+                .starts_with("O SQL do cursor se escreve sem =")
+        );
+        assert_eq!(
             hints("Definir Numero n;\nDefinir Alfa N;", "SEN101")[0].1,
             "N já foi definida como número, e o mesmo nome com outro tipo não compila (Definição \
              inválida: variável \"N\" já está definida como número)."

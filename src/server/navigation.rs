@@ -1604,6 +1604,31 @@ mod tests {
         );
         assert_eq!(lines(1), ["Busca na view VW_FOR por CodFor (com ForPad)"]);
     }
+
+    #[test]
+    fn comeco_da_expressao_do_pos_fixado() {
+        fn start(head: &str) -> Option<&str> {
+            super::expression_start(head).map(|i| &head[i..])
+        }
+        // Chamadas e índices entram inteiros, com o que vem depois do ponto.
+        assert_eq!(start("x = f(a, (b))"), Some("f(a, (b))"));
+        assert_eq!(start("x = t[i].Valor"), Some("t[i].Valor"));
+        assert_eq!(start("x = (a + b)"), Some("(a + b)"));
+        assert_eq!(start("x = f(a)[1]"), Some("f(a)[1]"));
+        // O parêntese aberto e não fechado encerra a expressão, como o `se (` antes do nome.
+        assert_eq!(start("se (nTotal"), Some("nTotal"));
+        assert_eq!(start("se (f(a).b"), Some("f(a).b"));
+        // Nome com acento e com `_`, inteiro.
+        assert_eq!(start("n = Ação"), Some("Ação"));
+        assert_eq!(start("_x"), Some("_x"));
+        // Sem expressão: parêntese que não fecha, nada antes, número, ponto no fim e parêntese
+        // aberto no fim.
+        assert_eq!(start("x = a)"), None);
+        assert_eq!(start("x = "), None);
+        assert_eq!(start("x = 12"), None);
+        assert_eq!(start("cur."), None);
+        assert_eq!(start("f(a)("), None);
+    }
 }
 
 const KEYWORD_DETAIL: &str = "palavra da linguagem";

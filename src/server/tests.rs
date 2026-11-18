@@ -4549,6 +4549,17 @@ fn modelos_pos_fixados_envolvem_a_expressao() {
         "{range:?}"
     );
     assert_eq!(new_text, "se (cur.Achou) {\n\t$0\n}");
+    assert_eq!(found[0].kind, Some(lsp_types::CompletionItemKind::SNIPPET));
+    assert_eq!(
+        found[0].detail.as_deref(),
+        Some("envolve a expressão num se")
+    );
+    assert_eq!(
+        found[0].insert_text_format,
+        Some(lsp_types::InsertTextFormat::SNIPPET)
+    );
+    // Na frente dos outros itens do completar.
+    assert_eq!(found[0].sort_text.as_deref(), Some("0se"));
 
     // Variável numérica, todos os modelos que começam com o que foi digitado.
     let text = "definir numero n;\nn.\n";
@@ -5077,11 +5088,20 @@ fn nome_no_sql_de_variavel_herdada_e_de_modelo() {
             lsp_types::request::DocumentHighlightRequest::METHOD,
             at(line, character),
         );
-        assert_eq!(
-            r.response_result.unwrap().as_array().unwrap().len(),
-            2,
-            "{line}"
-        );
+        let starts: Vec<(u64, u64)> = r
+            .response_result
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| {
+                (
+                    h["range"]["start"]["line"].as_u64().unwrap(),
+                    h["range"]["start"]["character"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(starts, [(1, 36), (2, 0)], "{line}");
     }
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
@@ -5155,6 +5175,29 @@ fn resolve_do_completar_com_funcao_de_outra_regra_da_tela() {
         resolved.detail.as_deref(),
         Some("definir funcao RaizSoma(numero x);")
     );
+
+    // Com a raiz mudada no disco, a herança é outra, e o item da lista anterior fica sem detalhe.
+    let response = editor.request(
+        lsp_types::request::Completion::METHOD,
+        json!({ "textDocument": { "uri": uri }, "position": { "line": 0, "character": 4 } }),
+    );
+    let items: Vec<lsp_types::CompletionItem> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    let item = items.into_iter().find(|i| i.label == "RaizSoma").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    std::fs::write(
+        form.join("rule.txt"),
+        "definir funcao Antes();\ndefinir funcao RaizSoma(numero x);\nfuncao RaizSoma(numero x); { }",
+    )
+    .unwrap();
+    editor.change(&uri, 3, "Raiz");
+    let response = editor.request(
+        lsp_types::request::ResolveCompletionItem::METHOD,
+        serde_json::to_value(item).unwrap(),
+    );
+    let resolved: lsp_types::CompletionItem =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    assert_eq!(resolved.detail, None);
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
@@ -5183,15 +5226,9 @@ fn completar_membros_de_tabela_e_campos_da_lista() {
     assert_eq!(
         found,
         [
-            (
-                "aNome".to_owned(),
-                Some("alfa campo da tabela".to_owned())
-            ),
+            ("aNome".to_owned(), Some("alfa campo da tabela".to_owned())),
             ("dDia".to_owned(), Some("data campo da tabela".to_owned())),
-            (
-                "nVal".to_owned(),
-                Some("numero campo da tabela".to_owned())
-            ),
+            ("nVal".to_owned(), Some("numero campo da tabela".to_owned())),
         ]
     );
     // Os campos criados com AdicionarCampo, com o tipo, e o filtro pelo começo digitado.
@@ -5205,4 +5242,194 @@ fn completar_membros_de_tabela_e_campos_da_lista() {
             Some("numero campo da lista".to_owned())
         )]
     );
+}
+
+#[test]
+fn capacidades_anunciadas() {
+    let (editor, _) = Editor::start(None);
+    let caps = &editor.capabilities;
+    assert_eq!(caps["codeLensProvider"]["resolveProvider"], json!(true));
+    assert_eq!(caps["completionProvider"]["resolveProvider"], json!(true));
+    assert_eq!(
+        caps["completionProvider"]["triggerCharacters"],
+        json!(["."])
+    );
+    assert_eq!(
+        caps["signatureHelpProvider"]["triggerCharacters"],
+        json!(["(", ","])
+    );
+    editor.stop();
+}
+
+#[test]
+fn opcao_valida_nao_vira_aviso() {
+    let value = json!({ "tbs_producao": "/x/sapiens.tbs", "tbs_teste": "", "dica_tipo": true });
+    assert!(super::option_warnings(super::Options(Some(&value))).is_empty());
+    let value = json!({ "tbs_producao": 1 });
+    assert_eq!(
+        super::option_warnings(super::Options(Some(&value))).len(),
+        1
+    );
+}
+
+#[test]
+fn outra_opcao_nao_religa_a_dica_de_tipo() {
+    let (mut editor, _) = Editor::start_with(None, json!({ "dica_tipo": false }));
+    editor.open(RULE, 1, "nValor = 1;\n");
+    editor.notify(
+        DidChangeConfiguration::METHOD,
+        json!({ "settings": { "analisar_pasta": false } }),
+    );
+    let response = editor.request(
+        lsp_types::request::InlayHintRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "range": { "start": { "line": 0, "character": 0 },
+                           "end": { "line": 9, "character": 0 } } }),
+    );
+    let hints: Vec<lsp_types::InlayHint> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    assert!(hints.is_empty(), "{hints:?}");
+}
+
+#[test]
+fn diretiva_no_fim_da_linha_de_codigo_pula_a_linha_em_branco() {
+    let (editor, _) = Editor::start(None);
+    // A diretiva vale para a próxima linha com código, e a linha em branco depois do `;` não é
+    // código.
+    let text = "x = 1; @ senior-lsp-disable-next-line SEN060 @\n\nCancel;\n";
+    editor.open(RULE, 1, text);
+    let d = editor.diagnostics();
+    assert!(
+        !d.diagnostics
+            .iter()
+            .any(|d| d.code == Some(lsp_types::NumberOrString::String("SEN060".to_owned()))),
+        "{:?}",
+        d.diagnostics
+    );
+}
+
+#[test]
+fn edicao_ligada_de_funcao_so_declarada() {
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, "Definir Funcao Soma();\nSoma();");
+    let response = editor.request(
+        lsp_types::request::LinkedEditingRange::METHOD,
+        json!({ "textDocument": { "uri": RULE }, "position": { "line": 0, "character": 16 } }),
+    );
+    assert!(response.response_result.unwrap().is_null());
+}
+
+#[test]
+fn dicas_de_tipo_no_trecho_e_cada_excecao() {
+    let hints = |text: &str, from: u32, to: u32| -> Vec<(u32, u32)> {
+        let (mut editor, _) = Editor::start(None);
+        editor.open(RULE, 1, text);
+        let response = editor.request(
+            lsp_types::request::InlayHintRequest::METHOD,
+            json!({ "textDocument": { "uri": RULE },
+                    "range": { "start": { "line": from, "character": 0 },
+                               "end": { "line": to, "character": 0 } } }),
+        );
+        let hints: Vec<lsp_types::InlayHint> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        hints
+            .into_iter()
+            .filter(|h| h.kind == Some(lsp_types::InlayHintKind::TYPE))
+            .map(|h| (h.position.line, h.position.character))
+            .collect()
+    };
+    let text = "nA = 1;\nnB = 2;\nnC = 3;\n";
+    // Só as dicas do trecho pedido, com os limites dele.
+    assert_eq!(hints(text, 1, 1), []);
+    assert_eq!(hints(text, 1, 2), [(1, 2)]);
+    assert_eq!(hints(text, 0, 3), [(0, 2), (1, 2), (2, 2)]);
+    // Ficam de fora a função chamada, o rótulo do VaPara, o tipo de mensagem, a variável do
+    // sistema e a de identificador. Um nome de duas letras com VS na frente é variável comum.
+    let text = "Foo();\nVaPara Sai;\nSai:\nMensagem(Erro, \"x\");\nMensagem(Refaz, \"x\");\n\
+                n1 = DatSis;\nn2 = VSCodEmp;\nvs = 1;\n";
+    assert_eq!(hints(text, 0, 9), [(5, 2), (6, 2), (7, 2)]);
+}
+
+#[test]
+fn completar_ordem_e_resolve_de_palavra() {
+    let (mut editor, _) = Editor::start_with(None, json!({ "resolveDetail": true }));
+    editor.open(RULE, 1, "definir numero nSeAlgo;\nse");
+    let response = editor.request(
+        lsp_types::request::Completion::METHOD,
+        json!({ "textDocument": { "uri": RULE }, "position": { "line": 1, "character": 2 } }),
+    );
+    let items: Vec<lsp_types::CompletionItem> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    let local = items.iter().find(|i| i.label == "nSeAlgo");
+    assert!(local.is_none(), "o filtro é pelo começo");
+    let keyword = items
+        .iter()
+        .find(|i| i.kind == Some(lsp_types::CompletionItemKind::KEYWORD))
+        .unwrap();
+    // A palavra da linguagem vem depois das definições, das herdadas e das do ERP.
+    assert!(keyword.sort_text.as_deref().unwrap().starts_with('3'));
+    let response = editor.request(
+        lsp_types::request::ResolveCompletionItem::METHOD,
+        serde_json::to_value(keyword).unwrap(),
+    );
+    let resolved: lsp_types::CompletionItem =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    assert_eq!(resolved.detail.as_deref(), Some("palavra da linguagem"));
+}
+
+#[test]
+fn definir_um_nome_so_e_o_tipo_pelo_uso() {
+    let titles = |text: &str, line: u32| -> Vec<(String, Option<bool>)> {
+        let (mut editor, _) = Editor::start(None);
+        editor.open(RULE, 1, text);
+        let response = editor.request(
+            lsp_types::request::CodeActionRequest::METHOD,
+            json!({ "textDocument": { "uri": RULE },
+                    "range": { "start": { "line": line, "character": 1 },
+                               "end": { "line": line, "character": 1 } },
+                    "context": { "diagnostics": [] } }),
+        );
+        let actions: Vec<lsp_types::CodeActionOrCommand> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        actions
+            .into_iter()
+            .filter_map(|a| match a {
+                lsp_types::CodeActionOrCommand::CodeAction(a) if a.title.starts_with("Definir") => {
+                    Some((a.title, a.is_preferred))
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    // Um nome só não ganha a ação de definir todos, e a dele é a preferida.
+    assert_eq!(
+        titles("xNome = \"x\";\n", 0),
+        [("Definir Alfa xNome;".to_owned(), Some(true))]
+    );
+    // O tipo pelo prefixo só vale com maiúscula depois do a ou do d.
+    assert_eq!(titles("aux = 1;\n", 0)[0].0, "Definir Numero aux;");
+    assert_eq!(titles("dData = 1;\n", 0)[0].0, "Definir Data dData;");
+    assert_eq!(titles("dia = 1;\n", 0)[0].0, "Definir Numero dia;");
+}
+
+#[test]
+fn destaque_e_cursor_no_fim_do_nome_do_sql() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "definir numero nCodEmp; definir cursor cur;\nnCodEmp = 1;\n\
+                cur.SQL \"SELECT A FROM T WHERE B = :nCodEmp\";\n";
+    editor.open(RULE, 1, text);
+    // O cursor logo depois do nome, no fim do `:nCodEmp`, ainda é o nome.
+    let r = editor.request(
+        lsp_types::request::DocumentHighlightRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE }, "position": { "line": 2, "character": 43 } }),
+    );
+    let lines: Vec<u64> = r
+        .response_result
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["range"]["start"]["line"].as_u64().unwrap())
+        .collect();
+    assert_eq!(lines, [0, 1, 2]);
 }

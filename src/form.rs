@@ -1136,6 +1136,43 @@ mod tests {
     }
 
     #[test]
+    fn implementada_em_outra_regra_e_entradas() {
+        // Declarada numa regra e implementada em outra, as duas antes desta.
+        let inherited = Inherited::from_rules([
+            (
+                PathBuf::from("a/rule.txt"),
+                "definir funcao f();".to_owned(),
+            ),
+            (
+                PathBuf::from("b/rule.txt"),
+                "funcao f(); inicio fim;".to_owned(),
+            ),
+        ]);
+        assert!(
+            inherited
+                .get("F")
+                .is_some_and(|f| f.implemented && f.rules == 2)
+        );
+        let declared = Inherited::from_rules([
+            (
+                PathBuf::from("a/rule.txt"),
+                "definir funcao f();".to_owned(),
+            ),
+            (
+                PathBuf::from("b/rule.txt"),
+                "definir funcao f();".to_owned(),
+            ),
+        ]);
+        assert!(declared.get("f").is_some_and(|f| !f.implemented));
+
+        // Com entradas, só o nome delas é entrada.
+        let mut inherited = Inherited::default();
+        inherited.entries.insert("ECODEMP".to_owned());
+        assert!(inherited.is_entry("ECodEmp"));
+        assert!(!inherited.is_entry("nOutro"));
+    }
+
+    #[test]
     fn vigia_nao_repete_caminho() {
         let mut watch = Watch::default();
         let path = std::path::Path::new("/nao/existe/senior-lsp.json");
@@ -1162,7 +1199,8 @@ mod tests {
         fs::write(&action, text).unwrap();
         fs::write(
             form.join("tables/T1/rule.txt"),
-            "funcao fTabela();\ninicio\nfim;",
+            // A regra da tabela também só declara fDepois, sem a `funcao`.
+            "funcao fTabela();\ninicio\nfim;\ndefinir funcao fDepois();",
         )
         .unwrap();
 
@@ -1170,6 +1208,7 @@ mod tests {
         assert!(inherited.get("fRaiz").is_some_and(|f| f.implemented));
         assert!(inherited.get("fTabela").is_some_and(|f| !f.implemented));
         assert!(inherited.implemented_later("FTABELA") && !inherited.implemented_later("fRaiz"));
+        assert!(!inherited.implemented_later("fDepois"));
 
         let tree = crate::parse(text).unwrap();
         let found: Vec<_> = crate::validate::validate(
