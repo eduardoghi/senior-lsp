@@ -720,7 +720,11 @@ impl Server<'_> {
                     .as_ref()
                     .and_then(|d| d.get("offset")?.as_u64())
                     .and_then(|o| u32::try_from(o).ok());
-                if let (Some(uri), Some(offset)) = (uri, offset)
+                let name = data
+                    .as_ref()
+                    .and_then(|d| d.get("nome")?.as_str())
+                    .map(str::to_owned);
+                if let (Some(uri), Some(offset), Some(name)) = (uri, offset, name)
                     && let Some(doc) = self.documents.get(&uri)
                 {
                     let context = navigation::Context {
@@ -729,7 +733,7 @@ impl Server<'_> {
                         encoding: self.encoding,
                         embedding: None,
                     };
-                    lens.command = context.resolve_lens(offset);
+                    lens.command = context.resolve_lens(offset, &name);
                 }
                 lens.data = data;
                 Ok(self.out.json(&lens)?)

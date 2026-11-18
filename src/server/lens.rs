@@ -44,21 +44,25 @@ impl Context<'_> {
                 data: Some(serde_json::json!({
                     "uri": self.uri.as_str(),
                     "offset": u32::from(def.name.start()),
+                    "nome": &text[def.name],
                 })),
             });
         }
         lenses
     }
 
-    /// Comando da lente da função cujo nome começa em `offset`. `None` quando o texto mudou e o
-    /// nome não está mais ali, e o editor pede as lentes de novo.
-    pub(crate) fn resolve_lens(&self, offset: u32) -> Option<Command> {
+    /// Comando da lente da função `name`, cujo nome começa em `offset`. `None` quando o texto
+    /// mudou e a função não está mais ali, e o editor pede as lentes de novo. Conferir só a posição
+    /// daria a contagem de outra função que tivesse passado a começar no mesmo lugar.
+    pub(crate) fn resolve_lens(&self, offset: u32, name: &str) -> Option<Command> {
         let text = &self.doc.text;
         let symbols = &self.doc.symbols;
         let definitions = &symbols.definitions;
-        let i = definitions
-            .iter()
-            .position(|d| d.kind == DefKind::Function && u32::from(d.name.start()) == offset)?;
+        let i = definitions.iter().position(|d| {
+            d.kind == DefKind::Function
+                && u32::from(d.name.start()) == offset
+                && text[d.name] == *name
+        })?;
         let def = &definitions[i];
         // Toda chamada alcança as mesmas definições, o `definir funcao` e a `funcao` de mesmo
         // nome, então as chamadas desta função são as referências que alcançam esta definição.

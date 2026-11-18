@@ -4895,3 +4895,20 @@ fn resolve_do_completar_so_vale_para_a_ultima_lista() {
     assert_eq!(resolve(&mut editor, &mmm), None);
     assert!(resolve(&mut editor, &erp).is_some(), "{}", erp.label);
 }
+
+#[test]
+fn lente_de_versao_anterior_nao_pega_outra_funcao_no_mesmo_lugar() {
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, "Definir Funcao Aaa();\nAaa();\nfuncao Aaa(); { }");
+    let response = editor.request(
+        lsp_types::request::CodeLensRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE } }),
+    );
+    let lenses: Vec<lsp_types::CodeLens> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    assert_eq!(lenses.len(), 1);
+    // Outra função passa a começar no mesmo lugar.
+    editor.change(RULE, 2, "Definir Funcao Bbb();\nBbb();\nfuncao Bbb(); { }");
+    let resolved = resolve_lenses(&mut editor, lenses);
+    assert!(resolved[0].command.is_none(), "{:?}", resolved[0].command);
+}

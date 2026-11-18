@@ -114,8 +114,9 @@ impl Document {
         shown
     }
 
-    /// Descarta a lista das ações de código, quando os diagnósticos são publicados de novo por
-    /// algo de fora do texto, como o `Port.json` do web service.
+    /// Descarta a lista das ações de código quando os diagnósticos são publicados de novo sem texto
+    /// novo, como depois de mudar o `senior-lsp.json`. Assim as ações seguem a lista que o editor
+    /// mostra. O `Port.json` do web service é lido nessa publicação, e mudar só ele não publica.
     pub(crate) fn forget_shown(&self) {
         self.shown.borrow_mut().take();
     }
