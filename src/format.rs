@@ -1006,9 +1006,15 @@ mod tests {
                 "se (a = 1)\ninicio\n\t\tx = 1;\n   fim\nsenao\n y = 2;\n",
                 "se (a = 1) {\n  x = ;\n}\n",
                 "funcao f(); {\n\t\t\tx = 1;\n se (x) { y = 1;\n}\n}\n",
+                "se (n = 1)\ninicio\n  fimx = 1;\n fim_ = 2;\n   x=Soma( a ,b )+c*-d;\nfim\n",
+                "se (a = 1) {\n  x = Soma(1,\n2,\n        3);\n   /* nota */ y  =  2 ; @ fim @\n}\n",
+                "@ senior-lsp-format-off @\n x  = 1;\n/* @ senior-lsp-format-on @ */\n  y  =  2;\n@ senior-lsp-format-on @\n  z  =  3;\n",
             ]
             .map(str::to_owned),
         );
+        // Uma linha perto do limite de 253 colunas, que com recuo maior passaria dele.
+        let longa = format!("se (a = 1) {{\nx = \"{}\";\ny = 1;\n}}\n", "a".repeat(244));
+        textos.push(longa);
         textos
     }
 
@@ -1055,6 +1061,72 @@ mod tests {
     }
 
     #[test]
+    fn ao_digitar_igual_ao_recuo_da_linha() {
+        // Ao digitar `}` numa linha que começa com `}`, `m` numa que começa com a palavra `fim`
+        // ou a quebra numa linha com conteúdo, o resultado é o recuo daquela linha. Nas outras
+        // linhas o `}` e o `m` não mexem em nada.
+        for text in textos_de_recuo() {
+            let tree = crate::parse(&text).unwrap();
+            for indent in estilos() {
+                let mut start = 0;
+                for line in text.split('\n') {
+                    let end = start + line.len();
+                    let range =
+                        TextRange::new(TextSize::new(start as u32), TextSize::new(end as u32));
+                    let content = line.trim_start_matches([' ', '\t']).trim_end_matches('\r');
+                    let at = TextSize::new(
+                        (end - (line.len() - line.trim_end_matches('\r').len())) as u32,
+                    );
+                    let expected = line_indentation(&text, &tree, indent, range);
+                    let fim = content.len() >= 3
+                        && content[..3].eq_ignore_ascii_case("fim")
+                        && !content[3..]
+                            .starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+                    let closes = |typed: &str, yes: bool| {
+                        let got = on_type(&text, &tree, indent, at, typed);
+                        let want = if yes { expected.clone() } else { None };
+                        assert_eq!(
+                            got, want,
+                            "{typed:?} {indent:?} na linha {line:?} de {text:?}"
+                        );
+                    };
+                    closes("}", content.starts_with('}'));
+                    closes("m", fim);
+                    if !content.is_empty() {
+                        closes("\n", true);
+                    }
+                    start = end + 1;
+                }
+            }
+        }
+        // A linha vazia com espaço em CRLF fica com o recuo do bloco, sem o `\r`.
+        let text = "se (a = 1) {\r\n      \r\n}\r\n";
+        let tree = crate::parse(text).unwrap();
+        let edits = on_type(
+            text,
+            &tree,
+            Indent {
+                tab_size: 4,
+                spaces: true,
+            },
+            TextSize::new(14),
+            "\n",
+        );
+        let edits: Vec<_> = edits
+            .unwrap()
+            .into_iter()
+            .map(|e| {
+                (
+                    u32::from(e.range.start()),
+                    u32::from(e.range.end()),
+                    e.new_text,
+                )
+            })
+            .collect();
+        assert_eq!(edits, [(14, 20, "    ".to_owned())]);
+    }
+
+    #[test]
     fn recuo_estavel_em_todo_estilo() {
         // Aplicar o recuo e calcular de novo não muda nada, e o texto só muda em espaço.
         for text in textos_de_recuo() {
@@ -1063,6 +1135,23 @@ mod tests {
                 let Some(edits) = indentation(&text, &tree, indent, None) else {
                     continue;
                 };
+                // A formatação completa, com o espaço dentro das linhas, também fica estável.
+                if let Some(full) = super::format(&text, &tree, indent, None) {
+                    let mut out = text.clone();
+                    for edit in full.iter().rev() {
+                        let range = usize::from(edit.range.start())..usize::from(edit.range.end());
+                        out.replace_range(range, &edit.new_text);
+                    }
+                    let sem_espaco =
+                        |t: &str| t.split_whitespace().collect::<std::string::String>();
+                    assert_eq!(sem_espaco(&out), sem_espaco(&text), "{indent:?}");
+                    let tree = crate::parse(&out).unwrap();
+                    assert_eq!(
+                        super::format(&out, &tree, indent, None).map(|e| e.len()),
+                        Some(0),
+                        "{indent:?} em {out:?}"
+                    );
+                }
                 let mut out = text.clone();
                 for edit in edits.iter().rev() {
                     let range = usize::from(edit.range.start())..usize::from(edit.range.end());

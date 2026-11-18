@@ -1382,6 +1382,13 @@ mod tests {
         };
         assert!(para("Continue").contains(&ContinueSkipsStep));
         assert!(!para("Pare").contains(&ContinueSkipsStep));
+        // Sem passo, o Continue não pula nada.
+        let sem_passo =
+            checks("definir numero n;\npara (n = 1; n < 3; ) { se (n = 2) Continue; n++; }");
+        assert!(
+            sem_passo.iter().all(|(k, _)| *k != ContinueSkipsStep),
+            "{sem_passo:?}"
+        );
         // A chamada a um nome que só é variável não tira o laço de infinito.
         let text = "definir numero Sair;\ndefinir numero n;\nenquanto () { n = n + 1; Sair(); }";
         assert!(checks_all(text).iter().any(|(k, _)| *k == EndlessLoop));
