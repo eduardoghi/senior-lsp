@@ -121,8 +121,8 @@ fn constants_of(statements: &[Statement]) -> Vec<String> {
 pub(super) struct Analysis {
     /// As colunas constantes do SELECT, que o cursor recusa.
     pub(super) constants: Vec<String>,
-    /// As colunas que o SELECT devolve, ou `None` quando não dá para saber todas.
-    pub(super) columns: Option<Vec<Column>>,
+    /// O nome das colunas que o SELECT devolve, ou `None` quando não dá para saber todas.
+    pub(super) columns: Option<Vec<String>>,
     /// As colunas do SELECT com tabela ou campo que o dicionário de dados não tem.
     pub(super) unknown: Vec<Unknown>,
     /// As colunas que viram campo do cursor, quando o texto é um SELECT com FROM.
@@ -1633,17 +1633,18 @@ impl<'a> FirstUses<'a> {
     }
 }
 
-/// Coluna que um SELECT devolve, pelo nome em maiúsculas, com o tipo do campo no dicionário quando
-/// dá para saber de qual tabela ela vem.
+/// Campo de um cursor, pelo nome em maiúsculas, com o tipo do campo no dicionário quando dá para
+/// saber de qual tabela ele vem.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Column {
     pub(super) name: String,
     pub(super) ty: Option<VarType>,
 }
 
-/// Colunas do SELECT, ou `None` quando não dá para saber todas. O nome é o apelido, ou o do campo
-/// com ou sem a tabela. `*` e `T.*` precisam do dicionário para virar campos.
-fn select_columns(statements: &[Statement], dictionaries: &Dictionaries) -> Option<Vec<Column>> {
+/// Nome das colunas do SELECT, em maiúsculas, ou `None` quando não dá para saber todas. O nome
+/// é o apelido, ou o do campo com ou sem a tabela. `*` e `T.*` precisam do dicionário para virar
+/// campos.
+fn select_columns(statements: &[Statement], dictionaries: &Dictionaries) -> Option<Vec<String>> {
     let [Statement::Query(query)] = statements else {
         return None;
     };
@@ -1654,17 +1655,8 @@ fn select_columns(statements: &[Statement], dictionaries: &Dictionaries) -> Opti
     let mut columns = Vec::new();
     for item in &select.projection {
         match item {
-            SelectItem::UnnamedExpr(expr) => {
-                let (qualifier, field) = column_ref(expr)?;
-                columns.push(Column {
-                    name: field.to_uppercase(),
-                    ty: from.field_type(dictionaries, qualifier, field),
-                });
-            }
-            SelectItem::ExprWithAlias { expr, alias } => columns.push(Column {
-                name: alias.value.to_uppercase(),
-                ty: column_ref(expr).and_then(|(q, f)| from.field_type(dictionaries, q, f)),
-            }),
+            SelectItem::UnnamedExpr(expr) => columns.push(column_ref(expr)?.1.to_uppercase()),
+            SelectItem::ExprWithAlias { alias, .. } => columns.push(alias.value.to_uppercase()),
             SelectItem::Wildcard(_) => {
                 if from.opaque || from.tables.is_empty() {
                     return None;
@@ -1697,18 +1689,9 @@ fn column_ref(expr: &Expr) -> Option<(Option<&str>, &str)> {
     }
 }
 
-fn table_columns(dictionaries: &Dictionaries, table: &str) -> Option<Vec<Column>> {
+fn table_columns(dictionaries: &Dictionaries, table: &str) -> Option<Vec<String>> {
     let table = dictionaries.table(table)?;
-    Some(
-        table
-            .fields
-            .iter()
-            .map(|f| Column {
-                name: f.name.to_uppercase(),
-                ty: f.ty.var_type(),
-            })
-            .collect(),
-    )
+    Some(table.fields.iter().map(|f| f.name.to_uppercase()).collect())
 }
 
 /// Tabelas do FROM, com o apelido, em maiúsculas. `opaque` diz que há alguma relação que não é
@@ -1749,32 +1732,6 @@ impl From {
             .iter()
             .find(|(name, alias)| alias.as_deref() == Some(&qualifier) || *name == qualifier)
             .map(|(name, _)| name.clone())
-    }
-
-    /// Tipo de um campo pela tabela dele. Sem a tabela na frente, vale a única tabela do FROM que
-    /// tem o campo no dicionário.
-    fn field_type(
-        &self,
-        dictionaries: &Dictionaries,
-        qualifier: Option<&str>,
-        field: &str,
-    ) -> Option<VarType> {
-        let table = match qualifier {
-            Some(q) => self.table(q)?,
-            None if self.opaque => return None,
-            None => {
-                let mut with_field = self
-                    .tables
-                    .iter()
-                    .filter(|(t, _)| dictionaries.field(t, field).is_some());
-                let (table, _) = with_field.next()?;
-                if with_field.next().is_some() {
-                    return None;
-                }
-                table.clone()
-            }
-        };
-        dictionaries.field(&table, field)?.field.ty.var_type()
     }
 }
 
@@ -1837,7 +1794,7 @@ pub(crate) fn cursor_sql_literals<'t>(
 #[derive(Default)]
 pub(super) struct Sources {
     cursors: FxHashMap<String, Option<ColumnSet>>,
-    objects: FxHashMap<String, Option<ColumnSet>>,
+    objects: FxHashMap<String, Option<FxHashSet<String>>>,
 }
 
 /// Colunas conhecidas de um cursor ou objeto, na ordem em que apareceram, com a posição de cada
@@ -1918,7 +1875,16 @@ impl Sources {
                         .map(|lit| analysis(&text[lit], dictionaries));
                     let columns = analysis.as_ref().and_then(|a| a.columns.as_deref());
                     let object = text[tree.text_range(*object)].to_uppercase();
-                    merge(&mut sources.objects, object, columns);
+                    // Os nomes de todos os SQL do objeto. Um SQL que não dá para ler desliga a
+                    // conferência.
+                    let entry = sources
+                        .objects
+                        .entry(object)
+                        .or_insert_with(|| Some(Default::default()));
+                    match (entry.as_mut(), columns) {
+                        (Some(known), Some(columns)) => known.extend(columns.iter().cloned()),
+                        _ => *entry = None,
+                    }
                 }
                 _ => {}
             }
@@ -2000,7 +1966,7 @@ impl Sources {
             return;
         };
         let name = string_value(&text[literal]).trim().to_uppercase();
-        if columns.get(&name).is_none() {
+        if !columns.contains(&name) {
             checks.push(Check {
                 kind: CheckKind::ReturnedColumnNotInSelect,
                 range: literal,
@@ -2549,9 +2515,8 @@ mod tests {
             }
         };
         let (one, other) = (with_field("A"), with_field("B"));
-        let names = |a: Rc<Analysis>| -> Vec<String> {
-            a.columns.iter().flatten().map(|c| c.name.clone()).collect()
-        };
+        let names =
+            |a: Rc<Analysis>| -> Vec<String> { a.columns.iter().flatten().cloned().collect() };
         let sql = literal("SELECT * FROM T");
         assert_eq!(names(analysis(&sql, &one)), ["A"]);
         assert_eq!(names(analysis(&sql, &one)), ["A"]);
