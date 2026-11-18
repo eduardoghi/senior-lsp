@@ -900,6 +900,7 @@ impl Server<'_> {
                     })
                 };
                 let extract = wants(&lsp_types::CodeActionKind::REFACTOR_EXTRACT);
+                let quickfix = wants(&lsp_types::CodeActionKind::QUICKFIX);
                 if let Some(doc) = self.documents.get(uri) {
                     let context = navigation::Context {
                         doc,
@@ -913,11 +914,20 @@ impl Server<'_> {
                             .map(|(diagnostics, _)| diagnostics)
                             .unwrap_or_default()
                     });
-                    actions.extend(
+                    // As correções rápidas só quando o pedido aceita `quickfix`. Ao salvar com o
+                    // `codeActionsOnSave`, o VS Code pede só o `source.fixAll`.
+                    let quickfixes = quickfix.then(|| {
                         context
                             .define_actions(params.range.start)
                             .into_iter()
                             .chain(context.check_fixes(params.range))
+                            .chain(context.ignore_actions(params.range, &shown.diagnostics))
+                            .chain(self.extra_table_actions(&context, params.range))
+                    });
+                    actions.extend(
+                        quickfixes
+                            .into_iter()
+                            .flatten()
                             .chain(
                                 extract
                                     .then(|| context.extract_actions(params.range))
@@ -933,8 +943,6 @@ impl Server<'_> {
                                     .into_iter()
                                     .flatten(),
                             )
-                            .chain(context.ignore_actions(params.range, &shown.diagnostics))
-                            .chain(self.extra_table_actions(&context, params.range))
                             .chain(
                                 wants(&lsp_types::CodeActionKind::SOURCE_FIX_ALL)
                                     .then(|| {
@@ -945,10 +953,16 @@ impl Server<'_> {
                                     })
                                     .flatten(),
                             )
+                            // O que não tem tipo ou tem um tipo não pedido também fica de fora.
+                            .filter(|a| a.kind.as_ref().is_some_and(wants))
                             .map(lsp_types::CodeActionOrCommand::CodeAction),
                     );
                 }
-                actions.extend(self.kind_actions(uri));
+                // O comando de escolher o tipo da regra não tem tipo de ação, e sai quando o pedido
+                // diz quais tipos quer.
+                if params.context.only.is_none() {
+                    actions.extend(self.kind_actions(uri));
+                }
                 Ok(self.out.json(&actions)?)
             }
             ExecuteCommand::METHOD => {

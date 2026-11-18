@@ -5596,6 +5596,7 @@ mod propriedades {
     struct Regra<'a> {
         editor: Editor,
         nome: &'a str,
+        uri: &'a str,
         version: i32,
     }
 
@@ -5603,10 +5604,10 @@ mod propriedades {
         /// Troca o texto e devolve os erros e avisos dele, por código, em ordem.
         fn avisos(&mut self, text: &str) -> Vec<(String, i32)> {
             self.version += 1;
-            self.editor.change(RULE, self.version, text);
+            self.editor.change(self.uri, self.version, text);
             loop {
                 let d = self.editor.diagnostics();
-                if d.uri.as_str() == RULE && d.version == Some(self.version) {
+                if d.uri.as_str() == self.uri && d.version == Some(self.version) {
                     let mut codes: Vec<(String, i32)> = d
                         .diagnostics
                         .into_iter()
@@ -5639,7 +5640,7 @@ mod propriedades {
         fn acoes(&mut self, range: lsp_types::Range, only: &str) -> Vec<lsp_types::CodeAction> {
             let response = self.editor.request(
                 lsp_types::request::CodeActionRequest::METHOD,
-                json!({ "textDocument": { "uri": RULE }, "range": range,
+                json!({ "textDocument": { "uri": self.uri }, "range": range,
                         "context": { "diagnostics": [], "only": [only] } }),
             );
             let actions: Vec<lsp_types::CodeActionOrCommand> =
@@ -5654,12 +5655,12 @@ mod propriedades {
                 .collect()
         }
 
-        fn edicoes(action: &lsp_types::CodeAction) -> Vec<lsp_types::TextEdit> {
+        fn edicoes(&self, action: &lsp_types::CodeAction) -> Vec<lsp_types::TextEdit> {
             action
                 .edit
                 .as_ref()
                 .and_then(|e| e.changes.as_ref())
-                .and_then(|c| c.get(&uri(RULE)))
+                .and_then(|c| c.get(&uri(self.uri)))
                 .cloned()
                 .unwrap_or_default()
         }
@@ -5697,15 +5698,17 @@ mod propriedades {
     /// e variáveis cada propriedade experimenta, para o corpus não levar horas.
     pub(super) fn conferir(
         nome: &str,
+        endereco: &str,
         text: &str,
         amostra: usize,
         contagem: &mut Contagem,
     ) -> Vec<String> {
         let (editor, _) = Editor::start(Some(vec![PositionEncodingKind::UTF8]));
-        editor.open(RULE, 1, text);
+        editor.open(endereco, 1, text);
         let mut regra = Regra {
             editor,
             nome,
+            uri: endereco,
             version: 1,
         };
         let mut falhas = Vec::new();
@@ -5719,7 +5722,7 @@ mod propriedades {
         let formatar = |regra: &mut Regra| -> Vec<lsp_types::TextEdit> {
             let response = regra.editor.request(
                 lsp_types::request::Formatting::METHOD,
-                json!({ "textDocument": { "uri": RULE },
+                json!({ "textDocument": { "uri": regra.uri },
                         "options": { "tabSize": 4, "insertSpaces": true } }),
             );
             serde_json::from_value(response.response_result.unwrap_or_default()).unwrap_or_default()
@@ -5736,20 +5739,34 @@ mod propriedades {
             regra.avisos(text);
         }
 
-        // Corrigir o arquivo não cria erro, e depois dele não sobra o que corrigir.
-        if let Some(fix) = regra.acoes(tudo, "source.fixAll").into_iter().next() {
+        // Corrigir o arquivo não cria erro e converge. Ele corrige em camadas, como o `definir`
+        // que fica sem uso depois de outro sair, mas em poucas rodadas não sobra o que corrigir.
+        let mut atual = text.to_owned();
+        for rodada in 0.. {
+            let Some(fix) = regra
+                .acoes(tudo, "source.fixAll")
+                .into_iter()
+                .find(|a| a.kind == Some(lsp_types::CodeActionKind::SOURCE_FIX_ALL))
+            else {
+                break;
+            };
+            if rodada == 5 {
+                falhas.push(format!("{}: corrigir o arquivo não converge", regra.nome));
+                break;
+            }
             contagem.corrigiu += 1;
-            let corrigido = aplicar(text, &Regra::edicoes(&fix));
+            let corrigido = aplicar(&atual, &regra.edicoes(&fix));
+            if corrigido == atual {
+                falhas.push(format!("{}: corrigir o arquivo não mudou nada", regra.nome));
+                break;
+            }
             let depois = regra.avisos(&corrigido);
             for code in erros_novos(&base, &depois) {
                 falhas.push(format!("{}: corrigir o arquivo criou {code}", regra.nome));
             }
-            if !regra.acoes(tudo, "source.fixAll").is_empty() {
-                falhas.push(format!(
-                    "{}: corrigir o arquivo de novo ainda corrige",
-                    regra.nome
-                ));
-            }
+            atual = corrigido;
+        }
+        if atual != text {
             regra.avisos(text);
         }
 
@@ -5771,7 +5788,7 @@ mod propriedades {
             );
             let response = regra.editor.request(
                 Rename::METHOD,
-                json!({ "textDocument": { "uri": RULE },
+                json!({ "textDocument": { "uri": regra.uri },
                         "position": { "line": lc.line, "character": lc.col },
                         "newName": format!("zzRenomeado{i}") }),
             );
@@ -5781,7 +5798,7 @@ mod propriedades {
             let edit: lsp_types::WorkspaceEdit = serde_json::from_value(result).unwrap();
             let edits = edit
                 .changes
-                .and_then(|c| c.get(&uri(RULE)).cloned())
+                .and_then(|c| c.get(&uri(regra.uri)).cloned())
                 .unwrap_or_default();
             contagem.renomeou += 1;
             let renomeado = aplicar(text, &edits);
@@ -5815,7 +5832,7 @@ mod propriedades {
                 continue;
             };
             contagem.extraiu += 1;
-            let extraido = aplicar(text, &Regra::edicoes(&extrair));
+            let extraido = aplicar(text, &regra.edicoes(&extrair));
             let depois = regra.avisos(&extraido);
             for code in erros_novos(&base, &depois) {
                 falhas.push(format!(
@@ -5845,7 +5862,13 @@ fn propriedades_das_acoes_nas_regras_do_repositorio() {
     for caminho in &arquivos {
         let text = std::fs::read_to_string(caminho).unwrap();
         let nome = caminho.file_name().unwrap().to_string_lossy().into_owned();
-        falhas.extend(propriedades::conferir(&nome, &text, 100, &mut contagem));
+        falhas.extend(propriedades::conferir(
+            &nome,
+            RULE,
+            &text,
+            100,
+            &mut contagem,
+        ));
     }
     assert!(falhas.is_empty(), "{}", falhas.join("\n"));
     // Cada conferência rodou nas regras do repositório, e o teste não passa por falta do que
@@ -5892,12 +5915,14 @@ fn propriedades_das_acoes_no_corpus() {
         if text.len() > 150_000 {
             continue;
         }
-        falhas.extend(propriedades::conferir(
-            &caminho.display().to_string(),
-            &text,
-            8,
-            &mut contagem,
-        ));
+        // Com o próprio endereço, para a regra de tela e de modelo ter o tipo e a herança dela.
+        let endereco = crate::form::uri_from_path(caminho);
+        let nome = caminho.display().to_string();
+        let novas = propriedades::conferir(&nome, &endereco, &text, 8, &mut contagem);
+        for falha in &novas {
+            eprintln!("FALHA {falha}");
+        }
+        falhas.extend(novas);
     }
     eprintln!(
         "{} regras, {} falhas. Formatou {}, corrigiu {}, renomeou {}, extraiu {}",
@@ -5912,5 +5937,52 @@ fn propriedades_das_acoes_no_corpus() {
         falhas.is_empty(),
         "{}",
         falhas[..falhas.len().min(30)].join("\n")
+    );
+}
+
+#[test]
+fn pedido_com_tipos_so_devolve_os_tipos_pedidos() {
+    let (mut editor, _) = Editor::start(None);
+    // Um definir sem uso (que Corrigir o arquivo tira) e avisos que teriam correção rápida e
+    // ação de ignorar.
+    let text = "definir alfa aSobra;\nCancel;\nx = 2 e -3;\n";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let kinds = |editor: &mut Editor, only: Option<serde_json::Value>| -> Vec<Option<String>> {
+        let mut context = json!({ "diagnostics": [] });
+        if let Some(only) = only {
+            context["only"] = only;
+        }
+        let response = editor.request(
+            lsp_types::request::CodeActionRequest::METHOD,
+            json!({ "textDocument": { "uri": RULE },
+                    "range": { "start": { "line": 0, "character": 0 },
+                               "end": { "line": 3, "character": 0 } },
+                    "context": context }),
+        );
+        response
+            .response_result
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["kind"].as_str().map(str::to_owned))
+            .collect()
+    };
+    let all = kinds(&mut editor, None);
+    assert!(all.contains(&Some("quickfix".to_owned())), "{all:?}");
+    assert!(all.contains(&Some("source.fixAll".to_owned())), "{all:?}");
+    // Ao salvar, o VS Code pede só o source.fixAll.
+    assert_eq!(
+        kinds(&mut editor, Some(json!(["source.fixAll"]))),
+        [Some("source.fixAll".to_owned())]
+    );
+    // O tipo pedido vale também para os de baixo dele.
+    let source = kinds(&mut editor, Some(json!(["source"])));
+    assert_eq!(source, [Some("source.fixAll".to_owned())]);
+    let fixes = kinds(&mut editor, Some(json!(["quickfix"])));
+    assert!(
+        !fixes.is_empty() && fixes.iter().all(|k| k.as_deref() == Some("quickfix")),
+        "{fixes:?}"
     );
 }
