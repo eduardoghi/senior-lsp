@@ -1231,6 +1231,47 @@ mod tests {
     }
 
     #[test]
+    fn espaco_recuo_e_trecho_desligado_nos_limites() {
+        // O espaço dentro da linha em cada construção: operadores, vírgula, parênteses, `;`,
+        // menos depois de `*`, ponto, colchete, comentário colado e comentário no meio.
+        for (text, expected) in [
+            ("x=Soma( a ,b )+c*-d;\n", "x = Soma(a, b) + c * -d;\n"),
+            ("y  =  2 ; @ fim @\n", "y = 2; @ fim @\n"),
+            ("z=( a+ b )*c ;\n", "z = (a + b) * c;\n"),
+            ("f (a,b) ;\n", "f(a, b);\n"),
+            ("v = cur.Campo ;\n", "v = cur.Campo;\n"),
+            ("/* c */ k=1;\n", "/* c */ k = 1;\n"),
+            ("n = t[ 1 ].v[ 2 ];\n", "n = t[ 1 ].v[ 2 ];\n"),
+            ("a=b/*x*/+c;\n", "a = b/*x*/+ c;\n"),
+            ("s = \"a\"+\"b\";\n", "s = \"a\" + \"b\";\n"),
+            (
+                "se (a)\n  x = 1 ; @ c @ y=2;\n",
+                "se (a)\n  x = 1; @ c @ y = 2;\n",
+            ),
+        ] {
+            assert_eq!(format_all(text), expected, "{text:?}");
+        }
+        // A linha que passaria de 253 colunas com o recuo fica onde estava, e a seguinte recua.
+        let spaces = Indent {
+            tab_size: 2,
+            spaces: true,
+        };
+        let longa = format!("se (a = 1) {{\nx = \"{}\";\ny = 1;\n}}\n", "a".repeat(246));
+        let recuos: Vec<usize> = format_with(&longa, spaces, None)
+            .unwrap()
+            .lines()
+            .map(|l| l.len() - l.trim_start().len())
+            .collect();
+        assert_eq!(recuos, [0, 0, 2, 0]);
+        // O format-on dentro de um comentário de bloco não religa a formatação.
+        let text = "@ senior-lsp-format-off @\n x  = 1;\n/* @ senior-lsp-format-on @ */\n  y  =  2;\n@ senior-lsp-format-on @\n  z  =  3;\n";
+        assert_eq!(
+            format_with(text, spaces, None).unwrap(),
+            "@ senior-lsp-format-off @\n x  = 1;\n/* @ senior-lsp-format-on @ */\n  y  =  2;\n@ senior-lsp-format-on @\nz  =  3;\n"
+        );
+    }
+
+    #[test]
     fn trecho_desligado_fica_como_esta() {
         let text = "se (a = 1) {\n@ senior-lsp-format-off @\n      x  =  1;\n          y = 2;\n@ senior-lsp-format-on @\nz = 3;\n}\n";
         assert_eq!(
