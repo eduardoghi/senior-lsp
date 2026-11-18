@@ -1304,6 +1304,102 @@ mod tests {
     }
 
     #[test]
+    fn conferencias_gerais_nos_limites() {
+        use crate::validate::Sql2Error;
+        // Cada aviso do SQL 2 tem o erro de comando correspondente.
+        for (kind, error) in [
+            (Sql2Join, Sql2Error::Join),
+            (Sql2UnknownTable, Sql2Error::UnknownTable),
+            (Sql2UnknownSymbol, Sql2Error::UnknownSymbol),
+            (Sql2UnknownField, Sql2Error::UnknownField),
+            (Sql2AmbiguousField, Sql2Error::AmbiguousField),
+            (Sql2OrderBy, Sql2Error::OrderBy),
+            (Sql2InsertValues, Sql2Error::InsertValues),
+            (CommandSql2(Sql2Error::OrderBy), Sql2Error::OrderBy),
+        ] {
+            assert_eq!(kind.sql2_error(), Some(error), "{kind:?}");
+        }
+        assert_eq!(Unused.sql2_error(), None);
+
+        // O parâmetro da função só declarada não tem aviso de sem uso.
+        let decl = checks_all("Definir Funcao f(Numero pNada);\nf(1);");
+        assert!(decl.iter().all(|(k, _)| *k != UnusedParameter), "{decl:?}");
+        // A função sem uso é marcada na `funcao`.
+        let text = "Definir Funcao fNada();\nFuncao fNada(); { }";
+        let tree = crate::parse(text).unwrap();
+        let starts: Vec<usize> = validate(
+            &tree,
+            &Symbols::build(&tree, text),
+            text,
+            Context::Rule,
+            &Inherited::default(),
+        )
+        .into_iter()
+        .filter(|c| c.kind == UnusedFunction)
+        .map(|c| usize::from(c.range.start()))
+        .collect();
+        assert_eq!(starts, [text.rfind("fNada").unwrap()]);
+
+        // O menos depois do `*` é o caso, o mais não é.
+        assert!(
+            checks("x = 2 * -(3);")
+                .iter()
+                .any(|(k, _)| *k == MinusTakesOneToken)
+        );
+        assert!(
+            checks("x = 2 * +(3);")
+                .iter()
+                .all(|(k, _)| *k != MinusTakesOneToken)
+        );
+    }
+
+    #[test]
+    fn clausulas_do_laco_nos_limites() {
+        let labels = |text: &str| -> Vec<Option<std::string::String>> {
+            let tree = crate::parse(text).unwrap();
+            validate(
+                &tree,
+                &Symbols::build(&tree, text),
+                text,
+                Context::Rule,
+                &Inherited::default(),
+            )
+            .into_iter()
+            .filter(|c| c.kind == LoopClauseOutsideLoop)
+            .map(|c| c.label)
+            .collect()
+        };
+        assert_eq!(labels("Pare;"), [Some("Pare".to_owned())]);
+        assert_eq!(labels("Continue;"), [Some("Continue".to_owned())]);
+        // Só o Continue dentro do para pula o passo.
+        let para = |clause: &str| -> Vec<CheckKind> {
+            checks(&format!(
+                "definir numero n;\npara (n = 1; n < 3; n++) {{ se (n = 2) {clause}; }}"
+            ))
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect()
+        };
+        assert!(para("Continue").contains(&ContinueSkipsStep));
+        assert!(!para("Pare").contains(&ContinueSkipsStep));
+        // A chamada a um nome que só é variável não tira o laço de infinito.
+        let text = "definir numero Sair;\ndefinir numero n;\nenquanto () { n = n + 1; Sair(); }";
+        assert!(checks_all(text).iter().any(|(k, _)| *k == EndlessLoop));
+    }
+
+    #[test]
+    fn nomes_nos_textos_com_palavra_parecida_antes() {
+        // A palavra parecida com uma das procuradas, num texto antes delas, não conta.
+        let text = "a = \"AD\";\nb = \"AB\";\nc = \"AC\";";
+        let tree = crate::parse(text).unwrap();
+        let wanted: rustc_hash::FxHashSet<std::string::String> =
+            ["AB", "AC"].iter().map(|s| s.to_string()).collect();
+        let mut found: Vec<_> = names_in_strings(&tree, text, &wanted).into_iter().collect();
+        found.sort();
+        assert_eq!(found, ["AB", "AC"]);
+    }
+
+    #[test]
     fn enquanto_vazio_sem_saida() {
         let laco = |corpo: &str| format!("definir numero n;\nenquanto () {{ n = n + 1; {corpo} }}");
         assert_eq!(checks(&laco("")), [(EndlessLoop, "enquanto ()")]);
