@@ -1,0 +1,26 @@
+@ Busca o nome da empresa e conta os itens do pedido @
+Definir Numero nCodEmp;
+Definir Numero nQtd;
+Definir Alfa aNome;
+Definir Cursor cur;
+Definir Cursor curItens;
+
+nCodEmp = 1;
+cur.SQL "SELECT NomEmp FROM E070EMP WHERE CodEmp = :nCodEmp";
+cur.AbrirCursor();
+Se (cur.Achou) {
+    aNome = cur.NomEmp;
+}
+cur.FecharCursor();
+
+nQtd = 0;
+curItens.SQL "SELECT QtdPed \
+                FROM E120IPD \
+               WHERE CodEmp = :nCodEmp";
+curItens.AbrirCursor();
+Enquanto (curItens.Achou) {
+    nQtd = nQtd + curItens.QtdPed;
+    curItens.Proximo();
+}
+curItens.FecharCursor();
+Mensagem(Retorna, aNome);

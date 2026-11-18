@@ -1,0 +1,26 @@
+Definir Funcao Soma(Numero End nTotal, Numero nValor);
+Definir Funcao Avisa(Alfa aTexto);
+Definir Numero nTotal;
+Definir Numero nValor;
+Definir Numero nSobra;
+Definir Alfa aMsg;
+
+nValor = 10;
+nTotal = 0;
+Soma(nTotal, nValor);
+x = nTotal;
+Se (x > 5) {
+  VaPara Sai;
+      }
+x = x + 1;
+Sai:
+aMsg = "Total calculado";
+Avisa(aMsg);
+
+Funcao Soma(Numero End nTotal, Numero nValor); {
+nTotal = nTotal+nValor;
+}
+
+Funcao Avisa(Alfa aTexto); {
+    Mensagem(Retorna, aTexto);
+}

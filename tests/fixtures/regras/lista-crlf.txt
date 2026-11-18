@@ -1,0 +1,19 @@
+@ Monta a lista de itens com descrição @
+Definir Lista lItens;
+Definir Alfa aDescricao;
+Definir Numero nCodigo;
+Definir Alfa aTipo;
+
+lItens.DefinirCampos();
+lItens.AdicionarCampo("Codigo", Numero);
+lItens.AdicionarCampo("Descricao", Alfa, 40);
+lItens.EfetivarCampos();
+
+aDescricao = "Ação de teste";
+aTipo = 'a';
+nCodigo = 7;
+lItens.Adicionar();
+lItens.Codigo = nCodigo;
+lItens.Descricao = aDescricao;
+lItens.Gravar();
+Mensagem(Retorna, aDescricao);

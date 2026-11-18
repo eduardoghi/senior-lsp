@@ -5570,3 +5570,347 @@ fn resolve_de_variavel_de_outra_regra_da_tela() {
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+/// Conferências de propriedade, que valem para qualquer regra. Cada ação de edição do servidor,
+/// aplicada como o editor aplica, não pode criar erro, e formatar duas vezes dá o mesmo texto.
+mod propriedades {
+    use super::*;
+
+    /// Aplica as edições sobre `text`, com a coluna em bytes (posição em UTF-8). Na mesma posição,
+    /// a que vem antes na lista fica antes no texto, como no protocolo.
+    fn aplicar(text: &str, edits: &[lsp_types::TextEdit]) -> String {
+        let mut starts = vec![0];
+        starts.extend(text.match_indices('\n').map(|(i, _)| i + 1));
+        let offset = |p: lsp_types::Position| {
+            starts.get(p.line as usize).copied().unwrap_or(text.len()) + p.character as usize
+        };
+        let mut order: Vec<_> = edits.iter().enumerate().collect();
+        order.sort_by_key(|(i, e)| std::cmp::Reverse((offset(e.range.start), *i)));
+        let mut out = text.to_owned();
+        for (_, e) in order {
+            out.replace_range(offset(e.range.start)..offset(e.range.end), &e.new_text);
+        }
+        out
+    }
+
+    struct Regra<'a> {
+        editor: Editor,
+        nome: &'a str,
+        version: i32,
+    }
+
+    impl Regra<'_> {
+        /// Troca o texto e devolve os erros e avisos dele, por código, em ordem.
+        fn avisos(&mut self, text: &str) -> Vec<(String, i32)> {
+            self.version += 1;
+            self.editor.change(RULE, self.version, text);
+            loop {
+                let d = self.editor.diagnostics();
+                if d.uri.as_str() == RULE && d.version == Some(self.version) {
+                    let mut codes: Vec<(String, i32)> = d
+                        .diagnostics
+                        .into_iter()
+                        .filter(|d| {
+                            matches!(
+                                d.severity,
+                                Some(lsp_types::DiagnosticSeverity::ERROR)
+                                    | Some(lsp_types::DiagnosticSeverity::WARNING)
+                            )
+                        })
+                        .map(|d| {
+                            let Some(lsp_types::NumberOrString::String(code)) = d.code else {
+                                unreachable!()
+                            };
+                            let severity =
+                                if d.severity == Some(lsp_types::DiagnosticSeverity::ERROR) {
+                                    1
+                                } else {
+                                    2
+                                };
+                            (code, severity)
+                        })
+                        .collect();
+                    codes.sort();
+                    return codes;
+                }
+            }
+        }
+
+        fn acoes(&mut self, range: lsp_types::Range, only: &str) -> Vec<lsp_types::CodeAction> {
+            let response = self.editor.request(
+                lsp_types::request::CodeActionRequest::METHOD,
+                json!({ "textDocument": { "uri": RULE }, "range": range,
+                        "context": { "diagnostics": [], "only": [only] } }),
+            );
+            let actions: Vec<lsp_types::CodeActionOrCommand> =
+                serde_json::from_value(response.response_result.unwrap_or_default())
+                    .unwrap_or_default();
+            actions
+                .into_iter()
+                .filter_map(|a| match a {
+                    lsp_types::CodeActionOrCommand::CodeAction(a) => Some(a),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn edicoes(action: &lsp_types::CodeAction) -> Vec<lsp_types::TextEdit> {
+            action
+                .edit
+                .as_ref()
+                .and_then(|e| e.changes.as_ref())
+                .and_then(|c| c.get(&uri(RULE)))
+                .cloned()
+                .unwrap_or_default()
+        }
+    }
+
+    /// Erros que `depois` tem a mais que `antes`, por código.
+    fn erros_novos(antes: &[(String, i32)], depois: &[(String, i32)]) -> Vec<String> {
+        let conta = |lista: &[(String, i32)]| {
+            let mut m = std::collections::BTreeMap::<String, usize>::new();
+            for (code, severity) in lista {
+                if *severity == 1 {
+                    *m.entry(code.clone()).or_default() += 1;
+                }
+            }
+            m
+        };
+        let (antes, depois) = (conta(antes), conta(depois));
+        depois
+            .into_iter()
+            .filter(|(code, n)| antes.get(code).copied().unwrap_or(0) < *n)
+            .map(|(code, _)| code)
+            .collect()
+    }
+
+    /// Quantas vezes cada conferência rodou, para o teste saber que nenhuma passou sem conferir.
+    #[derive(Default)]
+    pub(super) struct Contagem {
+        pub(super) formatou: usize,
+        pub(super) corrigiu: usize,
+        pub(super) renomeou: usize,
+        pub(super) extraiu: usize,
+    }
+
+    /// Roda as propriedades numa regra e devolve o que falhou. `amostra` limita quantas linhas
+    /// e variáveis cada propriedade experimenta, para o corpus não levar horas.
+    pub(super) fn conferir(
+        nome: &str,
+        text: &str,
+        amostra: usize,
+        contagem: &mut Contagem,
+    ) -> Vec<String> {
+        let (editor, _) = Editor::start(Some(vec![PositionEncodingKind::UTF8]));
+        editor.open(RULE, 1, text);
+        let mut regra = Regra {
+            editor,
+            nome,
+            version: 1,
+        };
+        let mut falhas = Vec::new();
+        let base = regra.avisos(text);
+        let tudo = lsp_types::Range::new(
+            lsp_types::Position::new(0, 0),
+            lsp_types::Position::new(u32::MAX / 2, 0),
+        );
+
+        // Formatar duas vezes dá o mesmo texto, sem mudar os avisos.
+        let formatar = |regra: &mut Regra| -> Vec<lsp_types::TextEdit> {
+            let response = regra.editor.request(
+                lsp_types::request::Formatting::METHOD,
+                json!({ "textDocument": { "uri": RULE },
+                        "options": { "tabSize": 4, "insertSpaces": true } }),
+            );
+            serde_json::from_value(response.response_result.unwrap_or_default()).unwrap_or_default()
+        };
+        let formatado = aplicar(text, &formatar(&mut regra));
+        if formatado != text {
+            contagem.formatou += 1;
+            if regra.avisos(&formatado) != base {
+                falhas.push(format!("{}: formatar mudou os avisos", regra.nome));
+            }
+            if !formatar(&mut regra).is_empty() {
+                falhas.push(format!("{}: formatar de novo ainda muda", regra.nome));
+            }
+            regra.avisos(text);
+        }
+
+        // Corrigir o arquivo não cria erro, e depois dele não sobra o que corrigir.
+        if let Some(fix) = regra.acoes(tudo, "source.fixAll").into_iter().next() {
+            contagem.corrigiu += 1;
+            let corrigido = aplicar(text, &Regra::edicoes(&fix));
+            let depois = regra.avisos(&corrigido);
+            for code in erros_novos(&base, &depois) {
+                falhas.push(format!("{}: corrigir o arquivo criou {code}", regra.nome));
+            }
+            if !regra.acoes(tudo, "source.fixAll").is_empty() {
+                falhas.push(format!(
+                    "{}: corrigir o arquivo de novo ainda corrige",
+                    regra.nome
+                ));
+            }
+            regra.avisos(text);
+        }
+
+        // Renomear uma variável não muda os erros nem os avisos.
+        let tree = crate::parse(text).unwrap();
+        let symbols = crate::symbols::Symbols::build(&tree, text);
+        let index = crate::line_index::LineIndex::new(text);
+        let variaveis: Vec<_> = symbols
+            .definitions
+            .iter()
+            .filter(|d| matches!(d.kind, crate::symbols::DefKind::Variable(_)))
+            .take(amostra)
+            .collect();
+        for (i, def) in variaveis.into_iter().enumerate() {
+            let lc = index.line_col(
+                text,
+                def.name.start(),
+                crate::line_index::ColumnEncoding::Utf8,
+            );
+            let response = regra.editor.request(
+                Rename::METHOD,
+                json!({ "textDocument": { "uri": RULE },
+                        "position": { "line": lc.line, "character": lc.col },
+                        "newName": format!("zzRenomeado{i}") }),
+            );
+            let Some(result) = response.response_result.ok().filter(|r| !r.is_null()) else {
+                continue;
+            };
+            let edit: lsp_types::WorkspaceEdit = serde_json::from_value(result).unwrap();
+            let edits = edit
+                .changes
+                .and_then(|c| c.get(&uri(RULE)).cloned())
+                .unwrap_or_default();
+            contagem.renomeou += 1;
+            let renomeado = aplicar(text, &edits);
+            let depois = regra.avisos(&renomeado);
+            if depois != base {
+                falhas.push(format!(
+                    "{}: renomear {} mudou os avisos de {base:?} para {depois:?}",
+                    regra.nome, &text[def.name]
+                ));
+            }
+            regra.avisos(text);
+        }
+
+        // Cada extração oferecida não cria erro.
+        let linhas: Vec<&str> = text.split('\n').collect();
+        let passo = (linhas.len() / amostra.max(1)).max(1);
+        for (n, linha) in linhas.iter().enumerate().step_by(passo) {
+            let fim = linha.trim_end_matches('\r').len() as u32;
+            if fim == 0 {
+                continue;
+            }
+            let range = lsp_types::Range::new(
+                lsp_types::Position::new(n as u32, 0),
+                lsp_types::Position::new(n as u32, fim),
+            );
+            let Some(extrair) = regra
+                .acoes(range, "refactor.extract")
+                .into_iter()
+                .find(|a| a.title == "Extrair função")
+            else {
+                continue;
+            };
+            contagem.extraiu += 1;
+            let extraido = aplicar(text, &Regra::edicoes(&extrair));
+            let depois = regra.avisos(&extraido);
+            for code in erros_novos(&base, &depois) {
+                falhas.push(format!(
+                    "{}: extrair a linha {} criou {code}",
+                    regra.nome,
+                    n + 1
+                ));
+            }
+            regra.avisos(text);
+        }
+        regra.editor.stop();
+        falhas
+    }
+}
+
+#[test]
+fn propriedades_das_acoes_nas_regras_do_repositorio() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/regras");
+    let mut arquivos: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    arquivos.sort();
+    assert!(arquivos.len() >= 3);
+    let mut falhas = Vec::new();
+    let mut contagem = propriedades::Contagem::default();
+    for caminho in &arquivos {
+        let text = std::fs::read_to_string(caminho).unwrap();
+        let nome = caminho.file_name().unwrap().to_string_lossy().into_owned();
+        falhas.extend(propriedades::conferir(&nome, &text, 100, &mut contagem));
+    }
+    assert!(falhas.is_empty(), "{}", falhas.join("\n"));
+    // Cada conferência rodou nas regras do repositório, e o teste não passa por falta do que
+    // conferir.
+    assert!(contagem.formatou > 0, "nenhuma regra mudou ao formatar");
+    assert!(contagem.corrigiu > 0, "nenhuma regra tinha o que corrigir");
+    assert!(contagem.renomeou > 3, "renomeou {}", contagem.renomeou);
+    assert!(contagem.extraiu > 3, "extraiu {}", contagem.extraiu);
+}
+
+/// As mesmas conferências nas regras de `SENIOR_CORPUS`, em cp1252, com uma amostra por regra.
+///
+/// ```sh
+/// SENIOR_CORPUS=/caminho/das/regras cargo test --release --lib propriedades_das_acoes_no_corpus -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "precisa de SENIOR_CORPUS apontando para uma pasta com regras"]
+fn propriedades_das_acoes_no_corpus() {
+    let raiz =
+        std::env::var_os("SENIOR_CORPUS").expect("defina SENIOR_CORPUS com o caminho das regras");
+    let mut arquivos = Vec::new();
+    let mut pilha = vec![std::path::PathBuf::from(raiz)];
+    while let Some(dir) = pilha.pop() {
+        for entrada in std::fs::read_dir(&dir).unwrap() {
+            let caminho = entrada.unwrap().path();
+            if caminho.is_dir() {
+                pilha.push(caminho);
+            } else if caminho
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case("rule.txt"))
+            {
+                arquivos.push(caminho);
+            }
+        }
+    }
+    arquivos.sort();
+    let mut falhas = Vec::new();
+    let mut contagem = propriedades::Contagem::default();
+    for caminho in &arquivos {
+        let Some(text) = crate::cp1252::decode(&std::fs::read(caminho).unwrap()) else {
+            continue;
+        };
+        if text.len() > 150_000 {
+            continue;
+        }
+        falhas.extend(propriedades::conferir(
+            &caminho.display().to_string(),
+            &text,
+            8,
+            &mut contagem,
+        ));
+    }
+    eprintln!(
+        "{} regras, {} falhas. Formatou {}, corrigiu {}, renomeou {}, extraiu {}",
+        arquivos.len(),
+        falhas.len(),
+        contagem.formatou,
+        contagem.corrigiu,
+        contagem.renomeou,
+        contagem.extraiu
+    );
+    assert!(
+        falhas.is_empty(),
+        "{}",
+        falhas[..falhas.len().min(30)].join("\n")
+    );
+}
