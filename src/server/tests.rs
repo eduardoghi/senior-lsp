@@ -4825,3 +4825,22 @@ fn detalhe_do_completar_pelo_resolve() {
     }
     editor.stop();
 }
+
+#[test]
+fn ignorar_nao_entra_no_meio_de_sql_de_varias_linhas() {
+    let (mut editor, _) = Editor::start(None);
+    // O SEN076 da coluna não lida cai na terceira linha do SQL, que continua o texto.
+    let text = "definir cursor cur; definir numero n;\r\n\
+                cur.SQL \"SELECT e075pro.codpro, \\\r\n    e075pro.despro \\\r\n FROM e075pro\";\r\n\
+                cur.AbrirCursor();\r\nn = cur.codpro;\r\n";
+    editor.open(RULE, 1, text);
+    let d = editor.diagnostics();
+    let unused = d
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(lsp_types::NumberOrString::String("SEN076".to_owned())))
+        .expect("SEN076");
+    assert_eq!(unused.range.start.line, 2);
+    let titles = ignore_titles(&mut editor, 2, 6);
+    assert!(!titles.iter().any(|t| t.contains("SEN076")), "{titles:?}");
+}

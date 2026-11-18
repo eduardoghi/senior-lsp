@@ -35,9 +35,15 @@ impl Context<'_> {
                 continue;
             }
             done.push((code, line));
+            let line = line as usize;
+            // Linha que continua um texto ou comentário de linhas anteriores, como as do SQL com
+            // `\` no fim. A diretiva entraria no meio do texto e quebraria a string, e não há
+            // linha antes do aviso onde ela valha só para ele.
+            if inside_token(doc, doc.index.line_start(line, &doc.text)) {
+                continue;
+            }
             // Só aqui, porque a maioria dos pedidos não tem aviso no cursor.
             let lines = doc.code_lines();
-            let line = line as usize;
             let above = scan.directives.iter().find(|dir| {
                 let end = directives::end_line(&doc.index, dir.comment);
                 dir.kind == Kind::NextLine
@@ -76,4 +82,19 @@ impl Context<'_> {
         }
         actions
     }
+}
+
+/// `offset` cai dentro de um token que começa antes dele.
+fn inside_token(doc: &super::documents::Document, offset: TextSize) -> bool {
+    let tokens = doc.tree.tokens();
+    let (mut lo, mut hi) = (0, tokens.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if tokens.range(mid).start() < offset {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo > 0 && tokens.range(lo - 1).end() > offset
 }
