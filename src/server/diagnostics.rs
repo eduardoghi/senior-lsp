@@ -99,25 +99,7 @@ fn found(doc: &Document, levels: &Levels) -> Vec<Found> {
             && c.label.as_deref().is_some_and(|t| levels.extra_table(t))
     };
     let checks = doc.checks().iter().filter(|c| !extra_table(c)).map(|c| {
-        let severity = if c.kind.is_error() {
-            DiagnosticSeverity::ERROR
-        } else if matches!(
-            c.kind,
-            CheckKind::Unused
-                | CheckKind::UnusedFunction
-                | CheckKind::UnusedParameter
-                | CheckKind::CursorColumnUnused
-                | CheckKind::CursorStarUnused
-                | CheckKind::RepeatedParameter
-                | CheckKind::RepeatedColumn
-                | CheckKind::RepeatedLabel
-                | CheckKind::LabelsSameStart
-                | CheckKind::TableSizeOverflow
-        ) {
-            DiagnosticSeverity::HINT
-        } else {
-            DiagnosticSeverity::WARNING
-        };
+        let severity = severity_of(c.kind);
         let (code, mut message) = describe_check(c, tree, text);
         if let Some((_, name)) = super::suggest::suggestion(c, doc) {
             message.push_str(&format!(" Você quis dizer {name}?"));
@@ -223,6 +205,29 @@ fn describe_parse(kind: ParseErrorKind) -> Option<(&'static str, String)> {
                 .to_owned(),
         ),
     })
+}
+
+/// Nível do aviso do validador, antes do `senior-lsp.json`.
+fn severity_of(kind: CheckKind) -> DiagnosticSeverity {
+    if kind.is_error() {
+        DiagnosticSeverity::ERROR
+    } else if matches!(
+        kind,
+        CheckKind::Unused
+            | CheckKind::UnusedFunction
+            | CheckKind::UnusedParameter
+            | CheckKind::CursorColumnUnused
+            | CheckKind::CursorStarUnused
+            | CheckKind::RepeatedParameter
+            | CheckKind::RepeatedColumn
+            | CheckKind::RepeatedLabel
+            | CheckKind::LabelsSameStart
+            | CheckKind::TableSizeOverflow
+    ) {
+        DiagnosticSeverity::HINT
+    } else {
+        DiagnosticSeverity::WARNING
+    }
 }
 
 fn describe_check(check: &Check, tree: &Tree, text: &str) -> (&'static str, String) {
@@ -1216,6 +1221,228 @@ mod tests {
             "N já foi definida como número, e o mesmo nome com outro tipo não compila (Definição \
              inválida: variável \"N\" já está definida como número)."
         );
+    }
+
+    /// Todos os tipos de aviso. O `match` sem curinga não compila quando aparece um tipo novo, e o
+    /// teste dos códigos passa a cobrir ele também.
+    fn all_kinds() -> Vec<CheckKind> {
+        use crate::validate::Sql2Error;
+        let kinds = vec![
+            CheckKind::MinusTakesOneToken,
+            CheckKind::ComparisonInAssignment,
+            CheckKind::LogicalMinus,
+            CheckKind::CodeAfterFunctionBlock,
+            CheckKind::FunctionInsideBlock,
+            CheckKind::ForeignParameter,
+            CheckKind::NonAlfaMessageText,
+            CheckKind::AlfaAndNumber,
+            CheckKind::AlfaOperator,
+            CheckKind::NumberAndAlfa,
+            CheckKind::TwoStringLiterals,
+            CheckKind::AlfaArgument,
+            CheckKind::NumberArgument,
+            CheckKind::ConstantInEndParameter,
+            CheckKind::AlfaOperatorInComparison,
+            CheckKind::LowercaseChar,
+            CheckKind::UnknownFunction,
+            CheckKind::TooManyArguments,
+            CheckKind::TooFewArguments,
+            CheckKind::OnlyInTest,
+            CheckKind::CursorConstantColumn,
+            CheckKind::NativeSqlWithScope,
+            CheckKind::NativeUnknownTable,
+            CheckKind::NativeUnknownField,
+            CheckKind::CursorFieldNotInSelect,
+            CheckKind::CursorUnknownTable,
+            CheckKind::CursorUnknownField,
+            CheckKind::CursorColumnWithoutTable,
+            CheckKind::CursorRepeatedField,
+            CheckKind::CursorUnknownParameter,
+            CheckKind::Sql2Join,
+            CheckKind::Sql2UnknownTable,
+            CheckKind::Sql2UnknownSymbol,
+            CheckKind::Sql2UnknownField,
+            CheckKind::Sql2AmbiguousField,
+            CheckKind::Sql2OrderBy,
+            CheckKind::Sql2InsertValues,
+            CheckKind::ReturnedColumnNotInSelect,
+            CheckKind::Unused,
+            CheckKind::UnusedFunction,
+            CheckKind::CursorColumnUnused,
+            CheckKind::CursorStarUnused,
+            CheckKind::Unreachable,
+            CheckKind::EndlessLoop,
+            CheckKind::LoopClauseOutsideLoop,
+            CheckKind::ContinueSkipsStep,
+            CheckKind::UnusedParameter,
+            CheckKind::TableWithoutSize,
+            CheckKind::TableWithoutColumns,
+            CheckKind::TableWithoutIndex,
+            CheckKind::TableColumnWithoutIndex,
+            CheckKind::TableUnknownColumn,
+            CheckKind::IndexOutOfRange,
+            CheckKind::CursorCommandArgument,
+            CheckKind::CursorFlagCalled,
+            CheckKind::CursorScopeWithoutArgument,
+            CheckKind::CursorTranslationWithoutSql2,
+            CheckKind::CursorMemberAssigned,
+            CheckKind::ListNotMember,
+            CheckKind::ListFunctionWithoutParentheses,
+            CheckKind::ListPropertyWithParentheses,
+            CheckKind::ListFieldWithoutName,
+            CheckKind::ListSizeOnNonAlfa,
+            CheckKind::ListRepeatedField,
+            CheckKind::ListKeyWithoutFields,
+            CheckKind::UnknownLabel,
+            CheckKind::UndeclaredFunction,
+            CheckKind::FunctionNameTooLong,
+            CheckKind::AlfaConcatenationInArgument,
+            CheckKind::ConflictingDefinition,
+            CheckKind::CallWithoutImplementation,
+            CheckKind::CallImplementedLater,
+            CheckKind::CallToLongFunctionName,
+            CheckKind::LiteralInAlfaParameter,
+            CheckKind::AlfaTableIndex,
+            CheckKind::ColumnIndexBeyondSize,
+            CheckKind::RepeatedDeclaration,
+            CheckKind::RepeatedParameter,
+            CheckKind::RepeatedColumn,
+            CheckKind::RepeatedLabel,
+            CheckKind::LabelsSameStart,
+            CheckKind::TableSizeOverflow,
+            CheckKind::CommandSql2(Sql2Error::Join),
+            CheckKind::CommandSql2(Sql2Error::UnknownTable),
+            CheckKind::CommandSql2(Sql2Error::UnknownSymbol),
+            CheckKind::CommandSql2(Sql2Error::UnknownField),
+            CheckKind::CommandSql2(Sql2Error::AmbiguousField),
+            CheckKind::CommandSql2(Sql2Error::OrderBy),
+            CheckKind::CommandSql2(Sql2Error::InsertValues),
+        ];
+        for kind in &kinds {
+            match kind {
+                CheckKind::MinusTakesOneToken
+                | CheckKind::ComparisonInAssignment
+                | CheckKind::LogicalMinus
+                | CheckKind::CodeAfterFunctionBlock
+                | CheckKind::FunctionInsideBlock
+                | CheckKind::ForeignParameter
+                | CheckKind::NonAlfaMessageText
+                | CheckKind::AlfaAndNumber
+                | CheckKind::AlfaOperator
+                | CheckKind::NumberAndAlfa
+                | CheckKind::TwoStringLiterals
+                | CheckKind::AlfaArgument
+                | CheckKind::NumberArgument
+                | CheckKind::ConstantInEndParameter
+                | CheckKind::AlfaOperatorInComparison
+                | CheckKind::LowercaseChar
+                | CheckKind::UnknownFunction
+                | CheckKind::TooManyArguments
+                | CheckKind::TooFewArguments
+                | CheckKind::OnlyInTest
+                | CheckKind::CursorConstantColumn
+                | CheckKind::NativeSqlWithScope
+                | CheckKind::NativeUnknownTable
+                | CheckKind::NativeUnknownField
+                | CheckKind::CursorFieldNotInSelect
+                | CheckKind::CursorUnknownTable
+                | CheckKind::CursorUnknownField
+                | CheckKind::CursorColumnWithoutTable
+                | CheckKind::CursorRepeatedField
+                | CheckKind::CursorUnknownParameter
+                | CheckKind::Sql2Join
+                | CheckKind::Sql2UnknownTable
+                | CheckKind::Sql2UnknownSymbol
+                | CheckKind::Sql2UnknownField
+                | CheckKind::Sql2AmbiguousField
+                | CheckKind::Sql2OrderBy
+                | CheckKind::Sql2InsertValues
+                | CheckKind::ReturnedColumnNotInSelect
+                | CheckKind::Unused
+                | CheckKind::UnusedFunction
+                | CheckKind::CursorColumnUnused
+                | CheckKind::CursorStarUnused
+                | CheckKind::Unreachable
+                | CheckKind::EndlessLoop
+                | CheckKind::LoopClauseOutsideLoop
+                | CheckKind::ContinueSkipsStep
+                | CheckKind::UnusedParameter
+                | CheckKind::TableWithoutSize
+                | CheckKind::TableWithoutColumns
+                | CheckKind::TableWithoutIndex
+                | CheckKind::TableColumnWithoutIndex
+                | CheckKind::TableUnknownColumn
+                | CheckKind::IndexOutOfRange
+                | CheckKind::CursorCommandArgument
+                | CheckKind::CursorFlagCalled
+                | CheckKind::CursorScopeWithoutArgument
+                | CheckKind::CursorTranslationWithoutSql2
+                | CheckKind::CursorMemberAssigned
+                | CheckKind::ListNotMember
+                | CheckKind::ListFunctionWithoutParentheses
+                | CheckKind::ListPropertyWithParentheses
+                | CheckKind::ListFieldWithoutName
+                | CheckKind::ListSizeOnNonAlfa
+                | CheckKind::ListRepeatedField
+                | CheckKind::ListKeyWithoutFields
+                | CheckKind::UnknownLabel
+                | CheckKind::UndeclaredFunction
+                | CheckKind::FunctionNameTooLong
+                | CheckKind::AlfaConcatenationInArgument
+                | CheckKind::ConflictingDefinition
+                | CheckKind::CallWithoutImplementation
+                | CheckKind::CallImplementedLater
+                | CheckKind::CallToLongFunctionName
+                | CheckKind::LiteralInAlfaParameter
+                | CheckKind::AlfaTableIndex
+                | CheckKind::ColumnIndexBeyondSize
+                | CheckKind::RepeatedDeclaration
+                | CheckKind::RepeatedParameter
+                | CheckKind::RepeatedColumn
+                | CheckKind::RepeatedLabel
+                | CheckKind::LabelsSameStart
+                | CheckKind::TableSizeOverflow
+                | CheckKind::CommandSql2(_) => {}
+            }
+        }
+        kinds
+    }
+
+    #[test]
+    fn todo_aviso_tem_o_codigo_e_o_nivel_da_documentacao() {
+        // A tabela de códigos de docs/diagnosticos.md, que é o que o usuário lê.
+        let docs = include_str!("../../docs/diagnosticos.md");
+        let levels: std::collections::HashMap<&str, &str> = docs
+            .lines()
+            .filter_map(|line| {
+                let mut cells = line.strip_prefix("| SEN")?.split('|');
+                let code = line.get(2..8)?;
+                cells.next()?;
+                Some((code, cells.next()?.trim()))
+            })
+            .collect();
+        let text = "x = 1;";
+        let tree = crate::parse(text).unwrap();
+        for kind in all_kinds() {
+            let check = Check {
+                kind,
+                range: text_size::TextRange::at(0.into(), 1.into()),
+                name: None,
+                label: Some("X".to_owned()),
+            };
+            let (code, message) = describe_check(&check, &tree, text);
+            assert!(!message.is_empty(), "{kind:?}");
+            let level = levels
+                .get(code)
+                .unwrap_or_else(|| panic!("{code} de {kind:?} não está na documentação"));
+            let expected = match *level {
+                "erro" => DiagnosticSeverity::ERROR,
+                "aviso" => DiagnosticSeverity::WARNING,
+                "dica" => DiagnosticSeverity::HINT,
+                other => panic!("nível {other} de {code}"),
+            };
+            assert_eq!(severity_of(kind), expected, "{code} de {kind:?}");
+        }
     }
 
     #[test]

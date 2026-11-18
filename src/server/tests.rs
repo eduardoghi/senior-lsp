@@ -5158,3 +5158,51 @@ fn resolve_do_completar_com_funcao_de_outra_regra_da_tela() {
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn completar_membros_de_tabela_e_campos_da_lista() {
+    let members = |text: &str, line: u32, character: u32| -> Vec<(String, Option<String>)> {
+        let (mut editor, _) = Editor::start(None);
+        editor.open(RULE, 1, text);
+        let response = editor.request(
+            lsp_types::request::Completion::METHOD,
+            json!({ "textDocument": { "uri": RULE }, "position": { "line": line, "character": character } }),
+        );
+        let items: Vec<lsp_types::CompletionItem> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        items
+            .into_iter()
+            .filter(|i| i.kind == Some(lsp_types::CompletionItemKind::FIELD))
+            .map(|i| (i.label, i.detail))
+            .collect()
+    };
+    // As colunas da `definir tabela`, com o tipo, depois do índice.
+    let text = "Definir Tabela t[2] = { Alfa aNome[10]; Numero nVal; Data dDia; };\nt[1].";
+    let mut found = members(text, 1, 5);
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            (
+                "aNome".to_owned(),
+                Some("alfa campo da tabela".to_owned())
+            ),
+            ("dDia".to_owned(), Some("data campo da tabela".to_owned())),
+            (
+                "nVal".to_owned(),
+                Some("numero campo da tabela".to_owned())
+            ),
+        ]
+    );
+    // Os campos criados com AdicionarCampo, com o tipo, e o filtro pelo começo digitado.
+    let text = "Definir Lista l;\nl.AdicionarCampo(\"CodEmp\", Numero);\n\
+                l.AdicionarCampo(\"Nome\", Alfa, 40);\nl.AdicionarCampo(nada, Alfa);\nl.Co";
+    let found = members(text, 4, 4);
+    assert_eq!(
+        found,
+        [(
+            "CodEmp".to_owned(),
+            Some("numero campo da lista".to_owned())
+        )]
+    );
+}
