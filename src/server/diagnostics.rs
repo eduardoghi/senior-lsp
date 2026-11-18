@@ -1230,6 +1230,11 @@ mod tests {
                 .1
                 .starts_with("O SQL do cursor se escreve sem =")
         );
+        assert!(
+            !hints("Definir Cursor c;\nc.Achou = 1;", "SEN095")[0]
+                .1
+                .starts_with("O SQL do cursor")
+        );
         assert_eq!(
             hints("Definir Numero n;\nDefinir Alfa N;", "SEN101")[0].1,
             "N já foi definida como número, e o mesmo nome com outro tipo não compila (Definição \

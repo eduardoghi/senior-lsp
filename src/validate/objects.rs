@@ -740,6 +740,21 @@ mod tests {
             &[],
         ));
         assert!(!ambiguous.contains(&CursorCommandArgument), "{ambiguous:?}");
+        let table = kinds(&all(
+            "Definir Tabela t[2] = { Numero a; };\nDefinir Alfa t;\nDefinir Numero n;\nn = t.a;",
+            Rule,
+            &[],
+        ));
+        assert!(!table.contains(&TableWithoutIndex), "{table:?}");
+        let list = kinds(&all(
+            "Definir Lista l;\nDefinir Alfa l;\nDefinir Numero n;\nn = l.Primeiro;",
+            Rule,
+            &[],
+        ));
+        assert!(!list.contains(&ListFunctionWithoutParentheses), "{list:?}");
+        // Só o menos muda o índice. O `+1` não é conferido.
+        let plus = kinds(&all(&format!("{tabela}n = t[+1].a;"), Rule, &[]));
+        assert!(!plus.contains(&IndexOutOfRange), "{plus:?}");
         // O erro de sintaxe dentro da tabela já diz o que falta, e a cobrança do tamanho fica
         // de fora. O erro antes dela não conta.
         let broken = kinds(&all("Definir Tabela t = { Numero ; };", Rule, &[]));

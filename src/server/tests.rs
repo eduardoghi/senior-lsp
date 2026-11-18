@@ -5433,3 +5433,133 @@ fn destaque_e_cursor_no_fim_do_nome_do_sql() {
         .collect();
     assert_eq!(lines, [0, 1, 2]);
 }
+
+#[test]
+fn dicas_nos_limites_do_trecho_e_da_heranca() {
+    let hints = |uri: &str, text: &str, start: (u32, u32), end: (u32, u32)| -> Vec<(u32, u32)> {
+        let (mut editor, _) = Editor::start(None);
+        editor.open(uri, 1, text);
+        let response = editor.request(
+            lsp_types::request::InlayHintRequest::METHOD,
+            json!({ "textDocument": { "uri": uri },
+                    "range": { "start": { "line": start.0, "character": start.1 },
+                               "end": { "line": end.0, "character": end.1 } } }),
+        );
+        let hints: Vec<lsp_types::InlayHint> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        hints
+            .into_iter()
+            .filter(|h| h.kind == Some(lsp_types::InlayHintKind::TYPE))
+            .map(|h| (h.position.line, h.position.character))
+            .collect()
+    };
+    // A dica bem no começo e bem no fim do trecho pedido entra.
+    assert_eq!(hints(RULE, "nA = 1;\n", (0, 2), (0, 3)), [(0, 2)]);
+    assert_eq!(hints(RULE, "nA = 1;\n", (0, 0), (0, 2)), [(0, 2)]);
+    // O VaPara para um rótulo que não existe não ganha dica.
+    assert_eq!(hints(RULE, "VaPara Nada;\n", (0, 0), (9, 0)), []);
+
+    // Na tela, a variável e a função de outra regra não ganham dica.
+    let base = std::env::temp_dir().join(format!("senior-lsp-dica-tela-{}", std::process::id()));
+    let form = base.join("Formulários SGI/interface/F1");
+    std::fs::create_dir_all(form.join("actions/A1")).unwrap();
+    std::fs::write(
+        form.join("rule.txt"),
+        "definir numero nRaiz;\ndefinir funcao FRaiz();\nfuncao FRaiz(); { }",
+    )
+    .unwrap();
+    let action = form.join("actions/A1/rule.txt");
+    let text = "nRaiz = 1;\nn1 = FRaiz;\nn2 = MsgErro;\n";
+    std::fs::write(&action, text).unwrap();
+    let uri = crate::form::uri_from_path(&action);
+    // O n1 e o n2 são da ação. O MsgErro é campo de toda tela.
+    assert_eq!(hints(&uri, text, (0, 0), (9, 0)), [(1, 2), (2, 2)]);
+    std::fs::remove_dir_all(&base).unwrap();
+    // Fora da tela, o MsgErro é um nome qualquer.
+    assert_eq!(
+        hints(RULE, "n2 = MsgErro;\n", (0, 0), (9, 0)),
+        [(0, 2), (0, 12)]
+    );
+}
+
+#[test]
+fn definir_pelo_prefixo_alfa_e_diretiva_na_linha_do_codigo() {
+    let (mut editor, _) = Editor::start(None);
+    let text = "aTexto = 1;\n";
+    editor.open(RULE, 1, text);
+    let response = editor.request(
+        lsp_types::request::CodeActionRequest::METHOD,
+        json!({ "textDocument": { "uri": RULE },
+                "range": { "start": { "line": 0, "character": 1 },
+                           "end": { "line": 0, "character": 1 } },
+                "context": { "diagnostics": [] } }),
+    );
+    assert!(
+        response
+            .response_result
+            .unwrap()
+            .to_string()
+            .contains("Definir Alfa aTexto;")
+    );
+
+    // A diretiva antes do código na mesma linha vale para a próxima linha com código, depois da
+    // linha em branco.
+    let text = "@ senior-lsp-disable-next-line SEN060 @ x = 1;\n\nCancel;\n";
+    editor.open(RULE, 2, text);
+    let d = editor.diagnostics();
+    assert!(
+        !d.diagnostics
+            .iter()
+            .any(|d| d.code == Some(lsp_types::NumberOrString::String("SEN060".to_owned()))),
+        "{:?}",
+        d.diagnostics
+    );
+}
+
+#[test]
+fn resolve_de_variavel_de_outra_regra_da_tela() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-resolve-var-{}", std::process::id()));
+    let form = base.join("Formulários SGI/interface/F1");
+    std::fs::create_dir_all(form.join("actions/A1")).unwrap();
+    std::fs::write(form.join("rule.txt"), "definir numero nRaizValor;").unwrap();
+    let action = form.join("actions/A1/rule.txt");
+    std::fs::write(&action, "nRai").unwrap();
+    let uri = crate::form::uri_from_path(&action);
+    let (mut editor, _) = Editor::start_with(None, json!({ "resolveDetail": true }));
+    editor.open(&uri, 1, "nRai");
+    let list = |editor: &mut Editor| -> lsp_types::CompletionItem {
+        let response = editor.request(
+            lsp_types::request::Completion::METHOD,
+            json!({ "textDocument": { "uri": uri }, "position": { "line": 0, "character": 4 } }),
+        );
+        let items: Vec<lsp_types::CompletionItem> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        items.into_iter().find(|i| i.label == "nRaizValor").unwrap()
+    };
+    let resolve = |editor: &mut Editor, item: lsp_types::CompletionItem| {
+        let response = editor.request(
+            lsp_types::request::ResolveCompletionItem::METHOD,
+            serde_json::to_value(item).unwrap(),
+        );
+        serde_json::from_value::<lsp_types::CompletionItem>(response.response_result.unwrap())
+            .unwrap()
+            .detail
+    };
+    let item = list(&mut editor);
+    assert_eq!(
+        resolve(&mut editor, item).as_deref(),
+        Some("definir numero nRaizValor;")
+    );
+    // Com a raiz mudada no disco, a herança é outra.
+    let item = list(&mut editor);
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    std::fs::write(
+        form.join("rule.txt"),
+        "definir numero nAntes;\ndefinir numero nRaizValor;",
+    )
+    .unwrap();
+    editor.change(&uri, 2, "nRai");
+    assert_eq!(resolve(&mut editor, item), None);
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
