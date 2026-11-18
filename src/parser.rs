@@ -1128,6 +1128,52 @@ mod tests {
                 "Retorna (ErrorNode)",
                 vec![ParseErrorKind::Expected(Eq)],
             ),
+            // O resto do Mensagem depois de um erro vai até o `)` dele, com os parênteses de
+            // dentro, e para antes de um comando ou de um fim de bloco.
+            (
+                "Mensagem(Erro, \"a\" + (b + (c)) + d);\nx = 1;",
+                "(CallStmt (CallExpr Mensagem (ArgList Erro \"a\" (ErrorNode)))) (Assign x 1)",
+                vec![ParseErrorKind::Expected(RParen)],
+            ),
+            (
+                "Mensagem(Erro, \"a\" + b\nse (1) { }",
+                "(CallStmt (CallExpr Mensagem (ArgList Erro \"a\" (ErrorNode)))) (If 1 (Block))",
+                vec![
+                    ParseErrorKind::Expected(RParen),
+                    ParseErrorKind::Expected(Semicolon),
+                ],
+            ),
+            (
+                "Mensagem(Erro, \"a\" + b }",
+                "(CallStmt (CallExpr Mensagem (ArgList Erro \"a\" (ErrorNode)))) (ErrorNode)",
+                vec![
+                    ParseErrorKind::Expected(RParen),
+                    ParseErrorKind::Expected(Semicolon),
+                    ParseErrorKind::UnmatchedEnd,
+                ],
+            ),
+            (
+                "Mensagem(Erro, x.y);\nz = 1;",
+                "(CallStmt (CallExpr Mensagem (ArgList Erro (ErrorNode)))) (Assign z 1)",
+                vec![ParseErrorKind::ExpectedMessageText],
+            ),
+            // O `}` logo depois de `Mensagem(` fecha o bloco e não entra no erro.
+            (
+                "se (1) { Mensagem(}",
+                "(If 1 (Block (CallStmt (CallExpr Mensagem (ArgList (ErrorNode))))))",
+                vec![
+                    ParseErrorKind::InvalidMessageType,
+                    ParseErrorKind::Expected(Comma),
+                    ParseErrorKind::ExpectedMessageText,
+                    ParseErrorKind::Expected(Semicolon),
+                ],
+            ),
+            // Palavra reservada sem parêntese não é nome.
+            (
+                "x = senao;",
+                "(Assign x (ErrorNode))",
+                vec![ParseErrorKind::ExpectedExpression],
+            ),
         ];
         for (texto, arvore, esperados) in casos {
             assert_eq!(regra(texto), arvore, "{texto:?}");
