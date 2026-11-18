@@ -675,7 +675,8 @@ mod tests {
     fn posicao_dos_avisos_dentro_do_sql() {
         // O trecho de cada aviso é o nome no literal da regra, também depois de continuação de
         // linha, aspas escapadas, acento, INTO, ORDER BY e JOIN, no SQL nativo e no Senior SQL 2.
-        let casos: [(Option<bool>, &str, &[(CheckKind, &str)]); 12] = [
+        type Caso<'a> = (Option<bool>, &'a str, &'a [(CheckKind, &'a str)]);
+        let casos: [Caso; 12] = [
             (
                 Some(false),
                 "SELECT CodEmp, \\\n       Xpto FROM E070EMP",
