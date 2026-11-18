@@ -2484,6 +2484,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn uniao_de_colunas_sem_tipo_quando_diverge() {
+        let column = |name: &str, ty| Column {
+            name: name.to_owned(),
+            ty,
+        };
+        let mut set = ColumnSet {
+            list: Vec::new(),
+            by_name: Default::default(),
+        };
+        set.add(&column("A", Some(VarType::Numero)));
+        set.add(&column("B", Some(VarType::Alfa)));
+        set.add(&column("A", Some(VarType::Numero)));
+        set.add(&column("B", Some(VarType::Numero)));
+        assert_eq!(
+            set.list,
+            [column("A", Some(VarType::Numero)), column("B", None)]
+        );
+    }
+
+    #[test]
     fn valor_da_string_com_escape_e_continuacao() {
         assert_eq!(string_value(r#""a\"b\\c""#), r#"a"b\c"#);
         assert_eq!(

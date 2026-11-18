@@ -607,6 +607,228 @@ mod tests {
     }
 
     #[test]
+    fn tipo_das_colunas_do_cursor_pelo_dicionario() {
+        // O tipo da coluna vem do dicionário, pela tabela escrita na frente ou pela única tabela
+        // que tem o campo, e a atribuição de outro tipo é cobrada. No SELECT do cursor o
+        // compilador não aceita apelido de tabela.
+        let base = "definir cursor c; definir numero n; definir alfa a;\n";
+        let casos: [(&str, &[(CheckKind, &str)]); 6] = [
+            (
+                "SELECT E.NomEmp FROM E070EMP E",
+                &[
+                    (CursorUnknownTable, "E"),
+                    (CursorFieldNotInSelect, "CodEmp"),
+                    (CursorFieldNotInSelect, "NomFil"),
+                ],
+            ),
+            (
+                "SELECT NomEmp FROM E070EMP",
+                &[
+                    (NumberAndAlfa, "c.NomEmp"),
+                    (CursorFieldNotInSelect, "CodEmp"),
+                    (CursorFieldNotInSelect, "NomFil"),
+                ],
+            ),
+            (
+                "SELECT E.* FROM E070EMP E",
+                &[
+                    (CursorUnknownTable, "E"),
+                    (CursorFieldNotInSelect, "NomEmp"),
+                    (CursorFieldNotInSelect, "CodEmp"),
+                    (CursorFieldNotInSelect, "NomFil"),
+                ],
+            ),
+            (
+                "SELECT e070emp.NomEmp FROM E070EMP",
+                &[
+                    (NumberAndAlfa, "c.NomEmp"),
+                    (CursorFieldNotInSelect, "CodEmp"),
+                    (CursorFieldNotInSelect, "NomFil"),
+                ],
+            ),
+            (
+                "SELECT F.NomFil, E.NomEmp FROM E070EMP E, E070FIL F",
+                &[
+                    (CursorUnknownTable, "F"),
+                    (CursorUnknownTable, "E"),
+                    (CursorFieldNotInSelect, "CodEmp"),
+                ],
+            ),
+            (
+                "SELECT CodEmp FROM E070EMP E, E070FIL F",
+                &[
+                    (CursorFieldNotInSelect, "NomEmp"),
+                    (AlfaAndNumber, "c.CodEmp"),
+                    (CursorFieldNotInSelect, "NomFil"),
+                ],
+            ),
+        ];
+        for (sql, esperados) in casos {
+            let text = format!(
+                "{base}c.SQL \"{sql}\";\nc.AbrirCursor();\nn = c.NomEmp;\na = c.CodEmp;\nn = c.NomFil;\n"
+            );
+            assert_eq!(checks_com_dicionario(&text), esperados, "{sql}");
+        }
+    }
+
+    #[test]
+    fn posicao_dos_avisos_dentro_do_sql() {
+        // O trecho de cada aviso é o nome no literal da regra, também depois de continuação de
+        // linha, aspas escapadas, acento, INTO, ORDER BY e JOIN, no SQL nativo e no Senior SQL 2.
+        let casos: [(Option<bool>, &str, &[(CheckKind, &str)]); 12] = [
+            (
+                Some(false),
+                "SELECT CodEmp, \\\n       Xpto FROM E070EMP",
+                &[(CursorUnknownField, "Xpto"), (CursorColumnUnused, "Xpto")],
+            ),
+            (
+                Some(false),
+                "SELECT CodEmp FROM E070EMP WHERE NomEmp = \\\"A\\\" AND Xyz = 1",
+                &[],
+            ),
+            (
+                Some(false),
+                "SELECT CodEmp FROM E070EMP WHERE NomEmp = 'Ação' AND Xyz = 1",
+                &[],
+            ),
+            (
+                Some(false),
+                "SELECT CodEmp INTO :n FROM E070EMP WHERE Xyz = 1",
+                &[],
+            ),
+            (Some(false), "SELECT CodEmp FROM E070EMP ORDER BY Xyz", &[]),
+            (
+                Some(false),
+                "SELECT E.CodEmp FROM E070EMP E JOIN E070FIL F ON F.Xyz = E.CodEmp",
+                &[(CursorUnknownTable, "E"), (NativeUnknownTable, "E070FIL")],
+            ),
+            (
+                Some(true),
+                "SELECT CodEmp, \\\n       Xpto FROM E070EMP",
+                &[(CursorUnknownField, "Xpto"), (CursorColumnUnused, "Xpto")],
+            ),
+            (
+                Some(true),
+                "SELECT CodEmp FROM E070EMP WHERE NomEmp = \\\"A\\\" AND Xyz = 1",
+                &[(Sql2UnknownSymbol, "Xyz")],
+            ),
+            (
+                Some(true),
+                "SELECT CodEmp FROM E070EMP WHERE NomEmp = 'Ação' AND Xyz = 1",
+                &[(Sql2UnknownSymbol, "Xyz")],
+            ),
+            (
+                Some(true),
+                "SELECT CodEmp INTO :n FROM E070EMP WHERE Xyz = 1",
+                &[(Sql2UnknownSymbol, "Xyz")],
+            ),
+            (
+                Some(true),
+                "SELECT CodEmp FROM E070EMP ORDER BY Xyz",
+                &[(Sql2OrderBy, "Xyz")],
+            ),
+            (
+                Some(true),
+                "SELECT E.CodEmp FROM E070EMP E JOIN E070FIL F ON F.Xyz = E.CodEmp",
+                &[(CursorUnknownTable, "E"), (Sql2Join, "JOIN")],
+            ),
+        ];
+        let base = "definir cursor c; definir numero n; definir alfa a;\n";
+        for (modo, sql, esperados) in casos {
+            let text = format!("{base}c.SQL \"{sql}\";\nc.AbrirCursor();\n");
+            let tree = crate::parse(&text).unwrap();
+            let symbols = crate::symbols::Symbols::build(&tree, &text);
+            let mut inherited = crate::form::Inherited::default();
+            inherited.dictionaries = dicionarios();
+            inherited.senior_sql2 = modo;
+            let found: Vec<(CheckKind, &str)> = crate::validate::validate(
+                &tree,
+                &symbols,
+                &text,
+                crate::builtins::Context::Rule,
+                &inherited,
+            )
+            .into_iter()
+            .filter(|c| c.kind != Unused)
+            .map(|c| (c.kind, &text[c.range]))
+            .collect();
+            assert_eq!(found, esperados, "{modo:?} {sql}");
+        }
+    }
+
+    #[test]
+    fn tabela_desconhecida_sai_uma_vez_por_lugar() {
+        // A tabela que as colunas do cursor já acusaram não sai de novo pelo SQL nativo nem pelo
+        // Senior SQL 2. A de uma subconsulta sai, e no ExecSql sai sempre.
+        let rodar = |modo: Option<bool>, text: &str| -> Vec<(CheckKind, std::string::String)> {
+            let tree = crate::parse(text).unwrap();
+            let symbols = crate::symbols::Symbols::build(&tree, text);
+            let mut inherited = crate::form::Inherited::default();
+            inherited.dictionaries = dicionarios();
+            inherited.senior_sql2 = modo;
+            crate::validate::validate(
+                &tree,
+                &symbols,
+                text,
+                crate::builtins::Context::Rule,
+                &inherited,
+            )
+            .into_iter()
+            .filter(|c| c.kind != Unused)
+            .map(|c| (c.kind, text[c.range].to_owned()))
+            .collect()
+        };
+        let base = "definir cursor c; definir numero n; definir alfa a;\n";
+        let cursor = |sql: &str| format!("{base}c.SQL \"{sql}\";\nc.AbrirCursor();\n");
+        let e = || "E999XYZ".to_owned();
+        let casos = [
+            (
+                Some(false),
+                cursor("SELECT Xpto FROM E999XYZ"),
+                vec![(CursorUnknownTable, e())],
+            ),
+            (
+                Some(false),
+                cursor("SELECT CodEmp FROM E070EMP WHERE CodEmp IN (SELECT CodEmp FROM E999XYZ)"),
+                vec![(NativeUnknownTable, e())],
+            ),
+            (
+                Some(false),
+                cursor("SELECT Xpto FROM E999XYZ WHERE Xpto IN (SELECT A FROM E999XYZ)"),
+                vec![(CursorUnknownTable, e())],
+            ),
+            (
+                Some(false),
+                format!("{base}ExecSql \"UPDATE E999XYZ SET A = 1\";\n"),
+                vec![(NativeUnknownTable, e())],
+            ),
+            (
+                Some(true),
+                cursor("SELECT Xpto FROM E999XYZ"),
+                vec![(CursorUnknownTable, e())],
+            ),
+            (
+                Some(true),
+                cursor("SELECT CodEmp FROM E070EMP WHERE CodEmp IN (SELECT CodEmp FROM E999XYZ)"),
+                vec![(Sql2UnknownTable, e())],
+            ),
+            (
+                Some(true),
+                cursor("SELECT Xpto FROM E999XYZ WHERE Xpto IN (SELECT A FROM E999XYZ)"),
+                vec![(CursorUnknownTable, e()), (Sql2UnknownTable, e())],
+            ),
+            (
+                Some(true),
+                format!("{base}ExecSql \"UPDATE E999XYZ SET A = 1\";\n"),
+                vec![(Sql2UnknownTable, e())],
+            ),
+        ];
+        for (modo, text, esperados) in casos {
+            assert_eq!(rodar(modo, &text), esperados, "{modo:?} {text}");
+        }
+    }
+
+    #[test]
     fn sql_nativo_do_sql_definircomando_contra_o_dicionario() {
         let regra = |nativo: &str| {
             format!(
