@@ -5305,6 +5305,55 @@ fn completar_membros_de_tabela_e_campos_da_lista() {
             Some("numero campo da lista".to_owned())
         )]
     );
+    // Cada tipo, e só os campos desta lista criados com AdicionarCampo e nome em texto.
+    let text = "Definir Lista l; Definir Lista m;\nl.AdicionarCampo(\"A\", Alfa);\n\
+                l.AdicionarCampo(\"D\", Data);\nl.AdicionarCampo(\"X\", Outro);\n\
+                l.AdicionarCampo(1, Alfa);\nm.AdicionarCampo(\"M\", Alfa);\n\
+                l.Outra(\"O\", Alfa);\nl.";
+    let mut found = members(text, 7, 2);
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("A".to_owned(), Some("alfa campo da lista".to_owned())),
+            ("D".to_owned(), Some("data campo da lista".to_owned())),
+            ("X".to_owned(), Some("campo da lista".to_owned())),
+        ]
+    );
+}
+
+#[test]
+fn mensagem_do_que_falta_na_sintaxe() {
+    let falta = |text: &str| {
+        let (editor, _) = Editor::start(None);
+        editor.open(RULE, 1, text);
+        let found: Vec<(String, Option<String>)> = editor
+            .diagnostics()
+            .diagnostics
+            .into_iter()
+            .filter(|d| d.code == Some(lsp_types::NumberOrString::String("SEN020".to_owned())))
+            .map(|d| (d.message, d.source))
+            .collect();
+        editor.stop();
+        found
+    };
+    let s = |m: &str| (m.to_owned(), Some("senior-lsp".to_owned()));
+    for (text, message) in [
+        ("x = 1\n", "Falta \";\"."),
+        ("x = (1;\n", "Falta \")\"."),
+        ("se x = 1) x = 2;\n", "Falta \"(\"."),
+        ("definir alfa a[2];\na[1 = 1;\n", "Falta \"]\"."),
+        (
+            "definir funcao f();\nfuncao f(); { x = 1;\n",
+            "Falta \"}\".",
+        ),
+        ("f(1 2);\n", "Falta \",\"."),
+        ("definir tabela t = x;\n", "Falta \"{\"."),
+        ("x 1;\n", "Falta \"=\"."),
+        ("definir numero;\n", "Falta um nome."),
+    ] {
+        assert_eq!(falta(text).first(), Some(&s(message)), "{text}");
+    }
 }
 
 #[test]
@@ -5544,6 +5593,29 @@ fn dicas_nos_limites_do_trecho_e_da_heranca() {
     // A dica bem no começo e bem no fim do trecho pedido entra.
     assert_eq!(hints(RULE, "nA = 1;\n", (0, 2), (0, 3)), [(0, 2)]);
     assert_eq!(hints(RULE, "nA = 1;\n", (0, 0), (0, 2)), [(0, 2)]);
+    // O nome do parâmetro bem no começo e bem no fim do trecho também entra, e fora dele não.
+    let params = |start: (u32, u32), end: (u32, u32)| -> Vec<(u32, u32)> {
+        let (mut editor, _) = Editor::start(None);
+        editor.open(RULE, 1, "definir alfa a;\nIntParaAlfa(1, a);\n");
+        let response = editor.request(
+            lsp_types::request::InlayHintRequest::METHOD,
+            json!({ "textDocument": { "uri": RULE },
+                    "range": { "start": { "line": start.0, "character": start.1 },
+                               "end": { "line": end.0, "character": end.1 } } }),
+        );
+        let hints: Vec<lsp_types::InlayHint> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        hints
+            .into_iter()
+            .filter(|h| h.kind == Some(lsp_types::InlayHintKind::PARAMETER))
+            .map(|h| (h.position.line, h.position.character))
+            .collect()
+    };
+    assert_eq!(params((0, 0), (9, 0)), [(1, 12), (1, 15)]);
+    assert_eq!(params((1, 12), (1, 12)), [(1, 12)]);
+    assert_eq!(params((1, 13), (1, 15)), [(1, 15)]);
+    assert_eq!(params((1, 16), (1, 20)), []);
+    assert_eq!(params((0, 0), (1, 11)), []);
     // O VaPara para um rótulo que não existe não ganha dica.
     assert_eq!(hints(RULE, "VaPara Nada;\n", (0, 0), (9, 0)), []);
 
