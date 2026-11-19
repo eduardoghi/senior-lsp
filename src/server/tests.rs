@@ -2292,10 +2292,15 @@ fn analisa_a_pasta_inteira_quando_ligado() {
     let folder = crate::form::uri_from_path(&base);
     let erro_uri = crate::form::uri_from_path(&com_erro);
 
-    // Desligado, nada é publicado sem abrir.
+    // Desligado, nada é publicado sem abrir, nem quando o arquivo muda no disco.
     let (editor, _) = Editor::start_with(
         None,
         json!({ "workspaceFolders": [{ "uri": folder, "name": "x" }] }),
+    );
+    editor.quiet();
+    editor.notify(
+        lsp_types::notification::DidChangeWatchedFiles::METHOD,
+        json!({ "changes": [{ "uri": erro_uri, "type": 2 }] }),
     );
     editor.quiet();
     editor.stop();
@@ -2313,6 +2318,12 @@ fn analisa_a_pasta_inteira_quando_ligado() {
     // Fechar um arquivo aberto volta aos diagnósticos do disco.
     editor.open(&erro_uri, 1, "x = 1;");
     assert!(editor.diagnostics().diagnostics.is_empty());
+    // Aberto, o arquivo que muda no disco continua com o texto do editor.
+    editor.notify(
+        lsp_types::notification::DidChangeWatchedFiles::METHOD,
+        json!({ "changes": [{ "uri": erro_uri, "type": 2 }] }),
+    );
+    editor.quiet();
     editor.close(&erro_uri);
     assert!(!editor.diagnostics().diagnostics.is_empty());
 
@@ -4435,7 +4446,8 @@ fn progresso_da_analise_da_pasta() {
                     .as_str()
                     .unwrap_or("")
                     .to_owned();
-                seen.push(format!("{kind} {message}"));
+                let percentage = &n.params["value"]["percentage"];
+                seen.push(format!("{kind} {message} {percentage}"));
                 if kind == "end" {
                     break;
                 }
@@ -4449,10 +4461,10 @@ fn progresso_da_analise_da_pasta() {
         seen,
         [
             "window/workDoneProgress/create",
-            "begin 0 de 4",
-            "report 3 de 4",
-            "report 4 de 4",
-            "end 4 arquivos analisados"
+            "begin 0 de 4 0",
+            "report 3 de 4 75",
+            "report 4 de 4 100",
+            "end 4 arquivos analisados null"
         ]
     );
 }

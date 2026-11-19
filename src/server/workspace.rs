@@ -647,3 +647,19 @@ pub(super) fn read(path: &Path, rule: bool) -> Option<String> {
         Err(e) => crate::cp1252::decode(e.as_bytes()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nome_no_texto_sem_diferenca_de_caixa() {
+        assert!(contains_ignore_case("a = E070EMP.NomEmp;", "NOMEMP"));
+        assert!(contains_ignore_case("nomemp", "NomEmp"));
+        // A primeira letra aparece antes, mas o nome só no fim, cortado ou em lugar nenhum.
+        assert!(contains_ignore_case("n x nomem NOMEMP", "nomemp"));
+        assert!(!contains_ignore_case("n x NOMEM", "nomemp"));
+        assert!(!contains_ignore_case("CodEmp", "NomEmp"));
+        assert!(!contains_ignore_case("NomEmp", ""));
+    }
+}

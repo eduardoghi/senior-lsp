@@ -340,8 +340,16 @@ fn referencias_do_campo_do_dicionario_nas_regras_da_pasta() {
     for path in [&aberta, &fechada, &modelo] {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     }
+    // O que vale para a regra e o modelo abertos é o texto do editor, e no disco eles não citam o
+    // campo ou citam em outro lugar.
     let texto = "definir alfa a;\na = E070EMP.NomEmp;\n";
-    std::fs::write(&aberta, texto).unwrap();
+    std::fs::write(&aberta, "x = 1;\n").unwrap();
+    // JSON que não é modelo fica fora, mesmo com o nome do campo dentro.
+    std::fs::write(
+        base.join("regras/config.json"),
+        r#"{"sql": "SELECT NomEmp FROM E070EMP"}"#,
+    )
+    .unwrap();
     std::fs::write(
         &fechada,
         "definir cursor c;\nc.SQL \"SELECT NomEmp FROM E070EMP WHERE SigEmp = 'X'\";\n\
@@ -368,6 +376,14 @@ fn referencias_do_campo_do_dicionario_nas_regras_da_pasta() {
         &json!({"jsonrpc": "2.0", "method": "textDocument/didOpen",
                 "params": {"textDocument": {"uri": uri, "languageId": "lsp-senior",
                                             "version": 1, "text": texto}}}),
+    );
+    let modelo_aberto = r#"{"rule": {"prop_name": "SOnPrint", "lines": ["definir cursor c;", "c.SQL \"SELECT  E.NomEmp FROM E070EMP E\";"]}}"#;
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                "params": {"textDocument": {"uri": senior_lsp::form::uri_from_path(&modelo),
+                                            "languageId": "json",
+                                            "version": 1, "text": modelo_aberto}}}),
     );
     send(
         &mut stdin,
@@ -403,7 +419,7 @@ fn referencias_do_campo_do_dicionario_nas_regras_da_pasta() {
     assert_eq!(
         found,
         [
-            ("Modelos/M1.GER/Detalhe.json".to_owned(), 0, 84),
+            ("Modelos/M1.GER/Detalhe.json".to_owned(), 0, 85),
             ("regras/R1.LSP/Rule.txt".to_owned(), 1, 12),
             ("regras/R2.LSP/Rule.txt".to_owned(), 1, 14),
         ]
