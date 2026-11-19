@@ -180,6 +180,29 @@ mod tests {
     }
 
     #[test]
+    fn texto_e_comentario_com_o_que_fecharia_o_comando() {
+        // Dentro do texto e do comentário, `;` e `)` não fecham nada.
+        assert_eq!(call("F(\"a;b\", |"), Some(("F".into(), 1)));
+        assert_eq!(call("F(\"x\\\"y)\", |"), Some(("F".into(), 1)));
+        assert_eq!(call("F(a @ ; ) @, |"), Some(("F".into(), 1)));
+        assert_eq!(call("F(a /* ; ) */, |"), Some(("F".into(), 1)));
+        assert_eq!(call("F(a /**/, |"), Some(("F".into(), 1)));
+        // O comentário de `@` acaba no fim da linha, e o `/` sozinho é divisão.
+        assert_eq!(call("F(a @ x\n; |"), None);
+        assert_eq!(call("F(a / 2, |"), Some(("F".into(), 1)));
+        // Texto e comentário sem fechar vão até o cursor.
+        assert_eq!(call("F(\"a, |"), Some(("F".into(), 0)));
+        assert_eq!(call("F(a /* , |"), Some(("F".into(), 0)));
+        assert_eq!(call("F(a @ , |"), Some(("F".into(), 0)));
+        // O nome tem sublinhado e ponto.
+        assert_eq!(call("Meu_F(1, |"), Some(("Meu_F".into(), 1)));
+        assert_eq!(
+            call("lista.Adicionar(|"),
+            Some(("lista.Adicionar".into(), 0))
+        );
+    }
+
+    #[test]
     fn caractere_de_mais_de_um_byte_antes_do_nome() {
         assert_eq!(call("çF(1, |"), Some(("F".into(), 1)));
         assert_eq!(call("x = é(|"), None);

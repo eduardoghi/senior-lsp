@@ -199,6 +199,16 @@ mod tests {
         assert_eq!(closest("ABCD", ["ABXY", "ABCE"].into_iter()), Some("ABCE"));
         assert_eq!(closest("ABCD", ["AXYD"].into_iter()), None);
         assert_eq!(closest("NUMEND", ["NUMANX"].into_iter()), None);
+        // O mais perto vale, venha antes ou depois do mais longe.
+        assert_eq!(
+            closest("ABCDEFGH", ["ABCDEFGX", "ABCDEFXY"].into_iter()),
+            Some("ABCDEFGX")
+        );
+        assert_eq!(
+            closest("ABCDEFGH", ["ABCDEFXY", "ABCDEFGX"].into_iter()),
+            Some("ABCDEFGX")
+        );
+        assert_eq!(closest("AB", ["AC"].into_iter()), None);
         assert_eq!(
             closest(
                 "ConverteMascra",
