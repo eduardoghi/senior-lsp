@@ -2339,6 +2339,35 @@ fn analisa_a_pasta_inteira_quando_ligado() {
 }
 
 #[test]
+fn modelo_que_muda_no_disco_e_analisado_de_novo() {
+    let base = std::env::temp_dir().join(format!("senior-lsp-modelo-disco-{}", std::process::id()));
+    let model = base.join("Modelos/M1.GER/Detalhe.json");
+    std::fs::create_dir_all(model.parent().unwrap()).unwrap();
+    let json =
+        |line: &str| format!(r#"{{"rule": {{"prop_name": "SOnPrint", "lines": ["{line}"]}}}}"#);
+    std::fs::write(&model, json("x = ;")).unwrap();
+    let folder = crate::form::uri_from_path(&base);
+    let uri = crate::form::uri_from_path(&model);
+    let (editor, _) = Editor::start_with(
+        None,
+        json!({ "analisar_pasta": true, "workspaceFolders": [{ "uri": folder, "name": "x" }] }),
+    );
+    let d = editor.diagnostics();
+    assert_eq!(d.uri.as_str(), uri);
+    assert!(!d.diagnostics.is_empty());
+    std::fs::write(&model, json("x = 1;")).unwrap();
+    editor.notify(
+        lsp_types::notification::DidChangeWatchedFiles::METHOD,
+        json!({ "changes": [{ "uri": uri, "type": 2 }] }),
+    );
+    let d = editor.diagnostics();
+    assert_eq!(d.uri.as_str(), uri);
+    assert!(d.diagnostics.is_empty(), "{:?}", d.diagnostics);
+    editor.stop();
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
 fn configuracao_nova_liga_e_desliga_a_analise_da_pasta() {
     let base = std::env::temp_dir().join(format!("senior-lsp-liga-{}", std::process::id()));
     let fechada = base.join("regras/R1.LSP/Rule.txt");

@@ -337,7 +337,8 @@ fn referencias_do_campo_do_dicionario_nas_regras_da_pasta() {
     let aberta = base.join("regras/R1.LSP/Rule.txt");
     let fechada = base.join("regras/R2.LSP/Rule.txt");
     let modelo = base.join("Modelos/M1.GER/Detalhe.json");
-    for path in [&aberta, &fechada, &modelo] {
+    let modelo_fechado = base.join("Modelos/M2.GER/Detalhe.json");
+    for path in [&aberta, &fechada, &modelo, &modelo_fechado] {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     }
     // O que vale para a regra e o modelo abertos é o texto do editor, e no disco eles não citam o
@@ -354,6 +355,11 @@ fn referencias_do_campo_do_dicionario_nas_regras_da_pasta() {
         &fechada,
         "definir cursor c;\nc.SQL \"SELECT NomEmp FROM E070EMP WHERE SigEmp = 'X'\";\n\
          c.SQL \"SELECT NomFil FROM E070FIL\";\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &modelo_fechado,
+        r#"{"rule": {"prop_name": "SOnPrint", "lines": ["definir cursor c;", "c.SQL \"SELECT NomEmp FROM E070EMP\";"]}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -420,6 +426,7 @@ fn referencias_do_campo_do_dicionario_nas_regras_da_pasta() {
         found,
         [
             ("Modelos/M1.GER/Detalhe.json".to_owned(), 0, 85),
+            ("Modelos/M2.GER/Detalhe.json".to_owned(), 0, 82),
             ("regras/R1.LSP/Rule.txt".to_owned(), 1, 12),
             ("regras/R2.LSP/Rule.txt".to_owned(), 1, 14),
         ]
