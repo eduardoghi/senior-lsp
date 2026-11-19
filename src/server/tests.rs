@@ -605,7 +605,9 @@ fn definicao_referencias_hover_e_simbolos() {
         .map(|s| s["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["nTotal", "Soma"]);
+    assert_eq!(symbols[0]["detail"], "numero");
     assert_eq!(symbols[1]["children"][0]["name"], "aLocal");
+    assert_eq!(symbols[1]["children"][0]["detail"], "alfa");
     editor.stop();
 }
 
@@ -1646,6 +1648,41 @@ fn correcao_rapida_troca_pelo_nome_parecido() {
 }
 
 #[test]
+fn tipo_dos_itens_do_completar() {
+    // Função é função, o resto é variável, e o rótulo não entra.
+    let text = "definir numero nValor;\ndefinir funcao nFazer();\nfuncao nFazer(); { }\n\
+                nRotulo:\nn\n";
+    let (mut editor, _) = Editor::start(None);
+    editor.open(RULE, 1, text);
+    let response = editor.request(
+        lsp_types::request::Completion::METHOD,
+        json!({ "textDocument": { "uri": RULE }, "position": { "line": 4, "character": 1 } }),
+    );
+    let items: Vec<lsp_types::CompletionItem> =
+        serde_json::from_value(response.response_result.unwrap()).unwrap();
+    let mut found: Vec<_> = items
+        .into_iter()
+        .filter(|i| i.label.starts_with('n'))
+        .map(|i| (i.label, i.kind))
+        .collect();
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        found,
+        [
+            (
+                "nFazer".to_owned(),
+                Some(lsp_types::CompletionItemKind::FUNCTION)
+            ),
+            (
+                "nValor".to_owned(),
+                Some(lsp_types::CompletionItemKind::VARIABLE)
+            ),
+        ]
+    );
+    editor.stop();
+}
+
+#[test]
 fn modelos_no_completar_so_com_editor_que_aceita_snippets() {
     let text = "definir numero n;\nenq\nn = 1;\n";
     let snippets = |editor: &mut Editor| {
@@ -1665,6 +1702,9 @@ fn modelos_no_completar_so_com_editor_que_aceita_snippets() {
     let found = snippets(&mut editor);
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0].label, "enquanto");
+    assert!(found[0].detail.is_some());
+    // Logo depois das palavras da linguagem.
+    assert_eq!(found[0].sort_text.as_deref(), Some("3enquanto~"));
     assert_eq!(
         found[0].insert_text_format,
         Some(lsp_types::InsertTextFormat::SNIPPET)

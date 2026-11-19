@@ -1262,6 +1262,31 @@ mod tests {
     }
 
     #[test]
+    fn o_que_esta_sob_o_cursor_nos_limites() {
+        let column = |table, field| Some(Spot::Column { table, field });
+        for (mask, at, expected) in [
+            // O nome no começo e no fim do texto, e o cursor depois do fim.
+            ("AB", 0, Some(Spot::Word(0..2))),
+            ("AB", 2, Some(Spot::Word(0..2))),
+            ("AB", 9, Some(Spot::Word(0..2))),
+            (":AB", 3, Some(Spot::Variable(1..3))),
+            ("T.F", 0, column(0..1, 2..3)),
+            ("T.F", 3, column(0..1, 2..3)),
+            // Sem tabela, ou sem campo, ou com número de um dos lados, é um nome sozinho.
+            (".F", 2, Some(Spot::Word(1..2))),
+            ("1.F", 3, Some(Spot::Word(2..3))),
+            ("T.", 1, Some(Spot::Word(0..1))),
+            ("T.1", 1, Some(Spot::Word(0..1))),
+            // Com dois pontos, vale o par à esquerda do nome.
+            ("AB.CD.EF", 4, column(0..2, 3..5)),
+            ("AB.CD.EF", 1, column(0..2, 3..5)),
+            ("AB.CD.EF", 7, column(3..5, 6..8)),
+        ] {
+            assert_eq!(spot_at(mask.as_bytes(), at), expected, "{mask} {at}");
+        }
+    }
+
+    #[test]
     fn so_o_texto_de_sql_vira_tabela() {
         assert!(starts_statement(&mask("\"  select a from t\"")));
         assert!(starts_statement(&mask(
@@ -1517,6 +1542,103 @@ mod tests {
         assert!(completions("definir alfa a;\na = \"Cod^\";").is_empty());
         // Fora do texto o completar da regra continua.
         assert_eq!(completions("definir numero nValor;\nnVa^"), ["nValor"]);
+    }
+
+    /// Roda `f` no documento de `source`, no ponto marcado com `^`.
+    fn at_marker<R>(
+        source: &str,
+        inherited: Option<crate::form::Inherited>,
+        f: impl FnOnce(&Context, lsp_types::Position) -> R,
+    ) -> R {
+        let at = source.find('^').unwrap();
+        let text = source.replacen('^', "", 1);
+        let before = &text[..at];
+        let line = before.matches('\n').count() as u32;
+        let character = (before.len() - before.rfind('\n').map_or(0, |p| p + 1)) as u32;
+        let mut doc = document(&text);
+        if let Some(mut inherited) = inherited {
+            inherited.dictionaries = doc.inherited.dictionaries.clone();
+            doc.inherited = std::sync::Arc::new(inherited);
+        }
+        let uri: lsp_types::Uri = "file:///regras/EXEMPLO.LSP/Rule.txt".parse().unwrap();
+        let context = Context {
+            doc: &doc,
+            uri: &uri,
+            encoding: crate::line_index::ColumnEncoding::Utf8,
+            embedding: None,
+        };
+        f(&context, lsp_types::Position::new(line, character))
+    }
+
+    #[test]
+    fn campo_do_dicionario_sob_o_cursor() {
+        let field = |source: &str| at_marker(source, None, |c, p| c.dictionary_field_at(p));
+        let cursor = |sql: &str| field(&format!("definir cursor c;\nc.SQL \"{sql}\";"));
+        let nom = Some(("E070EMP".to_owned(), "NomEmp".to_owned()));
+        // O campo com a tabela ou o apelido na frente, e não a tabela.
+        assert_eq!(cursor("SELECT E.Nom^Emp FROM E070EMP E"), nom);
+        assert_eq!(cursor("SELECT E070EMP.^NomEmp FROM E070EMP"), nom);
+        assert_eq!(cursor("SELECT E^.NomEmp FROM E070EMP E"), None);
+        // O nome solto vale pela única tabela do comando que tem o campo, no trecho dela.
+        assert_eq!(cursor("SELECT Nom^Emp FROM E070EMP"), nom);
+        assert_eq!(
+            cursor("SELECT 1 FROM T WHERE EXISTS (SELECT NomEmp^ FROM E070EMP)"),
+            nom
+        );
+        assert_eq!(
+            cursor("SELECT (SELECT 1 FROM E070EMP), Nom^Emp FROM T"),
+            None
+        );
+        assert_eq!(cursor("SELECT Nom^Emp FROM E070EMP A, E070EMP B"), None);
+        // Texto que não é SQL não tem campo.
+        assert_eq!(field("definir alfa a;\na = \"Nom^Emp\";"), None);
+    }
+
+    #[test]
+    fn variaveis_depois_dos_dois_pontos() {
+        let items = |source: &str, inherited| {
+            at_marker(source, inherited, |c, p| {
+                let mut items = c.completion(p, None);
+                items.sort_by(|a, b| a.sort_text.cmp(&b.sort_text));
+                items
+                    .into_iter()
+                    .map(|i| (Some(i.label), i.kind, i.detail, i.sort_text))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let var = Some(CompletionItemKind::VARIABLE);
+        let s = |t: &str| Some(t.to_owned());
+        // Os parâmetros de outra função não entram.
+        assert_eq!(
+            items(
+                "definir cursor c;\ndefinir funcao g(numero pOutro);\nfuncao g(numero pOutro); { }\n\
+                 definir funcao f(numero pCod);\nfuncao f(numero pCod); {\n\
+                 c.SQL \"SELECT CodEmp FROM E070EMP WHERE CodEmp = :p^\";\n}",
+                None
+            ),
+            [(s("pCod"), var, s("numero pCod"), s("0pcod"))]
+        );
+        // As variáveis de outra regra vêm depois das da regra, e o nome repetido sai uma vez.
+        let inherited = crate::form::Inherited::from_rules([(
+            "anterior/rule.txt".into(),
+            "definir numero nHerdada; definir alfa nLocal;".to_owned(),
+        )]);
+        assert_eq!(
+            items(
+                "definir numero nLocal; definir cursor c;\n\
+                 c.SQL \"SELECT CodEmp FROM E070EMP WHERE CodEmp = :n^\";",
+                Some(inherited)
+            ),
+            [
+                (s("nLocal"), var, s("definir numero nLocal;"), s("0nlocal")),
+                (
+                    s("nHerdada"),
+                    var,
+                    s("definir numero nHerdada;"),
+                    s("1nherdada")
+                ),
+            ]
+        );
     }
 
     /// Texto do hover no ponto marcado com `^`, ou `None` quando não há hover.
