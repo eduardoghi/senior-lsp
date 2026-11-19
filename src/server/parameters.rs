@@ -469,3 +469,55 @@ fn arguments_edits(
     }
     Some(List::of(tree, args).edits(text, change, false))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Aplica as trocas de `change` na lista `text`, de itens de uma letra separados por `, `.
+    fn apply(text: &str, change: &Change) -> String {
+        let at = |i: usize| TextSize::new(i as u32);
+        let items = text
+            .char_indices()
+            .filter(|(_, c)| c.is_ascii_alphabetic())
+            .map(|(i, _)| TextRange::new(at(i), at(i + 1)))
+            .collect();
+        let list = List {
+            range: TextRange::new(at(0), at(text.len())),
+            items,
+        };
+        let mut out = text.to_owned();
+        let mut edits = list.edits(text, change, true);
+        edits.sort_by_key(|(r, _)| std::cmp::Reverse(r.start()));
+        for (range, new) in edits {
+            out.replace_range(usize::from(range.start())..usize::from(range.end()), &new);
+        }
+        out
+    }
+
+    #[test]
+    fn trocas_da_lista_nas_pontas_e_no_meio() {
+        let insert = |at| Change::Insert {
+            at,
+            param: "x".to_owned(),
+            arg: "y".to_owned(),
+        };
+        assert_eq!(apply("(a, b, c)", &Change::Remove(0)), "(b, c)");
+        assert_eq!(apply("(a, b, c)", &Change::Remove(1)), "(a, c)");
+        assert_eq!(apply("(a, b, c)", &Change::Remove(2)), "(a, b)");
+        assert_eq!(apply("(a)", &Change::Remove(0)), "()");
+        assert_eq!(apply("(a, b, c)", &Change::Swap(0, 2)), "(c, b, a)");
+        assert_eq!(apply("(a, b)", &insert(0)), "(x, a, b)");
+        assert_eq!(apply("(a, b)", &insert(1)), "(a, x, b)");
+        assert_eq!(apply("(a, b)", &insert(2)), "(a, b, x)");
+        assert_eq!(apply("()", &insert(0)), "(x)");
+    }
+
+    #[test]
+    fn tipo_na_caixa_do_modelo() {
+        assert_eq!(same_case("Numero", "alfa"), "numero");
+        assert_eq!(same_case("Numero", "ALFA_1"), "NUMERO");
+        assert_eq!(same_case("Numero", "Alfa"), "Numero");
+        assert_eq!(same_case("Numero", "aLFA"), "Numero");
+    }
+}

@@ -5321,6 +5321,29 @@ fn capacidades_anunciadas() {
         caps["signatureHelpProvider"]["triggerCharacters"],
         json!(["(", ","])
     );
+    // Cada recurso que o servidor atende precisa estar anunciado, senão o editor não pede.
+    for provider in [
+        "definitionProvider",
+        "implementationProvider",
+        "documentHighlightProvider",
+        "documentLinkProvider",
+        "selectionRangeProvider",
+        "callHierarchyProvider",
+        "foldingRangeProvider",
+        "inlayHintProvider",
+        "referencesProvider",
+        "hoverProvider",
+        "documentSymbolProvider",
+        "workspaceSymbolProvider",
+        "renameProvider",
+        "semanticTokensProvider",
+        "executeCommandProvider",
+    ] {
+        assert!(
+            !caps[provider].is_null() && caps[provider] != json!(false),
+            "{provider}"
+        );
+    }
     editor.stop();
 }
 
