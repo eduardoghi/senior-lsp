@@ -1040,8 +1040,9 @@ fn from_tables(mask: &[u8]) -> Vec<TableRef> {
         |r: &Range<usize>, keyword: &str| mask[r.clone()].eq_ignore_ascii_case(keyword.as_bytes());
 
     let mut found = Vec::new();
-    // Nível dos parênteses em que o `FROM` está aberto, para a vírgula separar tabelas.
-    let mut from_depth: Option<i32> = None;
+    // Nível dos parênteses de cada `FROM` aberto, para a vírgula separar tabelas. É uma pilha
+    // porque a subconsulta no meio da lista abre o `FROM` dela, e o de fora continua depois.
+    let mut from_depths: Vec<i32> = Vec::new();
     let mut depth = 0;
     for (i, piece) in pieces.iter().enumerate() {
         let mut reference = None;
@@ -1049,11 +1050,11 @@ fn from_tables(mask: &[u8]) -> Vec<TableRef> {
             Piece::Open(_) => depth += 1,
             Piece::Close(_) => {
                 depth -= 1;
-                if from_depth.is_some_and(|d| depth < d) {
-                    from_depth = None;
+                while from_depths.last().is_some_and(|&d| depth < d) {
+                    from_depths.pop();
                 }
             }
-            Piece::Comma if from_depth == Some(depth) => reference = Some(i + 1),
+            Piece::Comma if from_depths.last() == Some(&depth) => reference = Some(i + 1),
             Piece::Word(r) => {
                 let text = &mask[r.clone()];
                 let after = |keyword: &str| {
@@ -1063,19 +1064,21 @@ fn from_tables(mask: &[u8]) -> Vec<TableRef> {
                 };
                 let after_for = after("for");
                 if text.eq_ignore_ascii_case(b"from") {
-                    from_depth = Some(depth);
+                    if from_depths.last() != Some(&depth) {
+                        from_depths.push(depth);
+                    }
                     reference = Some(i + 1);
                 } else if text.eq_ignore_ascii_case(b"join")
                     || (text.eq_ignore_ascii_case(b"update") && !after_for)
                     || (text.eq_ignore_ascii_case(b"into") && after("insert"))
                 {
                     reference = Some(i + 1);
-                } else if from_depth == Some(depth)
+                } else if from_depths.last() == Some(&depth)
                     && ENDS_FROM
                         .iter()
                         .any(|k| text.eq_ignore_ascii_case(k.as_bytes()))
                 {
-                    from_depth = None;
+                    from_depths.pop();
                 }
             }
             _ => {}
@@ -1284,6 +1287,52 @@ mod tests {
         ] {
             assert_eq!(spot_at(mask.as_bytes(), at), expected, "{mask} {at}");
         }
+    }
+
+    #[test]
+    fn tabelas_citadas_com_apelido_e_escopo() {
+        fn tables(sql: &str) -> Vec<(&str, Option<&str>, &str)> {
+            from_tables(sql.as_bytes())
+                .into_iter()
+                .map(|t| (&sql[t.table], t.alias.map(|a| &sql[a]), &sql[t.scope]))
+                .collect()
+        }
+        let sql = "SELECT A FROM T1 X, T2 WHERE A IN (SELECT B FROM T3 Y) AND C = 1, D";
+        assert_eq!(
+            tables(sql),
+            [
+                ("T1", Some("X"), sql),
+                ("T2", None, sql),
+                ("T3", Some("Y"), "(SELECT B FROM T3 Y)")
+            ]
+        );
+        // A lista do FROM continua depois de uma subconsulta no meio dela.
+        let sql = "SELECT * FROM T4 A, (SELECT 1 FROM T5) B, T6 C";
+        assert_eq!(
+            tables(sql),
+            [
+                ("T4", Some("A"), sql),
+                ("T5", None, "(SELECT 1 FROM T5)"),
+                ("T6", Some("C"), sql)
+            ]
+        );
+        let sql = "SELECT * FROM (SELECT 1 FROM T4), T5 Z";
+        assert_eq!(
+            tables(sql),
+            [("T4", None, "(SELECT 1 FROM T4)"), ("T5", Some("Z"), sql)]
+        );
+        // O dono na frente, o AS e o nome que começa com número.
+        let sql = "SELECT a FROM dono.T6 AS W, 1X";
+        assert_eq!(tables(sql), [("T6", Some("W"), sql)]);
+        let sql = "SELECT 1 FROM T A JOIN T9 J ON J.A = A.A";
+        assert_eq!(tables(sql), [("T", Some("A"), sql), ("T9", Some("J"), sql)]);
+        assert_eq!(tables("UPDATE T7 SET A = 1")[0].0, "T7");
+        assert_eq!(tables("INSERT INTO T8 VALUES (1)")[0].0, "T8");
+        assert_eq!(tables("SELECT 1 FROM T0 FOR UPDATE").len(), 1);
+        // O parêntese que não fecha vai até o fim do texto.
+        let sql = "SELECT (SELECT B FROM T10";
+        assert_eq!(tables(sql), [("T10", None, "(SELECT B FROM T10")]);
+        assert!(tables("SELECT X FROM (T11)").is_empty());
     }
 
     #[test]
