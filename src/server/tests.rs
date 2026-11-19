@@ -1738,6 +1738,21 @@ fn corrigir_o_arquivo_aplica_so_as_correcoes_seguras() {
     );
 }
 
+#[test]
+fn corrigir_o_arquivo_deixa_o_que_esta_escondido() {
+    // O aviso escondido pela diretiva não é corrigido, e o mesmo aviso em outra linha é.
+    let (mut editor, _) = Editor::start(None);
+    let text = "definir cursor c; definir numero n; definir alfa a;\n\
+                @ senior-lsp-disable-next-line SEN076 @\n\
+                c.SQL \"SELECT A, B FROM T\";\nn = c.A;\n\
+                @ senior-lsp-disable-next-line SEN064 @\n\
+                a = 'x';\na = 'y';\n";
+    editor.open(RULE, 1, text);
+    editor.diagnostics();
+    let fixed = apply_fix(&mut editor, text, 0, 0, "Corrigir o arquivo");
+    assert_eq!(fixed, text.replace("'y'", "'Y'"));
+}
+
 fn apply_fix(editor: &mut Editor, text: &str, line: u32, character: u32, title: &str) -> String {
     let response = editor.request(
         lsp_types::request::CodeActionRequest::METHOD,
@@ -3751,6 +3766,10 @@ fn inverter_o_se_troca_e_por_ou() {
     assert_eq!(invert("a"), None);
     assert_eq!(invert("(a = 1) e b"), None);
     assert_eq!(invert("a + 1"), None);
+    // Outro campo do cursor também não, e nem o `e` cujo lado não tem contrária.
+    let cursor = "definir cursor cur; definir numero x;\nse (cur.Campo) x = 1; senao x = 2;\n";
+    assert_eq!(refactor_at(cursor, "se (", INVERT), None);
+    assert_eq!(invert("b e (a = 1)"), None);
 
     // O nome fica na caixa em que estava escrito.
     for (before, after) in [
@@ -4117,6 +4136,10 @@ fn embutir_funcao_so_a_que_nao_depende_de_ser_funcao() {
     // Função do ERP e função que não está no arquivo não têm corpo aqui.
     assert!(!offered("", "IniciarTransacao();"));
     assert!(!offered("", "NaoExiste();"));
+    // A chamada tem que ser o comando, sem argumento, numa função sem parâmetro.
+    assert!(!offered("funcao F(); { x = 1; }", "x = F();"));
+    assert!(!offered("funcao F(); { x = 1; }", "F(1);"));
+    assert!(!offered("funcao F(numero p); { x = 1; }", "F();"));
     // Duas implementações com o mesmo nome deixam em dúvida qual vale.
     assert!(!offered(
         "funcao F(); { x = 1; }\nfuncao F(); { x = 2; }",
