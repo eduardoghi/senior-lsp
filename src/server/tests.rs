@@ -2363,6 +2363,15 @@ fn modelo_que_muda_no_disco_e_analisado_de_novo() {
     let d = editor.diagnostics();
     assert_eq!(d.uri.as_str(), uri);
     assert!(d.diagnostics.is_empty(), "{:?}", d.diagnostics);
+    // Aberto, o modelo que muda no disco continua com o texto do editor.
+    editor.open(&uri, 1, &json("x = 1;"));
+    assert!(editor.diagnostics().diagnostics.is_empty());
+    std::fs::write(&model, json("x = ;")).unwrap();
+    editor.notify(
+        lsp_types::notification::DidChangeWatchedFiles::METHOD,
+        json!({ "changes": [{ "uri": uri, "type": 2 }] }),
+    );
+    editor.quiet();
     editor.stop();
     std::fs::remove_dir_all(&base).unwrap();
 }
